@@ -66,7 +66,8 @@ Display a clean summary of everything that was saved:
 
 ## Important Rules
 
-- **Never save duplicates**: Always search before saving. When in doubt, skip rather than duplicate.
+- **Reuse existing titles**: Before saving a note, check existing notes in that category (`claudemem note list <category>`). If a related note exists, use the **exact same title** — this triggers auto-merge instead of creating a near-duplicate. The CLI also does fuzzy title matching (>50% word overlap), but exact titles are most reliable.
 - **Be selective**: Only save information with lasting value. Skip temporary debugging or transient state.
 - **Categorize well**: Use existing categories when possible (`claudemem note categories` to check).
-- **Keep it concise**: Each note should be a focused, fact-dense fragment — not a brain dump of the entire conversation.
+- **Keep it concise**: Each note should be a focused, fact-dense fragment — not a dump of the entire conversation.
+- **Session dedup is automatic**: Same date + project + branch → updates existing session, never duplicates.

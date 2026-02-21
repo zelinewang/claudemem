@@ -27,16 +27,10 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 		return nil, err
 	}
 
-	// ── Dedup check: same category + title → merge instead of duplicate ──
-	var existingID, existingFpath string
-	err := fs.db.QueryRow(`
-		SELECT id, filepath FROM entries
-		WHERE category = ? AND title = ? AND type = 'note'
-		LIMIT 1
-	`, note.Category, note.Title).Scan(&existingID, &existingFpath)
+	// ── Dedup check: same category + exact or similar title → merge ──
+	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID)
 
-	if err == nil && existingID != note.ID {
-		// Same title exists in same category → MERGE
+	if existingID != "" {
 		existingNote, readErr := fs.readNoteFile(filepath.Join(fs.baseDir, existingFpath))
 		if readErr == nil {
 			// Append new content with timestamp separator (only if content differs)
@@ -475,6 +469,93 @@ func (fs *FileStore) readNoteFile(fullPath string) (*models.Note, error) {
 		return nil, fmt.Errorf("failed to read note file: %w", err)
 	}
 	return ParseNoteMarkdown(data)
+}
+
+// findDedupCandidate finds an existing note to merge with.
+// First tries exact title match, then fuzzy match (>50% word overlap in same category).
+func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (string, string) {
+	// Layer 1: Exact title match
+	var id, fpath string
+	err := fs.db.QueryRow(`
+		SELECT id, filepath FROM entries
+		WHERE category = ? AND title = ? AND type = 'note'
+		LIMIT 1
+	`, category, title).Scan(&id, &fpath)
+	if err == nil && id != excludeID {
+		return id, fpath
+	}
+
+	// Layer 2: Fuzzy title match — find notes in same category with >50% word overlap
+	newWords := titleWords(title)
+	if len(newWords) == 0 {
+		return "", ""
+	}
+
+	rows, err := fs.db.Query(`
+		SELECT id, title, filepath FROM entries
+		WHERE category = ? AND type = 'note'
+	`, category)
+	if err != nil {
+		return "", ""
+	}
+	defer rows.Close()
+
+	bestID, bestFpath := "", ""
+	bestOverlap := 0.0
+
+	for rows.Next() {
+		var eid, etitle, efpath string
+		rows.Scan(&eid, &etitle, &efpath)
+		if eid == excludeID {
+			continue
+		}
+
+		existingWords := titleWords(etitle)
+		if len(existingWords) == 0 {
+			continue
+		}
+
+		// Calculate word overlap ratio
+		overlap := wordOverlap(newWords, existingWords)
+		if overlap > bestOverlap && overlap >= 0.5 {
+			bestOverlap = overlap
+			bestID = eid
+			bestFpath = efpath
+		}
+	}
+
+	return bestID, bestFpath
+}
+
+// titleWords extracts lowercase significant words from a title (ignoring short words)
+func titleWords(title string) map[string]bool {
+	words := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(title)) {
+		// Skip very short words (a, an, the, to, of, etc.)
+		if len(w) >= 3 {
+			words[w] = true
+		}
+	}
+	return words
+}
+
+// wordOverlap calculates the ratio of shared words between two word sets
+func wordOverlap(a, b map[string]bool) float64 {
+	shared := 0
+	for w := range a {
+		if b[w] {
+			shared++
+		}
+	}
+	// Use the smaller set as denominator to be more generous with matching
+	smaller := len(a)
+	if len(b) < smaller {
+		smaller = len(b)
+	}
+	if smaller == 0 {
+		return 0
+	}
+	return float64(shared) / float64(smaller)
 }
 
 // noteHasAllTags checks if a note has all required tags (case-insensitive)
