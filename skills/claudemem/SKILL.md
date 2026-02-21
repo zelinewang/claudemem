@@ -114,9 +114,13 @@ add a brief indicator at the end of your response so the user knows what was cap
 * Technical decisions with rationale (why X over Y)
 * Integration quirks, gotchas, workarounds
 * Resolved bugs and their root causes
-* Configuration requirements and defaults
+* Configuration requirements, thresholds, defaults
 * User preferences and project conventions
 * Important URLs, endpoints, environment configs
+* Domain terminology, aliases, abbreviations
+* External context shared by the user (specs, docs, requirements)
+* Business requirements, use cases, user stories
+* System constraints, assumptions, exclusions
 
 **How to auto-save gracefully:**
 1. Identify the knowledge fragment during your normal response
@@ -160,11 +164,16 @@ without the user's request, as they may want to continue the conversation.
 
 ## Session Summary Template
 
-When saving a session, generate content following this structure:
+When saving a session, generate content following this structure. Include ALL sections —
+these enable daily/weekly/monthly reporting for personal review and team updates.
 
 ```markdown
 ## Summary
 One or two paragraphs describing what was accomplished.
+
+## Purpose & Goals
+- Why this work was done
+- What problem it solves
 
 ## Key Decisions
 - Decision 1 with rationale
@@ -172,6 +181,10 @@ One or two paragraphs describing what was accomplished.
 
 ## What Changed
 - `path/to/file.py` — Description of change
+
+## Achievements & Impact
+- What was delivered (quantify where possible: lines of code, tests passing, performance gains)
+- Significance of the work (e.g., "unblocked 3 downstream features", "reduced query time from 2s to 10ms")
 
 ## Problems & Solutions
 - **Problem**: Description of issue
@@ -182,7 +195,11 @@ One or two paragraphs describing what was accomplished.
 
 ## Next Steps
 - [ ] First follow-up task
+- [ ] Second follow-up task
 ```
+
+Sessions always include: `--project` (which codebase), `--branch` (which feature), `--tags` (for filtering).
+This enables reviewing by: `claudemem session list --date today` (daily), `--date-range 7d` (weekly), `--date-range 30d` (monthly).
 
 ## What NOT to Capture
 
