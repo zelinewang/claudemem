@@ -10,6 +10,14 @@ npx skills add zelinewang/claudemem
 
 That's it. Next time you start Claude Code (or Cursor, Gemini CLI, etc.), it just works.
 
+### Upgrade
+
+```bash
+npx skills add zelinewang/claudemem -y -g
+```
+
+Same command as install. Overwrites with the latest version. Your saved data (`~/.claudemem/`) is never touched.
+
 ## How It Works
 
 **claudemem remembers things for you across conversations.**
