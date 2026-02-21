@@ -188,7 +188,7 @@ func (fs *FileStore) MigrateClaudeDone(sourceDir string) (*MigrateResult, error)
 		}
 
 		// Import the session
-		if err := fs.SaveSession(session); err != nil {
+		if _, err := fs.SaveSession(session); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("import %s: %v", entry.Name(), err))
 			continue
 		}

@@ -222,28 +222,28 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Save session
-	if err := store.SaveSession(session); err != nil {
+	// Save session (auto-dedup: same date+project+branch → update)
+	result, err := store.SaveSession(session)
+	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 
 	// Output result
-	idPrefix := session.ID
+	idPrefix := result.SessionID
 	if len(idPrefix) > 8 {
 		idPrefix = idPrefix[:8]
 	}
 
 	if outputFormat == "json" {
-		return OutputJSON(map[string]string{
-			"id":      session.ID,
-			"title":   session.Title,
-			"date":    session.Date,
-			"branch":  session.Branch,
-			"project": session.Project,
-		})
+		return OutputJSON(result)
+	}
+
+	if result.Action == "updated" {
+		OutputText("📎 Updated existing session: \"%s\" (%s, %s) [id: %s]",
+			result.Title, result.Date, session.Branch, idPrefix)
 	} else {
-		OutputText(fmt.Sprintf("✓ Saved session: \"%s\" (%s, %s) [id: %s]",
-			session.Title, session.Date, session.Branch, idPrefix))
+		OutputText("✓ Saved session: \"%s\" (%s, %s) [id: %s]",
+			result.Title, result.Date, session.Branch, idPrefix)
 	}
 
 	return nil

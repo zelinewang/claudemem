@@ -11,14 +11,64 @@ import (
 	"github.com/zelinewang/claudemem/pkg/models"
 )
 
-// SaveSession saves a session to the filesystem and database
-func (fs *FileStore) SaveSession(session *models.Session) error {
+// SaveSessionResult describes what happened when saving a session
+type SaveSessionResult struct {
+	Action    string `json:"action"`     // "created" or "updated"
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
+	Date      string `json:"date"`
+}
+
+// SaveSession saves a session to the filesystem and database.
+// Dedup: same date + same project + same branch → update existing session instead of duplicating.
+func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, error) {
 	if err := validateTitle(session.Title); err != nil {
-		return fmt.Errorf("invalid session title: %w", err)
+		return nil, fmt.Errorf("invalid session title: %w", err)
 	}
 
-	// Generate filename: {date}_{branch}_{id[:8]}_{Slugify(title)}
-	// Slugify branch to prevent path traversal (strips all non-alphanumeric)
+	// ── Dedup check: same date + project + branch → update existing ──
+	var existingID, existingFpath string
+	err := fs.db.QueryRow(`
+		SELECT id, filepath FROM entries
+		WHERE type = 'session' AND date_str = ? AND project = ? AND branch = ?
+		ORDER BY created DESC LIMIT 1
+	`, session.Date, session.Project, session.Branch).Scan(&existingID, &existingFpath)
+
+	if err == nil && existingID != "" {
+		// Existing session found — update it
+		oldFullPath := filepath.Join(fs.baseDir, existingFpath)
+
+		// Use the existing ID to keep continuity
+		session.ID = existingID
+
+		// Generate new markdown with updated content
+		markdown := FormatSessionMarkdown(session)
+
+		// Overwrite the file
+		if err := os.WriteFile(oldFullPath, []byte(markdown), 0600); err != nil {
+			return nil, fmt.Errorf("failed to update session file: %w", err)
+		}
+
+		// Update DB entries
+		fs.db.Exec(`UPDATE entries SET title = ?, tags = ?, updated = ? WHERE id = ?`,
+			session.Title, strings.Join(session.Tags, " "),
+			time.Now().Format("2006-01-02T15:04:05Z"), existingID)
+
+		// Update FTS
+		fs.db.Exec(`DELETE FROM memory_fts WHERE id = ?`, existingID)
+		fs.db.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+			existingID, session.Title, session.GetSearchableContent(),
+			strings.Join(session.Tags, " "))
+
+		return &SaveSessionResult{
+			Action:    "updated",
+			SessionID: existingID,
+			Title:     session.Title,
+			Date:      session.Date,
+		}, nil
+	}
+
+	// ── Normal create path ──
 	branch := strings.TrimSuffix(Slugify(session.Branch), ".md")
 	idPrefix := session.ID
 	if len(idPrefix) > 8 {
@@ -31,57 +81,45 @@ func (fs *FileStore) SaveSession(session *models.Session) error {
 		strings.TrimSuffix(Slugify(session.Title), ".md"))
 	filename = filename + ".md"
 
-	// Format markdown
 	markdown := FormatSessionMarkdown(session)
 
-	// Write file
 	fullPath := filepath.Join(fs.sessionsDir, filename)
 	if err := os.WriteFile(fullPath, []byte(markdown), 0600); err != nil {
-		return fmt.Errorf("failed to write session file: %w", err)
+		return nil, fmt.Errorf("failed to write session file: %w", err)
 	}
 
-	// Store relative path in database
 	relPath := filepath.Join("sessions", filename)
 
-	// Insert into entries table
-	_, err := fs.db.Exec(`
+	_, err = fs.db.Exec(`
 		INSERT INTO entries (id, type, title, branch, project, session_id, date_str, tags, filepath, created, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		session.ID,
-		"session",
-		session.Title,
-		session.Branch,
-		session.Project,
-		session.SessionID,
-		session.Date,
-		strings.Join(session.Tags, " "),
-		relPath,
-		session.Created.Format("2006-01-02T15:04:05Z"),
+		session.ID, "session", session.Title, session.Branch, session.Project,
+		session.SessionID, session.Date, strings.Join(session.Tags, " "),
+		relPath, session.Created.Format("2006-01-02T15:04:05Z"),
 		session.Created.Format("2006-01-02T15:04:05Z"),
 	)
 	if err != nil {
-		// Try to clean up the file
 		os.Remove(fullPath)
-		return fmt.Errorf("failed to insert session into database: %w", err)
+		return nil, fmt.Errorf("failed to insert session: %w", err)
 	}
 
-	// Insert into FTS table
 	_, err = fs.db.Exec(`
-		INSERT INTO memory_fts (id, title, content, tags)
-		VALUES (?, ?, ?, ?)`,
-		session.ID,
-		session.Title,
-		session.GetSearchableContent(),
+		INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+		session.ID, session.Title, session.GetSearchableContent(),
 		strings.Join(session.Tags, " "),
 	)
 	if err != nil {
-		// Try to clean up both the file and database entry
 		os.Remove(fullPath)
 		fs.db.Exec("DELETE FROM entries WHERE id = ?", session.ID)
-		return fmt.Errorf("failed to insert session into FTS index: %w", err)
+		return nil, fmt.Errorf("failed to insert into FTS: %w", err)
 	}
 
-	return nil
+	return &SaveSessionResult{
+		Action:    "created",
+		SessionID: session.ID,
+		Title:     session.Title,
+		Date:      session.Date,
+	}, nil
 }
 
 // GetSession retrieves a session by ID or ID prefix

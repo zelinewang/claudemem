@@ -29,7 +29,7 @@ type NoteStore interface {
 
 // SessionStore defines operations for sessions
 type SessionStore interface {
-	SaveSession(session *models.Session) error
+	SaveSession(session *models.Session) (*SaveSessionResult, error)
 	GetSession(id string) (*models.Session, error)
 	ListSessions(opts SessionListOpts) ([]*models.Session, error)
 	SearchSessions(query string, opts SessionListOpts) ([]*models.Session, error)
