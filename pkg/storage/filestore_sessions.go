@@ -13,8 +13,13 @@ import (
 
 // SaveSession saves a session to the filesystem and database
 func (fs *FileStore) SaveSession(session *models.Session) error {
+	if err := validateTitle(session.Title); err != nil {
+		return fmt.Errorf("invalid session title: %w", err)
+	}
+
 	// Generate filename: {date}_{branch}_{id[:8]}_{Slugify(title)}
-	branch := strings.ReplaceAll(session.Branch, "/", "-")
+	// Slugify branch to prevent path traversal (strips all non-alphanumeric)
+	branch := strings.TrimSuffix(Slugify(session.Branch), ".md")
 	idPrefix := session.ID
 	if len(idPrefix) > 8 {
 		idPrefix = idPrefix[:8]
@@ -30,10 +35,13 @@ func (fs *FileStore) SaveSession(session *models.Session) error {
 	markdown := FormatSessionMarkdown(session)
 
 	// Write file
-	filepath := filepath.Join(fs.sessionsDir, filename)
-	if err := os.WriteFile(filepath, []byte(markdown), 0644); err != nil {
+	fullPath := filepath.Join(fs.sessionsDir, filename)
+	if err := os.WriteFile(fullPath, []byte(markdown), 0600); err != nil {
 		return fmt.Errorf("failed to write session file: %w", err)
 	}
+
+	// Store relative path in database
+	relPath := filepath.Join("sessions", filename)
 
 	// Insert into entries table
 	_, err := fs.db.Exec(`
@@ -47,13 +55,13 @@ func (fs *FileStore) SaveSession(session *models.Session) error {
 		session.SessionID,
 		session.Date,
 		strings.Join(session.Tags, " "),
-		filepath,
+		relPath,
 		session.Created.Format("2006-01-02T15:04:05Z"),
 		session.Created.Format("2006-01-02T15:04:05Z"),
 	)
 	if err != nil {
 		// Try to clean up the file
-		os.Remove(filepath)
+		os.Remove(fullPath)
 		return fmt.Errorf("failed to insert session into database: %w", err)
 	}
 
@@ -68,7 +76,7 @@ func (fs *FileStore) SaveSession(session *models.Session) error {
 	)
 	if err != nil {
 		// Try to clean up both the file and database entry
-		os.Remove(filepath)
+		os.Remove(fullPath)
 		fs.db.Exec("DELETE FROM entries WHERE id = ?", session.ID)
 		return fmt.Errorf("failed to insert session into FTS index: %w", err)
 	}
@@ -79,13 +87,13 @@ func (fs *FileStore) SaveSession(session *models.Session) error {
 // GetSession retrieves a session by ID or ID prefix
 func (fs *FileStore) GetSession(id string) (*models.Session, error) {
 	// Try exact match first, then prefix match
-	var filepath string
+	var fpath string
 	err := fs.db.QueryRow(`
 		SELECT filepath FROM entries
 		WHERE (id = ? OR id LIKE ? || '%') AND type = 'session'
 		LIMIT 1`,
 		id, id,
-	).Scan(&filepath)
+	).Scan(&fpath)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("session not found: %s", id)
@@ -94,8 +102,9 @@ func (fs *FileStore) GetSession(id string) (*models.Session, error) {
 		return nil, fmt.Errorf("failed to query session: %w", err)
 	}
 
-	// Read file
-	data, err := os.ReadFile(filepath)
+	// Read file (filepath is relative, need to join with base dir)
+	fullPath := filepath.Join(fs.baseDir, fpath)
+	data, err := os.ReadFile(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
@@ -153,13 +162,14 @@ func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, erro
 	// Read sessions
 	var sessions []*models.Session
 	for rows.Next() {
-		var filepath string
-		if err := rows.Scan(&filepath); err != nil {
+		var fpath string
+		if err := rows.Scan(&fpath); err != nil {
 			continue
 		}
 
-		// Read and parse file
-		data, err := os.ReadFile(filepath)
+		// Read and parse file (fpath is relative, join with baseDir)
+		fullPath := filepath.Join(fs.baseDir, fpath)
+		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue
 		}
@@ -217,14 +227,15 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 	for rows.Next() {
 		var id string
 		var rank float64
-		var filepath string
+		var fpath string
 
-		if err := rows.Scan(&id, &rank, &filepath); err != nil {
+		if err := rows.Scan(&id, &rank, &fpath); err != nil {
 			continue
 		}
 
-		// Read and parse file
-		data, err := os.ReadFile(filepath)
+		// Read and parse file (fpath is relative, join with baseDir)
+		fullPath := filepath.Join(fs.baseDir, fpath)
+		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue
 		}

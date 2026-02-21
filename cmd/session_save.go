@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/models"
-	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var (
@@ -146,37 +145,79 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// If body content was provided, parse it
+	// If body content was provided, parse sections from it directly
 	if bodyContent != "" {
-		// Create a temporary markdown with frontmatter to parse
-		tempMarkdown := fmt.Sprintf(`---
-id: %s
-type: session
-title: %s
-date: %s
-branch: %s
-project: %s
-session_id: %s
-tags: %s
-created: %s
----
+		// Check if content has ## section headers — parse as structured markdown
+		if strings.Contains(bodyContent, "## ") {
+			// Parse section headers directly without wrapping in frontmatter
+			sections := make(map[string]string)
+			lines := strings.Split(bodyContent, "\n")
+			currentSection := ""
+			var currentContent []string
 
-%s`, session.ID, session.Title, session.Date, session.Branch,
-			session.Project, session.SessionID, sessionTags,
-			session.Created.Format("2006-01-02T15:04:05Z"), bodyContent)
+			for _, line := range lines {
+				if strings.HasPrefix(line, "## ") {
+					if currentSection != "" {
+						sections[currentSection] = strings.Join(currentContent, "\n")
+					}
+					currentSection = strings.TrimPrefix(line, "## ")
+					currentContent = nil
+				} else {
+					currentContent = append(currentContent, line)
+				}
+			}
+			if currentSection != "" {
+				sections[currentSection] = strings.Join(currentContent, "\n")
+			}
 
-		// Parse the markdown to extract structured sections
-		parsed, err := storage.ParseSessionMarkdown([]byte(tempMarkdown))
-		if err == nil {
-			// Copy parsed sections to our session
-			session.Summary = parsed.Summary
-			session.Decisions = parsed.Decisions
-			session.Changes = parsed.Changes
-			session.Problems = parsed.Problems
-			session.Questions = parsed.Questions
-			session.NextSteps = parsed.NextSteps
+			// Map sections to session fields
+			for name, content := range sections {
+				trimmed := strings.TrimSpace(content)
+				switch strings.ToLower(name) {
+				case "summary":
+					session.Summary = trimmed
+				case "key decisions", "decisions":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							session.Decisions = append(session.Decisions, strings.TrimPrefix(line, "- "))
+						}
+					}
+				case "what changed", "changes":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							item := strings.TrimPrefix(line, "- ")
+							parts := strings.SplitN(item, " — ", 2)
+							if len(parts) == 2 {
+								session.Changes = append(session.Changes, models.FileChange{
+									Path:        strings.Trim(parts[0], "`"),
+									Description: parts[1],
+								})
+							}
+						}
+					}
+				case "next steps":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							step := strings.TrimPrefix(line, "- ")
+							step = strings.TrimPrefix(step, "[ ] ")
+							step = strings.TrimPrefix(step, "[x] ")
+							session.NextSteps = append(session.NextSteps, step)
+						}
+					}
+				case "questions raised", "questions":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							session.Questions = append(session.Questions, strings.TrimPrefix(line, "- "))
+						}
+					}
+				}
+			}
 		} else {
-			// If parsing fails, treat entire content as summary
+			// No section headers — treat entire content as summary
 			session.Summary = strings.TrimSpace(bodyContent)
 		}
 	}

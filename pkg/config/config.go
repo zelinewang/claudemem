@@ -37,7 +37,7 @@ func Load(storeDir string) (*Config, error) {
 func (c *Config) Save() error {
 	// Ensure directory exists
 	dir := filepath.Dir(c.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -48,7 +48,7 @@ func (c *Config) Save() error {
 	}
 
 	// Write to file
-	if err := os.WriteFile(c.path, data, 0644); err != nil {
+	if err := os.WriteFile(c.path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

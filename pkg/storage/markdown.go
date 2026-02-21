@@ -43,6 +43,11 @@ func FormatNoteMarkdown(note *models.Note) string {
 func ParseNoteMarkdown(data []byte) (*models.Note, error) {
 	content := string(data)
 
+	// Ensure trailing newline for consistent parsing
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
 	// Check for frontmatter
 	if !strings.HasPrefix(content, "---\n") {
 		return nil, fmt.Errorf("missing YAML frontmatter")
@@ -189,6 +194,11 @@ func FormatSessionMarkdown(session *models.Session) string {
 // ParseSessionMarkdown parses markdown with YAML frontmatter into a Session
 func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 	content := string(data)
+
+	// Ensure trailing newline for consistent parsing
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
 
 	// Check for frontmatter
 	if !strings.HasPrefix(content, "---\n") {

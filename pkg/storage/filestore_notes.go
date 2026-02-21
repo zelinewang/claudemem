@@ -13,9 +13,23 @@ import (
 
 // AddNote adds a new note to the store
 func (fs *FileStore) AddNote(note *models.Note) error {
+	// Validate inputs
+	if _, err := sanitizePath(note.Category); err != nil {
+		return fmt.Errorf("invalid category: %w", err)
+	}
+	if err := validateTitle(note.Title); err != nil {
+		return err
+	}
+	if err := validateContent(note.Content); err != nil {
+		return err
+	}
+	if err := validateTags(note.Tags); err != nil {
+		return err
+	}
+
 	// Create category directory if it doesn't exist
 	categoryDir := filepath.Join(fs.notesDir, note.Category)
-	if err := os.MkdirAll(categoryDir, 0755); err != nil {
+	if err := os.MkdirAll(categoryDir, 0700); err != nil {
 		return fmt.Errorf("failed to create category directory: %w", err)
 	}
 
@@ -28,7 +42,7 @@ func (fs *FileStore) AddNote(note *models.Note) error {
 	content := FormatNoteMarkdown(note)
 
 	// Write file
-	if err := os.WriteFile(notePath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(notePath, []byte(content), 0600); err != nil {
 		return fmt.Errorf("failed to write note file: %w", err)
 	}
 
@@ -80,6 +94,9 @@ func (fs *FileStore) GetNote(id string) (*models.Note, error) {
 
 // GetNoteByTitle retrieves a note by category and title
 func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error) {
+	if _, err := sanitizePath(category); err != nil {
+		return nil, fmt.Errorf("invalid category: %w", err)
+	}
 	// Try direct path first
 	filename := Slugify(title)
 	directPath := filepath.Join(fs.notesDir, category, filename)
@@ -113,6 +130,9 @@ func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
 	if category == "" {
 		query = `SELECT filepath FROM entries WHERE type = 'note' ORDER BY category, title`
 	} else {
+		if _, err := sanitizePath(category); err != nil {
+			return nil, fmt.Errorf("invalid category: %w", err)
+		}
 		query = `SELECT filepath FROM entries WHERE type = 'note' AND category = ? ORDER BY title`
 		args = append(args, category)
 	}
@@ -142,6 +162,21 @@ func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
 
 // UpdateNote updates an existing note
 func (fs *FileStore) UpdateNote(note *models.Note) error {
+	// Validate inputs
+	if _, err := sanitizePath(note.Category); err != nil {
+		return fmt.Errorf("invalid category: %w", err)
+	}
+	if err := validateTitle(note.Title); err != nil {
+		return err
+	}
+	if err := validateContent(note.Content); err != nil {
+		return err
+	}
+	if err := validateTags(note.Tags); err != nil {
+		return err
+	}
+
+	// Check old entry exists
 	var oldFpath string
 	err := fs.db.QueryRow(`SELECT filepath FROM entries WHERE id = ?`, note.ID).Scan(&oldFpath)
 	if err != nil {
@@ -151,32 +186,71 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 		return fmt.Errorf("failed to query note: %w", err)
 	}
 
-	// Delete old file
-	oldFullPath := filepath.Join(fs.baseDir, oldFpath)
-	if err := os.Remove(oldFullPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to delete old file: %w", err)
+	// Prepare new file
+	note.Updated = time.Now()
+	categoryDir := filepath.Join(fs.notesDir, note.Category)
+	if err := os.MkdirAll(categoryDir, 0700); err != nil {
+		return fmt.Errorf("failed to create category directory: %w", err)
+	}
+	filename := Slugify(note.Title)
+	newPath := filepath.Join(categoryDir, filename)
+	newRelPath := filepath.Join("notes", note.Category, filename)
+	content := FormatNoteMarkdown(note)
+
+	// Write new file to temp location first
+	tmpPath := newPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(content), 0600); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	// Delete from database
+	// Single transaction: delete old entries, insert new
 	tx, err := fs.db.Begin()
 	if err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	if _, err := tx.Exec(`DELETE FROM entries WHERE id = ?`, note.ID); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to delete old entry: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM memory_fts WHERE id = ?`, note.ID); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to delete from FTS: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit deletion: %w", err)
+	_, err = tx.Exec(`INSERT INTO entries (id, type, title, category, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		note.ID, note.Type, note.Title, note.Category, strings.Join(note.Tags, " "),
+		newRelPath, note.Created.Unix(), note.Updated.Unix())
+	if err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to insert new entry: %w", err)
+	}
+	_, err = tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+		note.ID, note.Title, note.Content, strings.Join(note.Tags, " "))
+	if err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to insert into FTS: %w", err)
 	}
 
-	// Add the updated note
-	note.Updated = time.Now()
-	return fs.AddNote(note)
+	if err := tx.Commit(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	// Transaction committed successfully. Now do filesystem operations.
+	oldFullPath := filepath.Join(fs.baseDir, oldFpath)
+	os.Remove(oldFullPath) // Best effort: if this fails, we have a stale file but DB is correct
+
+	// Rename temp file to final path
+	if err := os.Rename(tmpPath, newPath); err != nil {
+		// Critical: DB is committed but file rename failed. Try to copy.
+		data, _ := os.ReadFile(tmpPath)
+		os.WriteFile(newPath, data, 0600)
+		os.Remove(tmpPath)
+	}
+
+	return nil
 }
 
 // DeleteNote deletes a note by ID (supports prefix matching)
