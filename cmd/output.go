@@ -8,7 +8,7 @@ import (
 
 // OutputText prints formatted text to stdout
 func OutputText(format string, a ...interface{}) {
-	fmt.Printf(format, a...)
+	fmt.Printf(format+"\n", a...)
 }
 
 // OutputJSON prints data as JSON to stdout
@@ -18,7 +18,7 @@ func OutputJSON(data interface{}) error {
 	return encoder.Encode(data)
 }
 
-// Output handles text or JSON output based on format flag
+// Output prints data as JSON or text depending on format flag
 func Output(data interface{}, textFormat string, textArgs ...interface{}) error {
 	if outputFormat == "json" {
 		return OutputJSON(data)
@@ -27,7 +27,7 @@ func Output(data interface{}, textFormat string, textArgs ...interface{}) error 
 	return nil
 }
 
-// OutputError prints error message to stderr
+// OutputError prints an error message to stderr
 func OutputError(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", a...)
 }

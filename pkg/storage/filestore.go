@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/zanelabz/claudemem/pkg/models"
 	_ "modernc.org/sqlite"
 )
 
@@ -104,61 +103,7 @@ func (fs *FileStore) Close() error {
 	return nil
 }
 
-// NoteStore methods
-func (fs *FileStore) AddNote(note *models.Note) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) GetNote(id string) (*models.Note, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) UpdateNote(note *models.Note) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) DeleteNote(id string) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) SearchNotes(query, category string, tags []string) ([]*models.Note, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) GetCategories() ([]CategoryInfo, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) GetTags() ([]string, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// SessionStore methods
-func (fs *FileStore) SaveSession(session *models.Session) error {
-	return fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) GetSession(id string) (*models.Session, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*models.Session, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// UnifiedStore methods
+// UnifiedStore methods (Note/Session methods implemented in filestore_notes.go and filestore_sessions.go)
 func (fs *FileStore) Search(query, entryType string, limit int) ([]SearchResult, error) {
 	return nil, fmt.Errorf("not implemented")
 }
