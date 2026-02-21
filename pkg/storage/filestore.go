@@ -104,10 +104,4 @@ func (fs *FileStore) Close() error {
 }
 
 // UnifiedStore methods (Note/Session methods implemented in filestore_notes.go and filestore_sessions.go)
-func (fs *FileStore) Search(query, entryType string, limit int) ([]SearchResult, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (fs *FileStore) Stats() (*StoreStats, error) {
-	return nil, fmt.Errorf("not implemented")
-}
+// Search and Stats methods are implemented in filestore_search.go and filestore_stats.go
