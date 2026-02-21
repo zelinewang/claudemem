@@ -1,5 +1,5 @@
-# Binaries
-claudemem
+# Binaries (root only, not skills/claudemem/)
+/claudemem
 *.exe
 *.dll
 *.so
