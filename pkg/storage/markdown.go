@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zanelabz/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/models"
 	"gopkg.in/yaml.v3"
 )
 

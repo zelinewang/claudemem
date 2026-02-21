@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/zanelabz/claudemem/pkg/storage"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var sessionCmd = &cobra.Command{

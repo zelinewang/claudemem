@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zanelabz/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 // AddNote adds a new note to the store

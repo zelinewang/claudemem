@@ -1,4 +1,4 @@
-module github.com/zanelabz/claudemem
+module github.com/zelinewang/claudemem
 
 go 1.24.4
 

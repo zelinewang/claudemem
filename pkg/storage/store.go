@@ -3,7 +3,7 @@ package storage
 import (
 	"time"
 
-	"github.com/zanelabz/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 // NoteStore defines operations for notes

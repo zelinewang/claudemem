@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/zanelabz/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 var (
