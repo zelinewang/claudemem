@@ -14,7 +14,8 @@ and saves structured session summaries when you're done. Searches past context b
 
 ## Slash Commands
 
-- **/save-session** — Generate and save a structured summary of the current conversation
+- **/wrap-up** — End-of-session save: extracts ALL important knowledge + saves session summary in one step. Deduplicates automatically.
+- **/save-session** — Save only the session summary (without extracting notes)
 - **/recall [topic]** — Search persistent memory for a topic, or show recent activity
 
 ## Natural Trigger Phrases
@@ -27,8 +28,9 @@ These natural phrases also activate memory operations:
 **To search memory:**
 - "what do you remember about..." / "do you recall..." / "what do we know about..."
 
-**To save a session:**
-- "save this session" / "wrap up" / "summarize what we did"
+**To wrap up (save everything):**
+- "wrap up" / "let's wrap up" / "save everything" — triggers /wrap-up (notes + session)
+- "save this session" / "summarize what we did" — triggers /save-session (session only)
 
 **To recall past work:**
 - "what did we do last time" / "show me recent sessions" / "what happened with [topic]"
