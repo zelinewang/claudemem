@@ -68,6 +68,18 @@ claudemem config set <key> <value>
 claudemem config get <key>
 claudemem config list
 claudemem config delete <key>
+
+# Data portability
+claudemem export [output-file]              # Backup as tar.gz
+claudemem import <archive-file>             # Restore from backup (auto-reindexes)
+
+# Migration from other tools
+claudemem migrate braindump [--source path] # Import from ~/.braindump/
+claudemem migrate claude-done [--source path] # Import from ~/.claude-done/
+
+# Data integrity
+claudemem verify                            # Check DB-file consistency
+claudemem repair                            # Fix orphaned entries
 ```
 
 Add `--format json` to any command for structured output.
