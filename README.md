@@ -100,9 +100,7 @@ skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **an
 | Socket | 1 alert | `install.sh` downloads binary via curl | Standard Go distribution |
 | Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) has CVEs | Industry-standard SQLite lib |
 
-**What claudemem actually does**: zero network calls, all data local, parameterized SQL queries, path traversal protection, 400+ tests passing. Full source: ~4,800 lines of Go, fully auditable.
-
-Braindump (the most popular memory skill) has the same ratings. This is a scanner limitation, not a real vulnerability.
+**What claudemem actually does**: zero network calls, all data local, parameterized SQL queries, path traversal protection, 400+ tests passing. Full source: ~4,800 lines of Go, fully auditable. This is a scanner limitation, not a real vulnerability.
 
 ## Tell a Friend
 
@@ -115,3 +113,7 @@ Braindump (the most popular memory skill) has the same ratings. This is a scanne
 ## License
 
 MIT
+
+---
+
+<sub>Inspired by [braindump](https://github.com/MohGanji/braindump) and [claude-done](https://github.com/Genuifx/claude-done).</sub>
