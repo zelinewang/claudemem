@@ -127,9 +127,32 @@ func getStoreDir() string {
 	return filepath.Join(home, ".claudemem")
 }
 
+var configDeleteCmd = &cobra.Command{
+	Use:   "delete <key>",
+	Short: "Delete a configuration key",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		key := args[0]
+		cfg, err := loadConfig()
+		if err != nil {
+			return err
+		}
+		if cfg.GetString(key) == "" {
+			return fmt.Errorf("configuration key not found: %s", key)
+		}
+		cfg.Delete(key)
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+		OutputText("Config deleted: %s", key)
+		return nil
+	},
+}
+
 func init() {
 	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configGetCmd)
 	configCmd.AddCommand(configListCmd)
+	configCmd.AddCommand(configDeleteCmd)
 	rootCmd.AddCommand(configCmd)
 }

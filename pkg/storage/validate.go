@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -80,11 +81,18 @@ func validateTags(tags []string) error {
 }
 
 // validateFilepathWithinBase ensures a resolved filepath stays within the base directory.
-// Belt-and-suspenders check against path traversal after all other validation.
+// Belt-and-suspenders defense-in-depth check after all other path validation.
 func validateFilepathWithinBase(base, target string) error {
-	// Use filepath.Abs would be better but we can check prefix
-	if !strings.HasPrefix(target, base) {
-		return fmt.Errorf("path escapes base directory")
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return fmt.Errorf("failed to resolve base path: %w", err)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target path: %w", err)
+	}
+	if !strings.HasPrefix(absTarget, absBase+string(filepath.Separator)) && absTarget != absBase {
+		return fmt.Errorf("path %q escapes base directory %q", absTarget, absBase)
 	}
 	return nil
 }

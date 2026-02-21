@@ -36,6 +36,30 @@ func (fs *FileStore) AddNote(note *models.Note) error {
 	// Generate filename from title
 	filename := Slugify(note.Title)
 	notePath := filepath.Join(categoryDir, filename)
+
+	// Belt-and-suspenders: verify path stays within store
+	if err := validateFilepathWithinBase(fs.baseDir, notePath); err != nil {
+		return fmt.Errorf("path validation failed: %w", err)
+	}
+
+	// Handle slug collision: if file already exists with different note, append suffix
+	if _, statErr := os.Stat(notePath); statErr == nil {
+		// File exists — check if it's a different note (not an update of same)
+		existing, parseErr := fs.readNoteFile(notePath)
+		if parseErr == nil && existing.ID != note.ID {
+			base := strings.TrimSuffix(filename, ".md")
+			for i := 2; i <= 100; i++ {
+				candidate := fmt.Sprintf("%s-%d.md", base, i)
+				candidatePath := filepath.Join(categoryDir, candidate)
+				if _, err := os.Stat(candidatePath); os.IsNotExist(err) {
+					notePath = candidatePath
+					filename = candidate
+					break
+				}
+			}
+		}
+	}
+
 	relPath := filepath.Join("notes", note.Category, filename)
 
 	// Format note as markdown
