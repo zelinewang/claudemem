@@ -12,30 +12,26 @@ description: >
 Memory that carries across conversations. Automatically captures important knowledge during work
 and saves structured session summaries when you're done. Searches past context before new tasks.
 
-## Trigger Phrases
+## Slash Commands
 
-These are natural phrases that activate memory operations:
+- **/save-session** — Generate and save a structured summary of the current conversation
+- **/recall [topic]** — Search persistent memory for a topic, or show recent activity
+
+## Natural Trigger Phrases
+
+These natural phrases also activate memory operations:
 
 **To save knowledge:**
-- **"remember this"** — store the current information for future reference
-- **"save this"** or **"note this down"** — same as above
-- **"keep this in mind"** — store for later retrieval
+- "remember this" / "save this" / "note this down" / "keep this in mind"
 
 **To search memory:**
-- **"what do you remember about..."** — search for relevant past context
-- **"do you recall..."** or **"check your notes on..."** — search memory
-- **"what do we know about..."** — search before starting work
-- **"look up..."** — quick memory search
+- "what do you remember about..." / "do you recall..." / "what do we know about..."
 
-**To save a session summary:**
-- **"save this session"** — generate and save a structured summary of this conversation
-- **"wrap up"** or **"let's save our progress"** — same as above
-- **"summarize what we did"** — save session with summary
+**To save a session:**
+- "save this session" / "wrap up" / "summarize what we did"
 
-**To recall past sessions:**
-- **"what did we do last time"** — search past session summaries
-- **"show me recent sessions"** — list recent work
-- **"what happened with [topic]"** — search sessions by topic
+**To recall past work:**
+- "what did we do last time" / "show me recent sessions" / "what happened with [topic]"
 
 ## Setup
 
@@ -95,39 +91,55 @@ Add `--format json` to any command for structured output.
 
 ## Autonomous Behavior
 
-### When to Remember (Proactive — No User Prompt Needed)
+### Auto-Save Notes (Silent + Brief Indicator)
 
-Automatically capture information that would be lost when the conversation ends:
+Automatically capture knowledge **without asking** during normal conversation. After saving,
+add a brief indicator at the end of your response so the user knows what was captured:
 
-* Business requirements, use cases, user stories
-* API specifications, field mappings, data transformations, rate limits
-* System constraints, assumptions, edge cases, exclusions
-* Integration-specific behavior, quirks, gotchas
-* Domain terminology, aliases, abbreviations
+```
+[📝 Saved: "TikTok Rate Limits" → api-specs]
+```
+
+**What to auto-save** (proactive, no user prompt needed):
+* API specs, field mappings, rate limits, endpoint details
 * Technical decisions with rationale (why X over Y)
-* Known issues, limitations, workarounds
-* Configuration requirements, thresholds, defaults
-* User preferences and project conventions
+* Integration quirks, gotchas, workarounds
 * Resolved bugs and their root causes
-* Useful URLs, endpoints, environment configs
+* Configuration requirements and defaults
+* User preferences and project conventions
+* Important URLs, endpoints, environment configs
 
-### When to Search Memory (Proactive — No User Prompt Needed)
+**How to auto-save gracefully:**
+1. Identify the knowledge fragment during your normal response
+2. Choose an appropriate category (create new if none fits)
+3. Before saving, quickly search to avoid duplicates: `claudemem note search "keyword" --format json`
+4. If related note exists: `claudemem note append <id> "new info"` instead of creating duplicate
+5. Save: `claudemem note add <category> --title "..." --content "..." --tags "..."`
+6. Show the indicator: `[📝 Saved: "<title>" → <category>]`
 
-Automatically search memory at the start of tasks that might benefit from prior context:
+**Do NOT auto-save:**
+* Temporary debugging output or transient state
+* File paths or code snippets without context
+* General programming knowledge available in docs
+* Information the user is likely to change immediately
 
+### Auto-Search Before Tasks (Silent)
+
+Search memory at the start of tasks that might benefit from prior context:
 * Before implementing a feature in a domain previously discussed
-* When the user references something from a past conversation
-* When working with an API, integration, or system previously documented
-* Before making architectural decisions that may have prior rationale recorded
+* When working with an API or system previously documented
+* Before making architectural decisions
 
-### When to Save Sessions (Proactive or On Request)
+Search silently. If relevant results found, mention them briefly:
+```
+[🔍 Found related memory: "TikTok Rate Limits" — rate limit is 100/min]
+```
 
-Save a session summary when:
+### Save Sessions (On Request via /save-session or Natural Phrase)
 
-* A significant piece of work is completed
-* The conversation is ending and meaningful work was done
-* Before context would be lost between sessions
-* The user says "save this session", "wrap up", or "summarize what we did"
+Session summaries are saved when the user explicitly asks — via `/save-session` command
+or natural phrases like "save this session" or "wrap up". Do NOT auto-save sessions
+without the user's request, as they may want to continue the conversation.
 
 ### Workflow Rules
 
