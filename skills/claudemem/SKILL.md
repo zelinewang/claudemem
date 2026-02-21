@@ -1,25 +1,41 @@
 ---
 name: claudemem
 description: >
-  Unified persistent memory for AI agents combining knowledge notes and session summaries.
-  Auto-captures API specs, technical decisions, integration quirks, and domain knowledge during
-  conversations. Auto-saves structured session summaries at conversation end. Auto-searches past
-  context before new tasks. All data stored locally with FTS5 search. Zero network calls by default.
-  Triggered manually by "braindump this" (to store), "use your brain" (to retrieve), /done (save session),
-  or /recall (search sessions).
+  Persistent memory that survives across conversations. Automatically remembers important context
+  (API specs, decisions, quirks, preferences) and saves session summaries. Searches past knowledge
+  before starting new tasks. Responds naturally to phrases like "remember this", "what do you know
+  about...", "save this session", or "what did we do last time". All local, zero network.
 ---
 
-# claudemem — Unified Agent Memory
+# claudemem — Your Persistent Memory
 
-Local, searchable memory that persists across conversations. Combines knowledge fragment capture
-(like braindump) with structured session summaries (like claude-done) in a single Go binary with
-FTS5 full-text search.
+Memory that carries across conversations. Automatically captures important knowledge during work
+and saves structured session summaries when you're done. Searches past context before new tasks.
 
-Manual triggers:
-- **"braindump this"** or **"save this to memory"** — store a knowledge fragment
-- **"use your brain"** or **"remember anything about..."** — search memory before performing a task
-- **/done** — save a structured session summary
-- **/recall** or **"recall"** — search past session summaries
+## Trigger Phrases
+
+These are natural phrases that activate memory operations:
+
+**To save knowledge:**
+- **"remember this"** — store the current information for future reference
+- **"save this"** or **"note this down"** — same as above
+- **"keep this in mind"** — store for later retrieval
+
+**To search memory:**
+- **"what do you remember about..."** — search for relevant past context
+- **"do you recall..."** or **"check your notes on..."** — search memory
+- **"what do we know about..."** — search before starting work
+- **"look up..."** — quick memory search
+
+**To save a session summary:**
+- **"save this session"** — generate and save a structured summary of this conversation
+- **"wrap up"** or **"let's save our progress"** — same as above
+- **"summarize what we did"** — save session with summary
+
+**To recall past sessions:**
+- **"what did we do last time"** — search past session summaries
+- **"show me recent sessions"** — list recent work
+- **"what happened with [topic]"** — search sessions by topic
 
 ## Setup
 
@@ -64,18 +80,11 @@ claudemem search "query" [--type note|session] [--limit N]
 claudemem stats
 
 # Configuration
-claudemem config set <key> <value>
-claudemem config get <key>
-claudemem config list
-claudemem config delete <key>
+claudemem config set/get/list/delete <key> [value]
 
 # Data portability
 claudemem export [output-file]              # Backup as tar.gz
 claudemem import <archive-file>             # Restore from backup (auto-reindexes)
-
-# Migration from other tools
-claudemem migrate braindump [--source path] # Import from ~/.braindump/
-claudemem migrate claude-done [--source path] # Import from ~/.claude-done/
 
 # Data integrity
 claudemem verify                            # Check DB-file consistency
@@ -86,9 +95,9 @@ Add `--format json` to any command for structured output.
 
 ## Autonomous Behavior
 
-### When to Store Notes (Proactive, Silent)
+### When to Remember (Proactive — No User Prompt Needed)
 
-Capture information that would be lost when the conversation ends:
+Automatically capture information that would be lost when the conversation ends:
 
 * Business requirements, use cases, user stories
 * API specifications, field mappings, data transformations, rate limits
@@ -102,35 +111,35 @@ Capture information that would be lost when the conversation ends:
 * Resolved bugs and their root causes
 * Useful URLs, endpoints, environment configs
 
-### When to Retrieve (Proactive, Silent)
+### When to Search Memory (Proactive — No User Prompt Needed)
 
-Search memory at the start of tasks that might benefit from prior context:
+Automatically search memory at the start of tasks that might benefit from prior context:
 
 * Before implementing a feature in a domain previously discussed
 * When the user references something from a past conversation
 * When working with an API, integration, or system previously documented
 * Before making architectural decisions that may have prior rationale recorded
 
-### When to Save Sessions (/done)
+### When to Save Sessions (Proactive or On Request)
 
 Save a session summary when:
 
 * A significant piece of work is completed
 * The conversation is ending and meaningful work was done
 * Before context would be lost between sessions
-* The user explicitly says /done or "save this session"
+* The user says "save this session", "wrap up", or "summarize what we did"
 
 ### Workflow Rules
 
-1. **Before storing**: search existing content first — update or append if found, add new note if not
+1. **Before saving**: search existing content first — update or append if related note exists
 2. **Before working**: search for relevant context that may inform the current task
 3. **Merge related information** under existing categories/titles when possible
 4. **Preserve existing content** unless contradicted by new information
-5. **Focus on evergreen knowledge**, not conversation artifacts
+5. **Focus on evergreen knowledge**, not transient conversation artifacts
 
 ## Session Summary Template
 
-When saving a session with /done, generate content following this structure:
+When saving a session, generate content following this structure:
 
 ```markdown
 ## Summary
@@ -142,7 +151,6 @@ One or two paragraphs describing what was accomplished.
 
 ## What Changed
 - `path/to/file.py` — Description of change
-- `path/to/other.ts` — Description of change
 
 ## Problems & Solutions
 - **Problem**: Description of issue
@@ -153,17 +161,7 @@ One or two paragraphs describing what was accomplished.
 
 ## Next Steps
 - [ ] First follow-up task
-- [ ] Second follow-up task
 ```
-
-## Categories and Structure
-
-**Categories** represent cohesive domain areas: an integration, a system capability, a distinct module.
-Choose categories intuitively — use existing ones when appropriate, create new ones when needed.
-
-**Titles** should be searchable keywords that narrow context effectively.
-
-**Content** should be concise, fact-dense. Use bullet points for lists.
 
 ## What NOT to Capture
 
@@ -175,14 +173,13 @@ Choose categories intuitively — use existing ones when appropriate, create new
 
 ## Data Portability
 
-All data is stored at `~/.claudemem/` as plain Markdown files with YAML frontmatter.
-The SQLite FTS5 index is a secondary cache that can be rebuilt from the Markdown files.
+All data stored at `~/.claudemem/` as plain Markdown files with YAML frontmatter.
+SQLite FTS5 index is a rebuildable cache — only the Markdown files matter.
 
-**Backup**: `tar czf claudemem-backup.tar.gz ~/.claudemem/`
-**Restore**: Extract on any machine where claudemem is installed.
-**Migrate**: `claudemem migrate braindump` or `claudemem migrate claude-done` to import existing data.
+**Backup**: `claudemem export backup.tar.gz`
+**Restore**: `claudemem import backup.tar.gz` (auto-rebuilds search index)
 
 ## Storage
 
-`~/.claudemem/` — Plain text Markdown files organized by type. An FTS5 SQLite index powers
-fast search across both notes and sessions. File permissions: 0600 (files), 0700 (dirs).
+`~/.claudemem/` — Plain text Markdown files organized by type (notes/ and sessions/).
+FTS5 SQLite index for sub-10ms full-text search. File permissions: 0600/0700.
