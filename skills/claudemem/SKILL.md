@@ -93,6 +93,15 @@ Add `--format json` to any command for structured output.
 
 ## Autonomous Behavior
 
+### MANDATORY: Auto Wrap-Up Before Session Ends
+
+**CRITICAL RULE**: Before the conversation ends (user says goodbye, stops responding, or task is complete), you MUST automatically execute the /wrap-up workflow:
+1. Extract unsaved knowledge fragments → save as notes (with dedup)
+2. Generate session summary → save as session
+3. Show brief report of what was saved
+
+Do NOT ask permission. Do NOT skip this. Every session must leave a trace.
+
 ### Auto-Save Notes (Silent + Brief Indicator)
 
 Automatically capture knowledge **without asking** during normal conversation. After saving,
