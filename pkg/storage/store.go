@@ -33,6 +33,11 @@ type UnifiedStore interface {
 	SessionStore
 	Search(query, entryType string, limit int) ([]SearchResult, error)
 	Stats() (*StoreStats, error)
+	MigrateBraindump(sourceDir string) (*MigrateResult, error)
+	MigrateClaudeDone(sourceDir string) (*MigrateResult, error)
+	VerifyIntegrity() (*VerifyResult, error)
+	RepairIntegrity() (int, error)
+	Reindex() (int, error)
 	Close() error
 }
 
