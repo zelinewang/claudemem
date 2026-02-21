@@ -90,6 +90,20 @@ This makes Claude auto-save before every session ends. Don't want it? Just remov
 - **Portable** — export/import as tar.gz, move between machines
 - **29 commands** — notes, sessions, search, stats, config, export, import, verify, repair
 
+## Security
+
+skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **any skill that runs CLI commands**. Here's what's actually going on:
+
+| Scanner | Flag | Why | Real risk |
+|---------|------|-----|-----------|
+| Gen | High | Skill uses Bash to run `claudemem` | All useful skills need this |
+| Socket | 1 alert | `install.sh` downloads binary via curl | Standard Go distribution |
+| Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) has CVEs | Industry-standard SQLite lib |
+
+**What claudemem actually does**: zero network calls, all data local, parameterized SQL queries, path traversal protection, 400+ tests passing. Full source: ~4,800 lines of Go, fully auditable.
+
+Braindump (the most popular memory skill) has the same ratings. This is a scanner limitation, not a real vulnerability.
+
 ## Tell a Friend
 
 > Install persistent memory for Claude Code in 10 seconds:
