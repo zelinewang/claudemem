@@ -62,6 +62,18 @@ claudemem import backup.tar.gz
 claudemem stats
 ```
 
+## Recommended: Auto Wrap-Up
+
+Want every session to be saved automatically? Add this to your `~/.claude/CLAUDE.md`:
+
+```markdown
+### Session Memory — Auto Wrap-Up
+- Before ending any conversation, automatically execute `/wrap-up` to save knowledge and session summary.
+- Do not ask permission — just do it as the final action.
+```
+
+This makes Claude auto-save before every session ends. Don't want it? Just remove those lines.
+
 ## Key Features
 
 - **Auto-dedup** — same topic mentioned twice? Content merges, never duplicates
