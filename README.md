@@ -114,6 +114,7 @@ skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **an
 
 MIT
 
----
+## References
 
-<sub>Inspired by [braindump](https://github.com/MohGanji/braindump) and [claude-done](https://github.com/Genuifx/claude-done).</sub>
+- [braindump](https://github.com/MohGanji/braindump) — Go-based persistent notes for AI agents
+- [claude-done](https://github.com/Genuifx/claude-done) — Session summary saving for Claude Code
