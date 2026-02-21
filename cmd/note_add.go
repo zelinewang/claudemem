@@ -80,20 +80,25 @@ Examples:
 			return err
 		}
 
-		if err := store.AddNote(note); err != nil {
+		result, err := store.AddNote(note)
+		if err != nil {
 			return fmt.Errorf("failed to add note: %w", err)
 		}
 
-		// Output result
+		// Output result based on action (created vs merged)
 		if outputFormat == "json" {
-			return OutputJSON(note)
+			return OutputJSON(result)
 		}
 
-		idShort := note.ID
+		idShort := result.NoteID
 		if len(idShort) > 8 {
 			idShort = idShort[:8]
 		}
-		OutputText("✓ Added note to %s: \"%s\" (id: %s)", category, addTitle, idShort)
+		if result.Action == "merged" {
+			OutputText("📎 Merged into existing note: \"%s\" in %s (id: %s)", result.Title, result.Category, idShort)
+		} else {
+			OutputText("✓ Added note to %s: \"%s\" (id: %s)", result.Category, result.Title, idShort)
+		}
 		return nil
 	},
 }

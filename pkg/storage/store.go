@@ -6,9 +6,17 @@ import (
 	"github.com/zelinewang/claudemem/pkg/models"
 )
 
+// AddNoteResult describes what happened when adding a note
+type AddNoteResult struct {
+	Action   string `json:"action"`   // "created", "merged"
+	NoteID   string `json:"note_id"`
+	Title    string `json:"title"`
+	Category string `json:"category"`
+}
+
 // NoteStore defines operations for notes
 type NoteStore interface {
-	AddNote(note *models.Note) error
+	AddNote(note *models.Note) (*AddNoteResult, error)
 	GetNote(id string) (*models.Note, error)
 	GetNoteByTitle(category, title string) (*models.Note, error)
 	ListNotes(category string) ([]*models.Note, error)

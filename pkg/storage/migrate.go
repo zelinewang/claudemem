@@ -64,8 +64,8 @@ func (fs *FileStore) MigrateBraindump(sourceDir string) (*MigrateResult, error) 
 			return nil
 		}
 
-		// Import the note
-		if err := fs.AddNote(note); err != nil {
+		// Import the note (AddNote handles dedup automatically)
+		if _, err := fs.AddNote(note); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("import %s: %v", rel, err))
 			return nil
 		}

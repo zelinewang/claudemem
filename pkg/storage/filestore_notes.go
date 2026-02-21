@@ -12,68 +12,78 @@ import (
 )
 
 // AddNote adds a new note to the store
-func (fs *FileStore) AddNote(note *models.Note) error {
+func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 	// Validate inputs
 	if _, err := sanitizePath(note.Category); err != nil {
-		return fmt.Errorf("invalid category: %w", err)
+		return nil, fmt.Errorf("invalid category: %w", err)
 	}
 	if err := validateTitle(note.Title); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateContent(note.Content); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateTags(note.Tags); err != nil {
-		return err
+		return nil, err
 	}
 
-	// Create category directory if it doesn't exist
+	// ── Dedup check: same category + title → merge instead of duplicate ──
+	var existingID, existingFpath string
+	err := fs.db.QueryRow(`
+		SELECT id, filepath FROM entries
+		WHERE category = ? AND title = ? AND type = 'note'
+		LIMIT 1
+	`, note.Category, note.Title).Scan(&existingID, &existingFpath)
+
+	if err == nil && existingID != note.ID {
+		// Same title exists in same category → MERGE
+		existingNote, readErr := fs.readNoteFile(filepath.Join(fs.baseDir, existingFpath))
+		if readErr == nil {
+			// Append new content with timestamp separator (only if content differs)
+			if existingNote.Content != note.Content && note.Content != "" {
+				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
+				existingNote.Content += separator + note.Content
+			}
+			// Merge tags (deduplicate)
+			existingNote.Tags = mergeTags(existingNote.Tags, note.Tags)
+			existingNote.Updated = time.Now()
+
+			if err := fs.UpdateNote(existingNote); err != nil {
+				return nil, fmt.Errorf("failed to merge note: %w", err)
+			}
+			return &AddNoteResult{
+				Action:   "merged",
+				NoteID:   existingNote.ID,
+				Title:    existingNote.Title,
+				Category: existingNote.Category,
+			}, nil
+		}
+	}
+
+	// ── Normal create path ──
 	categoryDir := filepath.Join(fs.notesDir, note.Category)
 	if err := os.MkdirAll(categoryDir, 0700); err != nil {
-		return fmt.Errorf("failed to create category directory: %w", err)
+		return nil, fmt.Errorf("failed to create category directory: %w", err)
 	}
 
-	// Generate filename from title
 	filename := Slugify(note.Title)
 	notePath := filepath.Join(categoryDir, filename)
 
-	// Belt-and-suspenders: verify path stays within store
 	if err := validateFilepathWithinBase(fs.baseDir, notePath); err != nil {
-		return fmt.Errorf("path validation failed: %w", err)
-	}
-
-	// Handle slug collision: if file already exists with different note, append suffix
-	if _, statErr := os.Stat(notePath); statErr == nil {
-		// File exists — check if it's a different note (not an update of same)
-		existing, parseErr := fs.readNoteFile(notePath)
-		if parseErr == nil && existing.ID != note.ID {
-			base := strings.TrimSuffix(filename, ".md")
-			for i := 2; i <= 100; i++ {
-				candidate := fmt.Sprintf("%s-%d.md", base, i)
-				candidatePath := filepath.Join(categoryDir, candidate)
-				if _, err := os.Stat(candidatePath); os.IsNotExist(err) {
-					notePath = candidatePath
-					filename = candidate
-					break
-				}
-			}
-		}
+		return nil, fmt.Errorf("path validation failed: %w", err)
 	}
 
 	relPath := filepath.Join("notes", note.Category, filename)
 
-	// Format note as markdown
 	content := FormatNoteMarkdown(note)
 
-	// Write file
 	if err := os.WriteFile(notePath, []byte(content), 0600); err != nil {
-		return fmt.Errorf("failed to write note file: %w", err)
+		return nil, fmt.Errorf("failed to write note file: %w", err)
 	}
 
-	// Insert into database
 	tx, err := fs.db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -83,7 +93,7 @@ func (fs *FileStore) AddNote(note *models.Note) error {
 	`, note.ID, note.Type, note.Title, note.Category, strings.Join(note.Tags, " "),
 		relPath, note.Created.Unix(), note.Updated.Unix())
 	if err != nil {
-		return fmt.Errorf("failed to insert entry: %w", err)
+		return nil, fmt.Errorf("failed to insert entry: %w", err)
 	}
 
 	_, err = tx.Exec(`
@@ -91,10 +101,40 @@ func (fs *FileStore) AddNote(note *models.Note) error {
 		VALUES (?, ?, ?, ?)
 	`, note.ID, note.Title, note.Content, strings.Join(note.Tags, " "))
 	if err != nil {
-		return fmt.Errorf("failed to insert into FTS: %w", err)
+		return nil, fmt.Errorf("failed to insert into FTS: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &AddNoteResult{
+		Action:   "created",
+		NoteID:   note.ID,
+		Title:    note.Title,
+		Category: note.Category,
+	}, nil
+}
+
+// mergeTags combines two tag slices, removing duplicates (case-insensitive)
+func mergeTags(existing, new []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, t := range existing {
+		lower := strings.ToLower(strings.TrimSpace(t))
+		if lower != "" && !seen[lower] {
+			seen[lower] = true
+			result = append(result, strings.TrimSpace(t))
+		}
+	}
+	for _, t := range new {
+		lower := strings.ToLower(strings.TrimSpace(t))
+		if lower != "" && !seen[lower] {
+			seen[lower] = true
+			result = append(result, strings.TrimSpace(t))
+		}
+	}
+	return result
 }
 
 // GetNote retrieves a note by ID (supports prefix matching)
