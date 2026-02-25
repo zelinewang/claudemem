@@ -301,11 +301,11 @@ func TestNoteDedupEmptyNewContent(t *testing.T) {
 
 // ========== Session Dedup Tests ==========
 
-func TestSessionDedupSameKey(t *testing.T) {
+func TestSessionDedupSameSessionID(t *testing.T) {
 	store := setupTestStore(t)
 
-	// Create first session — NewSession(title, branch, project, sessionID)
-	session1 := models.NewSession("Test Session 1", "main", "project-a", "sid-1")
+	// Same session_id = same conversation = should MERGE
+	session1 := models.NewSession("Test Session 1", "main", "project-a", "same-conversation-id")
 	session1.Summary = "First version"
 	session1.Tags = []string{"test", "v1"}
 	result1, err := store.SaveSession(session1)
@@ -316,9 +316,8 @@ func TestSessionDedupSameKey(t *testing.T) {
 		t.Errorf("First save: Action = %q, want 'created'", result1.Action)
 	}
 
-	// Save another session with same date+project+branch (dedup key)
-	session2 := models.NewSession("Test Session 2", "main", "project-a", "sid-2")
-	session2.Date = session1.Date // same date as first
+	// Same session_id → same conversation → should merge
+	session2 := models.NewSession("Test Session 2", "main", "project-a", "same-conversation-id")
 	session2.Summary = "Second version"
 	session2.Tags = []string{"test", "v2"}
 	result2, err := store.SaveSession(session2)
@@ -326,12 +325,35 @@ func TestSessionDedupSameKey(t *testing.T) {
 		t.Fatalf("SaveSession() second failed: %v", err)
 	}
 
-	// Should be updated
 	if result2.Action != "updated" {
-		t.Errorf("Second save: Action = %q, want 'updated'", result2.Action)
+		t.Errorf("Same session_id: Action = %q, want 'updated'", result2.Action)
 	}
 	if result2.SessionID != result1.SessionID {
-		t.Errorf("Updated session should preserve same ID: got %q, want %q", result2.SessionID, result1.SessionID)
+		t.Errorf("Same session_id should preserve UUID: got %q, want %q", result2.SessionID, result1.SessionID)
+	}
+}
+
+func TestSessionDedupDifferentSessionID(t *testing.T) {
+	store := setupTestStore(t)
+
+	// Different session_id = different conversation = should NOT merge
+	session1 := models.NewSession("Morning Work", "main", "project-a", "morning-session-001")
+	session1.Summary = "Morning audit"
+	_, err := store.SaveSession(session1)
+	if err != nil {
+		t.Fatalf("SaveSession() first failed: %v", err)
+	}
+
+	session2 := models.NewSession("Afternoon Work", "main", "project-a", "afternoon-session-002")
+	session2.Summary = "Afternoon analysis"
+	result2, err := store.SaveSession(session2)
+	if err != nil {
+		t.Fatalf("SaveSession() second failed: %v", err)
+	}
+
+	// Different session_id → different conversation → separate sessions
+	if result2.Action != "created" {
+		t.Errorf("Different session_id: Action = %q, want 'created' (separate sessions)", result2.Action)
 	}
 }
 
@@ -411,7 +433,8 @@ func TestSessionDedupOverwritesAllContent(t *testing.T) {
 	store := setupTestStore(t)
 
 	// Create first session
-	session1 := models.NewSession("Planning Meeting", "main", "project-a", "sid-1")
+	// Same session_id = same conversation → merge
+	session1 := models.NewSession("Planning Meeting", "main", "project-a", "same-planning-session")
 	session1.Summary = "Version 1 summary"
 	session1.WhatHappened = "What happened v1"
 	session1.Insights = []string{"Insight v1"}
@@ -420,9 +443,8 @@ func TestSessionDedupOverwritesAllContent(t *testing.T) {
 		t.Fatalf("SaveSession() first failed: %v", err)
 	}
 
-	// Update with second session — same date+project+branch triggers dedup
-	session2 := models.NewSession("Updated Planning", "main", "project-a", "sid-2")
-	session2.Date = session1.Date
+	// Same session_id → same conversation → should merge
+	session2 := models.NewSession("Updated Planning", "main", "project-a", "same-planning-session")
 	session2.Summary = "Version 2 summary"
 	session2.WhatHappened = "What happened v2"
 	session2.Insights = []string{"Insight v2"}

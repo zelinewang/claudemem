@@ -175,9 +175,8 @@ func TestFileStore_SessionWithAllNewFields(t *testing.T) {
 func TestFileStore_SessionDedup_UpdatesNewFields(t *testing.T) {
 	store := setupTestStore(t)
 
-	// Create first session
-	session1 := models.NewSession("Work Session", "main", "project", "sid-1")
-	session1.Date = "2024-01-15" // Same date for dedup
+	// Same session_id = same conversation → should merge
+	session1 := models.NewSession("Work Session", "main", "project", "same-work-session")
 	session1.WhatHappened = "version 1 of what happened"
 	session1.Insights = []string{"insight 1"}
 
@@ -186,9 +185,8 @@ func TestFileStore_SessionDedup_UpdatesNewFields(t *testing.T) {
 		t.Fatalf("SaveSession() first failed: %v", err)
 	}
 
-	// Create second session with same dedup key (date+project+branch)
-	session2 := models.NewSession("Work Session Updated", "main", "project", "sid-2")
-	session2.Date = "2024-01-15" // Same date
+	// Same session_id → same conversation → merge
+	session2 := models.NewSession("Work Session Updated", "main", "project", "same-work-session")
 	session2.WhatHappened = "version 2 of what happened"
 	session2.Insights = []string{"insight 1", "insight 2"}
 	session2.RelatedNotes = []models.RelatedNote{

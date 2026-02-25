@@ -26,18 +26,37 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 		return nil, fmt.Errorf("invalid session title: %w", err)
 	}
 
-	// ── Dedup check: same date + project + branch → update existing ──
+	// ── Dedup check ──
+	// Sessions are fundamentally CONVERSATION-based, not topic-based.
+	// Two different conversations on the same day+branch are SEPARATE sessions.
+	//
+	// Dedup strategy:
+	// 1. If session_id is provided → dedup by session_id (same conversation = merge)
+	// 2. If session_id is empty → fall back to date+project+branch (backward compat)
 	var existingID, existingFpath string
-	err := fs.db.QueryRow(`
-		SELECT id, filepath FROM entries
-		WHERE type = 'session' AND date_str = ? AND project = ? AND branch = ?
-		ORDER BY created DESC LIMIT 1
-	`, session.Date, session.Project, session.Branch).Scan(&existingID, &existingFpath)
 
-	if err == nil && existingID != "" {
-		// Existing session found — MERGE content (not overwrite) to prevent data loss.
-		// Different conversations on the same day/branch can't see each other's context,
-		// so a later /wrapup is NOT a superset of an earlier one.
+	if session.SessionID != "" {
+		// Primary dedup: by session_id (conversation-specific)
+		// Same session_id = same /wrapup re-run → merge
+		// Different session_id = different conversation → separate
+		fs.db.QueryRow(`
+			SELECT id, filepath FROM entries
+			WHERE type = 'session' AND session_id = ?
+			ORDER BY created DESC LIMIT 1
+		`, session.SessionID).Scan(&existingID, &existingFpath)
+	}
+
+	if existingID == "" {
+		// Fallback dedup: by date+project+branch (legacy sessions without session_id)
+		fs.db.QueryRow(`
+			SELECT id, filepath FROM entries
+			WHERE type = 'session' AND session_id = '' AND date_str = ? AND project = ? AND branch = ?
+			ORDER BY created DESC LIMIT 1
+		`, session.Date, session.Project, session.Branch).Scan(&existingID, &existingFpath)
+	}
+
+	if existingID != "" {
+		// Existing session found — MERGE content to prevent data loss.
 		oldFullPath := filepath.Join(fs.baseDir, existingFpath)
 
 		// Read existing session to merge with
@@ -119,7 +138,8 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 		}, nil
 	}
 
-	// ── Normal create path ──
+	// ── Normal create path (no dedup match found → new session) ──
+	var err error
 	branch := strings.TrimSuffix(Slugify(session.Branch), ".md")
 	idPrefix := session.ID
 	if len(idPrefix) > 8 {
