@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -s -w -X github.com/zelinewang/claudemem/cmd.Version=$(VERSION)
 BINARY  := claudemem
 
-.PHONY: build install test clean verify-no-network
+.PHONY: build install test feature-test e2e-test clean verify-no-network test-all
 
 # Default build: no network, no sync
 build:
@@ -30,6 +30,24 @@ test: build
 e2e-test: build
 	@echo "Running E2E tests..."
 	@bash ./e2e_test.sh
+
+# Comprehensive black-box feature tests (74 cases across 7 levels)
+feature-test: build
+	@bash tests/feature_test.sh
+
+# Run ALL tests: unit + smoke + e2e + feature
+test-all: build
+	@echo "=== Unit Tests ==="
+	@go test ./... -count=1
+	@echo ""
+	@echo "=== Smoke Test ==="
+	@$(MAKE) test
+	@echo ""
+	@echo "=== E2E Tests ==="
+	@bash ./e2e_test.sh
+	@echo ""
+	@echo "=== Feature Tests ==="
+	@bash tests/feature_test.sh
 
 # Verify default build has no net/http (security)
 verify-no-network: build
