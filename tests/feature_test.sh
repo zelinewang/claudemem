@@ -311,6 +311,25 @@ echo "$CS_MERGED" | grep -q "Cache\|API.*DB" && pass "4.12a custom section merge
 # New custom section should appear
 echo "$CS_MERGED" | grep -q "New Custom Section\|brand new" && pass "4.12b custom section merge: new section added" || fail "4.12b" "new custom section LOST"
 
+# 4.13 PRODUCTION SCENARIO: Two different sessions merged on same day+branch
+# Replicates real bug: Vio audit (morning) + CreatorGPT analysis (afternoon)
+# on same day + same branch("master") → session dedup merges them.
+# All content from BOTH sessions must survive, including custom sections.
+printf '## Summary\nMorning: Vio multi-tenant isolation audit with barbell strategy.\n\n## What Happened\n1. Audited tenant isolation boundaries.\n2. Designed barbell strategy.\n\n## Current System Architecture\n```\n[Gateway] --> [tenant-a]\n[Gateway] --> [tenant-b]\n```\n\n## Slack App Research\nSocket Mode requires dedicated connections per workspace.\n\n## Learning Insights\n- Multi-tenant isolation is complex\n' | \
+  B session save --title "Vio Isolation Audit" --branch "prod-scenario" --project "vispie" --session-id "morning" --tags "vio" > /dev/null 2>&1
+printf '## Summary\nAfternoon: CreatorGPT database analysis, 32 tables, 33 indexes.\n\n## What Happened\n1. Mapped database schema (32 tables, 2.3GB).\n2. Benchmarked 33 indexes.\n\n## Index Performance Map\n| Index | Time |\n|-------|------|\n| idx_email | 2ms |\n\n## Data Quality Snapshot\n| Metric | Value |\n|--------|-------|\n| Creators | 1.2M |\n| With email | 804K |\n\n## Files in Scope\n- backend-fastapi/app/tools/creatorgpt/\n- common/database/models.py\n\n## Learning Insights\n- EXPLAIN ANALYZE before optimizing\n' | \
+  B session save --title "CreatorGPT DB Analysis" --branch "prod-scenario" --project "vispie" --session-id "afternoon" --tags "creatorgpt" > /dev/null 2>&1
+# Verify ALL content from BOTH sessions survives
+PROD=$(B session list --last 1 --branch "prod-scenario" --format json 2>&1)
+echo "$PROD" | grep -q "barbell\|isolation" && pass "4.13a prod scenario: Vio summary preserved" || fail "4.13a" "Vio summary LOST"
+echo "$PROD" | grep -q "Gateway\|tenant" && pass "4.13b prod scenario: Vio Architecture diagram preserved" || fail "4.13b" "Vio Architecture LOST"
+echo "$PROD" | grep -q "Socket Mode\|Slack" && pass "4.13c prod scenario: Vio Slack Research preserved" || fail "4.13c" "Vio Slack Research LOST"
+echo "$PROD" | grep -q "CreatorGPT\|32 tables\|database" && pass "4.13d prod scenario: CG summary preserved" || fail "4.13d" "CG summary LOST"
+echo "$PROD" | grep -q "idx_email\|Index Performance\|2ms" && pass "4.13e prod scenario: CG Index Performance Map preserved" || fail "4.13e" "CG Index Perf LOST"
+echo "$PROD" | grep -q "Data Quality\|804K\|1.2M" && pass "4.13f prod scenario: CG Data Quality Snapshot preserved" || fail "4.13f" "CG Data Quality LOST"
+echo "$PROD" | grep -q "Files in Scope\|creatorgpt\|models.py" && pass "4.13g prod scenario: CG Files in Scope preserved" || fail "4.13g" "CG Files LOST"
+echo "$PROD" | grep -q "EXPLAIN ANALYZE\|Multi-tenant" && pass "4.13h prod scenario: both Insights merged" || fail "4.13h" "Insights incomplete"
+
 # ============================================================================
 # LEVEL 5: CROSS-REFERENCING (6 cases)
 # ============================================================================
