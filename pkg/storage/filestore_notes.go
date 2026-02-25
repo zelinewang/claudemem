@@ -524,6 +524,13 @@ func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (stri
 			continue
 		}
 
+		// Skip fuzzy matching for very short titles (< 2 significant words).
+		// Short titles like "Note 1" and "Note 3" would falsely match because
+		// the only significant word is "note" (100% overlap).
+		if len(newWords) < 2 || len(existingWords) < 2 {
+			continue
+		}
+
 		// Calculate word overlap ratio
 		overlap := wordOverlap(newWords, existingWords)
 		if overlap > bestOverlap && overlap >= 0.5 {
@@ -536,12 +543,25 @@ func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (stri
 	return bestID, bestFpath
 }
 
-// titleWords extracts lowercase significant words from a title (ignoring short words)
+// stopWords are common English words that don't carry semantic meaning for dedup matching
+var stopWords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "from": true,
+	"that": true, "this": true, "are": true, "was": true, "were": true,
+	"been": true, "have": true, "has": true, "had": true, "not": true,
+	"but": true, "all": true, "can": true, "her": true, "his": true,
+	"how": true, "its": true, "may": true, "new": true, "now": true,
+	"old": true, "see": true, "way": true, "who": true, "did": true,
+	"get": true, "let": true, "say": true, "she": true, "too": true,
+	"use": true, "our": true, "out": true,
+}
+
+// titleWords extracts lowercase significant words from a title
+// Ignores short words (< 3 chars) and common stop words
 func titleWords(title string) map[string]bool {
 	words := make(map[string]bool)
 	for _, w := range strings.Fields(strings.ToLower(title)) {
-		// Skip very short words (a, an, the, to, of, etc.)
-		if len(w) >= 3 {
+		// Skip very short words and common stop words
+		if len(w) >= 3 && !stopWords[w] {
 			words[w] = true
 		}
 	}

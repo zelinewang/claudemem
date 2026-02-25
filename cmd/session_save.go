@@ -300,16 +300,16 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 	// Parse related notes from flag (format: "id:title:category")
 	for _, rn := range sessionRelatedNotes {
 		parts := strings.SplitN(rn, ":", 3)
-		if len(parts) >= 1 && parts[0] != "" {
-			note := models.RelatedNote{ID: parts[0]}
-			if len(parts) >= 2 {
-				note.Title = parts[1]
-			}
-			if len(parts) >= 3 {
-				note.Category = parts[2]
-			}
-			session.RelatedNotes = append(session.RelatedNotes, note)
+		if len(parts) < 3 || parts[0] == "" {
+			fmt.Fprintf(os.Stderr, "Warning: --related-notes entry %q should be in format 'id:title:category', skipping\n", rn)
+			continue
 		}
+		note := models.RelatedNote{
+			ID:       parts[0],
+			Title:    parts[1],
+			Category: parts[2],
+		}
+		session.RelatedNotes = append(session.RelatedNotes, note)
 	}
 
 	// Deduplicate RelatedNotes by ID (content parsing and flag may both provide them)

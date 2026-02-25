@@ -470,14 +470,13 @@ func TestTitleWords(t *testing.T) {
 		expected map[string]bool
 	}{
 		{
-			// "the" has len=3 which is >= 3, so it IS included
+			// "the" is a stop word — should be EXCLUDED even though len >= 3
 			input: "The Quick Brown Fox",
 			expected: map[string]bool{
-				"the": true,
 				"quick": true,
 				"brown": true,
 				"fox":   true,
-				// "the" is skipped (< 3 chars)
+				// "the" is filtered as stop word
 			},
 		},
 		{
@@ -497,6 +496,17 @@ func TestTitleWords(t *testing.T) {
 				"api":   true,
 				"oauth": true,
 				"rest":  true,
+			},
+		},
+		{
+			// Stop words filtered: "and", "for", "with" removed
+			input: "Design and Build for Production with Docker",
+			expected: map[string]bool{
+				"design":     true,
+				"build":      true,
+				"production": true,
+				"docker":     true,
+				// "and", "for", "with" are stop words
 			},
 		},
 	}

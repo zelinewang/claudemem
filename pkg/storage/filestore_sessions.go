@@ -46,16 +46,18 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 			// Use existing ID to keep continuity
 			session.ID = existingID
 
-			// Merge Summary: append with timestamp separator
-			if existing.Summary != "" && session.Summary != "" && existing.Summary != session.Summary {
+			// Merge Summary: always append with timestamp separator when both non-empty.
+			// Even identical summaries get a separator — the timestamp itself is valuable
+			// as it records that a second wrap-up happened at this time.
+			if existing.Summary != "" && session.Summary != "" {
 				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
 				session.Summary = existing.Summary + separator + session.Summary
 			} else if session.Summary == "" {
 				session.Summary = existing.Summary
 			}
 
-			// Merge WhatHappened: append with separator
-			if existing.WhatHappened != "" && session.WhatHappened != "" && existing.WhatHappened != session.WhatHappened {
+			// Merge WhatHappened: always append with separator when both non-empty
+			if existing.WhatHappened != "" && session.WhatHappened != "" {
 				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
 				session.WhatHappened = existing.WhatHappened + separator + session.WhatHappened
 			} else if session.WhatHappened == "" {
@@ -363,19 +365,24 @@ func mergeStringSlice(existing, new []string) []string {
 	return result
 }
 
-// mergeFileChanges combines file change lists, deduplicating by path
+// mergeFileChanges combines file change lists, merging descriptions for same paths
 func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
-	seen := make(map[string]bool)
+	seen := make(map[string]int) // path → index in result
 	var result []models.FileChange
 	for _, c := range existing {
-		if !seen[c.Path] {
-			seen[c.Path] = true
+		if _, exists := seen[c.Path]; !exists {
+			seen[c.Path] = len(result)
 			result = append(result, c)
 		}
 	}
 	for _, c := range new {
-		if !seen[c.Path] {
-			seen[c.Path] = true
+		if idx, exists := seen[c.Path]; exists {
+			// Same path — append description if different
+			if result[idx].Description != c.Description {
+				result[idx].Description = result[idx].Description + "; " + c.Description
+			}
+		} else {
+			seen[c.Path] = len(result)
 			result = append(result, c)
 		}
 	}
