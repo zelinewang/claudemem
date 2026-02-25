@@ -289,6 +289,14 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 							}
 						}
 					}
+				default:
+					// Preserve custom sections not in the predefined set
+					if trimmed != "" {
+						session.ExtraSections = append(session.ExtraSections, models.ExtraSection{
+							Name:    name, // preserve original casing
+							Content: trimmed,
+						})
+					}
 				}
 			}
 		} else {

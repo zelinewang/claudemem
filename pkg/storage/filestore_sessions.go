@@ -79,6 +79,9 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 			// Merge RelatedNotes: deduplicate by ID
 			session.RelatedNotes = mergeRelatedNotes(existing.RelatedNotes, session.RelatedNotes)
 
+			// Merge ExtraSections: deduplicate by name, append content for same name
+			session.ExtraSections = mergeExtraSections(existing.ExtraSections, session.ExtraSections)
+
 			// Merge Tags
 			session.Tags = mergeTags(session.Tags, existing.Tags)
 
@@ -422,6 +425,33 @@ func mergeRelatedNotes(existing, new []models.RelatedNote) []models.RelatedNote 
 		if !seen[rn.ID] {
 			seen[rn.ID] = true
 			result = append(result, rn)
+		}
+	}
+	return result
+}
+
+// mergeExtraSections combines custom section lists, appending content for same-named sections
+func mergeExtraSections(existing, new []models.ExtraSection) []models.ExtraSection {
+	seen := make(map[string]int) // name → index in result
+	var result []models.ExtraSection
+	for _, es := range existing {
+		lowerName := strings.ToLower(es.Name)
+		if _, exists := seen[lowerName]; !exists {
+			seen[lowerName] = len(result)
+			result = append(result, es)
+		}
+	}
+	for _, es := range new {
+		lowerName := strings.ToLower(es.Name)
+		if idx, exists := seen[lowerName]; exists {
+			// Same section name — append content if different
+			if result[idx].Content != es.Content {
+				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
+				result[idx].Content = result[idx].Content + separator + es.Content
+			}
+		} else {
+			seen[lowerName] = len(result)
+			result = append(result, es)
 		}
 	}
 	return result

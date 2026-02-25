@@ -212,6 +212,13 @@ func FormatSessionMarkdown(session *models.Session) string {
 		buf.WriteString("\n")
 	}
 
+	// Write any custom/extra sections (preserves user content that doesn't match known headers)
+	for _, es := range session.ExtraSections {
+		buf.WriteString(fmt.Sprintf("## %s\n", es.Name))
+		buf.WriteString(es.Content)
+		buf.WriteString("\n\n")
+	}
+
 	return strings.TrimRight(buf.String(), "\n")
 }
 
@@ -253,7 +260,8 @@ func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 		Insights:     []string{},
 		Questions:    []string{},
 		NextSteps:    []string{},
-		RelatedNotes: []models.RelatedNote{},
+		RelatedNotes:  []models.RelatedNote{},
+		ExtraSections: []models.ExtraSection{},
 	}
 
 	// Parse fields
@@ -376,6 +384,18 @@ func parseSessionBody(session *models.Session, body string) {
 				if rn.ID != "" {
 					session.RelatedNotes = append(session.RelatedNotes, rn)
 				}
+			}
+
+		default:
+			// Preserve any section that doesn't match a known header.
+			// This ensures custom content like "Architecture Diagram",
+			// "Performance Map", "Files in Scope", etc. is never lost.
+			trimmed := strings.TrimSpace(sectionContent)
+			if trimmed != "" {
+				session.ExtraSections = append(session.ExtraSections, models.ExtraSection{
+					Name:    sectionName, // preserve original casing
+					Content: trimmed,
+				})
 			}
 		}
 	}

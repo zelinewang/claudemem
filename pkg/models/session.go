@@ -20,7 +20,7 @@ type Session struct {
 	Tags      []string  `yaml:"tags,flow" json:"tags"`
 	Created   time.Time `yaml:"created" json:"created"`
 
-	// Structured body sections
+	// Structured body sections (known types)
 	Summary      string            `yaml:"-" json:"summary"`
 	WhatHappened string            `yaml:"-" json:"what_happened"`
 	Decisions    []string          `yaml:"-" json:"decisions"`
@@ -30,6 +30,17 @@ type Session struct {
 	Questions    []string          `yaml:"-" json:"questions"`
 	NextSteps    []string          `yaml:"-" json:"next_steps"`
 	RelatedNotes []RelatedNote     `yaml:"-" json:"related_notes"`
+
+	// Custom sections not in the predefined set.
+	// Preserves any ## Section that doesn't match a known header,
+	// such as "Current System Architecture", "Index Performance Map", etc.
+	ExtraSections []ExtraSection   `yaml:"-" json:"extra_sections"`
+}
+
+// ExtraSection represents a custom session section not in the predefined set
+type ExtraSection struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
 }
 
 // FileChange represents a file that was modified
@@ -70,7 +81,8 @@ func NewSession(title, branch, project, sessionID string) *Session {
 		Insights:     []string{},
 		Questions:    []string{},
 		NextSteps:    []string{},
-		RelatedNotes: []RelatedNote{},
+		RelatedNotes:  []RelatedNote{},
+		ExtraSections: []ExtraSection{},
 	}
 }
 
@@ -116,6 +128,12 @@ func (s *Session) GetSearchableContent() string {
 	// Add related note titles for searchability
 	for _, rn := range s.RelatedNotes {
 		parts = append(parts, rn.Title)
+	}
+
+	// Add custom sections content for searchability
+	for _, es := range s.ExtraSections {
+		parts = append(parts, es.Name)
+		parts = append(parts, es.Content)
 	}
 
 	// Add tags

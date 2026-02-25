@@ -293,6 +293,24 @@ SESS_DETAIL=$(B session list --last 1 --branch "fix-auth" --format json 2>&1)
 echo "$SESS_DETAIL" | grep -q "timezone\|JWT\|token" && echo "$SESS_DETAIL" | grep -q "rate limiting\|Afternoon\|afternoon" \
   && pass "4.10 session merge: both summaries preserved" || fail "4.10 merge" "content missing"
 
+# 4.11 CRITICAL: Custom sections preserved (not silently dropped)
+printf '## Summary\nTest custom sections.\n\n## Architecture Diagram\n```\n[API] --> [DB]\n[API] --> [Cache]\n```\n\n## Performance Metrics\n| Metric | Value |\n|--------|-------|\n| p99    | 50ms  |\n\n## What Happened\n1. Tested custom sections.\n\n## Files in Scope\n- main.go\n- config.yaml\n- Dockerfile\n' | \
+  B session save --title "Custom Sections Session" --branch "custom-test" --project "arch" --session-id "cs-1" > /dev/null 2>&1
+# Read the raw session file to verify ALL custom sections survived
+CS_CONTENT=$(B session list --last 1 --branch "custom-test" --format json 2>&1)
+echo "$CS_CONTENT" | grep -q "Architecture Diagram\|architecture diagram" && pass "4.11a custom section: Architecture Diagram preserved" || fail "4.11a" "Architecture Diagram LOST"
+echo "$CS_CONTENT" | grep -q "Performance Metrics\|performance metrics\|p99\|50ms" && pass "4.11b custom section: Performance Metrics preserved" || fail "4.11b" "Performance Metrics LOST"
+echo "$CS_CONTENT" | grep -q "Files in Scope\|files in scope\|main.go\|Dockerfile" && pass "4.11c custom section: Files in Scope preserved" || fail "4.11c" "Files in Scope LOST"
+
+# 4.12 Custom sections survive session merge
+printf '## Summary\nUpdated architecture.\n\n## Architecture Diagram\nUpdated:\n```\n[API] --> [DB] --> [Replica]\n```\n\n## New Custom Section\nThis is brand new.\n' | \
+  B session save --title "Custom Merge Test" --branch "custom-test" --project "arch" --session-id "cs-2" > /dev/null 2>&1
+CS_MERGED=$(B session list --last 1 --branch "custom-test" --format json 2>&1)
+# Original Architecture Diagram content should be preserved
+echo "$CS_MERGED" | grep -q "Cache\|API.*DB" && pass "4.12a custom section merge: original content preserved" || fail "4.12a" "original custom content LOST on merge"
+# New custom section should appear
+echo "$CS_MERGED" | grep -q "New Custom Section\|brand new" && pass "4.12b custom section merge: new section added" || fail "4.12b" "new custom section LOST"
+
 # ============================================================================
 # LEVEL 5: CROSS-REFERENCING (6 cases)
 # ============================================================================
