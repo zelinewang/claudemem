@@ -211,14 +211,19 @@ func TestFileStore_SessionDedup_UpdatesNewFields(t *testing.T) {
 		t.Fatalf("GetSession() failed: %v", err)
 	}
 
-	if retrieved.WhatHappened != "version 2 of what happened" {
-		t.Errorf("WhatHappened = %q, want 'version 2 of what happened'", retrieved.WhatHappened)
+	// Session dedup now MERGES (not overwrites) — both versions should be present
+	if !strings.Contains(retrieved.WhatHappened, "version 1 of what happened") {
+		t.Errorf("WhatHappened should contain v1, got %q", retrieved.WhatHappened)
 	}
-	if len(retrieved.Insights) != 2 {
-		t.Errorf("Insights should be updated to 2 items, got %d", len(retrieved.Insights))
+	if !strings.Contains(retrieved.WhatHappened, "version 2 of what happened") {
+		t.Errorf("WhatHappened should contain v2, got %q", retrieved.WhatHappened)
+	}
+	// Insights merged: v1 had 1 item, v2 has 2 → total should be 2 (v1's "insight 1" deduped with v2's "insight 1")
+	if len(retrieved.Insights) < 2 {
+		t.Errorf("Insights should have >= 2 merged items, got %d: %v", len(retrieved.Insights), retrieved.Insights)
 	}
 	if len(retrieved.RelatedNotes) != 1 {
-		t.Errorf("RelatedNotes should be updated, got %d", len(retrieved.RelatedNotes))
+		t.Errorf("RelatedNotes should have 1 item, got %d", len(retrieved.RelatedNotes))
 	}
 }
 

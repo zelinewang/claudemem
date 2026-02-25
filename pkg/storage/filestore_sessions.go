@@ -35,16 +35,62 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 	`, session.Date, session.Project, session.Branch).Scan(&existingID, &existingFpath)
 
 	if err == nil && existingID != "" {
-		// Existing session found — update it
+		// Existing session found — MERGE content (not overwrite) to prevent data loss.
+		// Different conversations on the same day/branch can't see each other's context,
+		// so a later /wrapup is NOT a superset of an earlier one.
 		oldFullPath := filepath.Join(fs.baseDir, existingFpath)
 
-		// Use the existing ID to keep continuity
-		session.ID = existingID
+		// Read existing session to merge with
+		existing, readErr := fs.readSessionFile(oldFullPath)
+		if readErr == nil {
+			// Use existing ID to keep continuity
+			session.ID = existingID
 
-		// Generate new markdown with updated content
+			// Merge Summary: append with timestamp separator
+			if existing.Summary != "" && session.Summary != "" && existing.Summary != session.Summary {
+				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
+				session.Summary = existing.Summary + separator + session.Summary
+			} else if session.Summary == "" {
+				session.Summary = existing.Summary
+			}
+
+			// Merge WhatHappened: append with separator
+			if existing.WhatHappened != "" && session.WhatHappened != "" && existing.WhatHappened != session.WhatHappened {
+				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
+				session.WhatHappened = existing.WhatHappened + separator + session.WhatHappened
+			} else if session.WhatHappened == "" {
+				session.WhatHappened = existing.WhatHappened
+			}
+
+			// Merge list fields: deduplicate by content
+			session.Decisions = mergeStringSlice(existing.Decisions, session.Decisions)
+			session.Insights = mergeStringSlice(existing.Insights, session.Insights)
+			session.Questions = mergeStringSlice(existing.Questions, session.Questions)
+			session.NextSteps = mergeStringSlice(existing.NextSteps, session.NextSteps)
+
+			// Merge Changes: deduplicate by path
+			session.Changes = mergeFileChanges(existing.Changes, session.Changes)
+
+			// Merge Problems: deduplicate by problem text
+			session.Problems = mergeProblems(existing.Problems, session.Problems)
+
+			// Merge RelatedNotes: deduplicate by ID
+			session.RelatedNotes = mergeRelatedNotes(existing.RelatedNotes, session.RelatedNotes)
+
+			// Merge Tags
+			session.Tags = mergeTags(session.Tags, existing.Tags)
+
+			// Preserve original title if new one is empty
+			if session.Title == "" {
+				session.Title = existing.Title
+			}
+		} else {
+			// Can't read existing — fall through to overwrite
+			session.ID = existingID
+		}
+
+		// Write merged content
 		markdown := FormatSessionMarkdown(session)
-
-		// Overwrite the file
 		if err := os.WriteFile(oldFullPath, []byte(markdown), 0600); err != nil {
 			return nil, fmt.Errorf("failed to update session file: %w", err)
 		}
@@ -287,6 +333,91 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 	}
 
 	return sessions, nil
+}
+
+// readSessionFile reads and parses a session markdown file
+func (fs *FileStore) readSessionFile(fullPath string) (*models.Session, error) {
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read session file: %w", err)
+	}
+	return ParseSessionMarkdown(data)
+}
+
+// mergeStringSlice combines two string slices, deduplicating by exact content
+func mergeStringSlice(existing, new []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, s := range existing {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	for _, s := range new {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// mergeFileChanges combines file change lists, deduplicating by path
+func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
+	seen := make(map[string]bool)
+	var result []models.FileChange
+	for _, c := range existing {
+		if !seen[c.Path] {
+			seen[c.Path] = true
+			result = append(result, c)
+		}
+	}
+	for _, c := range new {
+		if !seen[c.Path] {
+			seen[c.Path] = true
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+// mergeProblems combines problem/solution lists, deduplicating by problem text
+func mergeProblems(existing, new []models.ProblemSolution) []models.ProblemSolution {
+	seen := make(map[string]bool)
+	var result []models.ProblemSolution
+	for _, p := range existing {
+		if !seen[p.Problem] {
+			seen[p.Problem] = true
+			result = append(result, p)
+		}
+	}
+	for _, p := range new {
+		if !seen[p.Problem] {
+			seen[p.Problem] = true
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// mergeRelatedNotes combines related note lists, deduplicating by ID
+func mergeRelatedNotes(existing, new []models.RelatedNote) []models.RelatedNote {
+	seen := make(map[string]bool)
+	var result []models.RelatedNote
+	for _, rn := range existing {
+		if !seen[rn.ID] {
+			seen[rn.ID] = true
+			result = append(result, rn)
+		}
+	}
+	for _, rn := range new {
+		if !seen[rn.ID] {
+			seen[rn.ID] = true
+			result = append(result, rn)
+		}
+	}
+	return result
 }
 
 // Helper to parse date range strings like "7d" or "today"

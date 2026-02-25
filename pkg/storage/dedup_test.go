@@ -437,16 +437,26 @@ func TestSessionDedupOverwritesAllContent(t *testing.T) {
 		t.Fatalf("GetSession() failed: %v", err)
 	}
 
-	// All content should be from v2 (overwrite, not append)
-	if retrieved.Summary != "Version 2 summary" {
-		t.Errorf("Summary = %q, want v2 (overwrite)", retrieved.Summary)
+	// Session dedup now MERGES content (not overwrites) to prevent data loss
+	// Summary should contain BOTH versions with separator
+	if !strings.Contains(retrieved.Summary, "Version 1 summary") {
+		t.Errorf("Summary should contain v1, got %q", retrieved.Summary)
 	}
-	if retrieved.WhatHappened != "What happened v2" {
-		t.Errorf("WhatHappened = %q, want v2", retrieved.WhatHappened)
+	if !strings.Contains(retrieved.Summary, "Version 2 summary") {
+		t.Errorf("Summary should contain v2, got %q", retrieved.Summary)
 	}
-	if len(retrieved.Insights) != 1 || retrieved.Insights[0] != "Insight v2" {
-		t.Errorf("Insights = %v, want ['Insight v2']", retrieved.Insights)
+	// WhatHappened should contain both versions
+	if !strings.Contains(retrieved.WhatHappened, "What happened v1") {
+		t.Errorf("WhatHappened should contain v1, got %q", retrieved.WhatHappened)
 	}
+	if !strings.Contains(retrieved.WhatHappened, "What happened v2") {
+		t.Errorf("WhatHappened should contain v2, got %q", retrieved.WhatHappened)
+	}
+	// Insights should be merged (both v1 and v2)
+	if len(retrieved.Insights) != 2 {
+		t.Errorf("Insights should have 2 items (merged), got %v", retrieved.Insights)
+	}
+	// Title uses the newest
 	if retrieved.Title != "Updated Planning" {
 		t.Errorf("Title = %q, want 'Updated Planning'", retrieved.Title)
 	}
