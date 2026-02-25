@@ -147,6 +147,12 @@ func FormatSessionMarkdown(session *models.Session) string {
 		buf.WriteString("\n\n")
 	}
 
+	if session.WhatHappened != "" {
+		buf.WriteString("## What Happened\n")
+		buf.WriteString(session.WhatHappened)
+		buf.WriteString("\n\n")
+	}
+
 	if len(session.Decisions) > 0 {
 		buf.WriteString("## Key Decisions\n")
 		for _, decision := range session.Decisions {
@@ -172,6 +178,14 @@ func FormatSessionMarkdown(session *models.Session) string {
 		buf.WriteString("\n")
 	}
 
+	if len(session.Insights) > 0 {
+		buf.WriteString("## Learning Insights\n")
+		for _, insight := range session.Insights {
+			buf.WriteString(fmt.Sprintf("- %s\n", insight))
+		}
+		buf.WriteString("\n")
+	}
+
 	if len(session.Questions) > 0 {
 		buf.WriteString("## Questions Raised\n")
 		for _, question := range session.Questions {
@@ -184,6 +198,16 @@ func FormatSessionMarkdown(session *models.Session) string {
 		buf.WriteString("## Next Steps\n")
 		for _, step := range session.NextSteps {
 			buf.WriteString(fmt.Sprintf("- [ ] %s\n", step))
+		}
+		buf.WriteString("\n")
+	}
+
+	if len(session.RelatedNotes) > 0 {
+		buf.WriteString("## Related Notes\n")
+		for _, rn := range session.RelatedNotes {
+			// Store full ID in markdown (not truncated) to preserve data integrity.
+			// CLI display truncates to 8 chars for UX, but storage should be lossless.
+			buf.WriteString(fmt.Sprintf("- `%s` — \"%s\" (%s)\n", rn.ID, rn.Title, rn.Category))
 		}
 		buf.WriteString("\n")
 	}
@@ -221,13 +245,15 @@ func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 
 	// Create session from frontmatter
 	session := &models.Session{
-		Type:      "session",
-		Tags:      []string{},
-		Decisions: []string{},
-		Changes:   []models.FileChange{},
-		Problems:  []models.ProblemSolution{},
-		Questions: []string{},
-		NextSteps: []string{},
+		Type:         "session",
+		Tags:         []string{},
+		Decisions:    []string{},
+		Changes:      []models.FileChange{},
+		Problems:     []models.ProblemSolution{},
+		Insights:     []string{},
+		Questions:    []string{},
+		NextSteps:    []string{},
+		RelatedNotes: []models.RelatedNote{},
 	}
 
 	// Parse fields
@@ -322,6 +348,14 @@ func parseSessionBody(session *models.Session, body string) {
 				}
 			}
 
+		case "what happened":
+			session.WhatHappened = strings.TrimSpace(sectionContent)
+
+		case "learning insights", "insights":
+			for _, line := range parseListItems(sectionContent) {
+				session.Insights = append(session.Insights, line)
+			}
+
 		case "questions raised", "questions":
 			for _, line := range parseListItems(sectionContent) {
 				session.Questions = append(session.Questions, line)
@@ -335,8 +369,55 @@ func parseSessionBody(session *models.Session, body string) {
 				line = strings.TrimPrefix(line, "[X] ")
 				session.NextSteps = append(session.NextSteps, line)
 			}
+
+		case "related notes":
+			for _, line := range parseListItems(sectionContent) {
+				rn := parseRelatedNoteLine(line)
+				if rn.ID != "" {
+					session.RelatedNotes = append(session.RelatedNotes, rn)
+				}
+			}
 		}
 	}
+}
+
+// parseRelatedNoteLine parses a line like: `id-prefix` — "Title" (category)
+func parseRelatedNoteLine(line string) models.RelatedNote {
+	rn := models.RelatedNote{}
+
+	// Try to extract ID from backticks: `id-prefix`
+	if idx := strings.Index(line, "`"); idx >= 0 {
+		endIdx := strings.Index(line[idx+1:], "`")
+		if endIdx >= 0 {
+			rn.ID = line[idx+1 : idx+1+endIdx]
+			line = line[idx+1+endIdx+1:] // rest after closing backtick
+		}
+	}
+
+	// Try to extract title from quotes: "Title"
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "—")
+	line = strings.TrimPrefix(line, "-")
+	line = strings.TrimSpace(line)
+
+	if idx := strings.Index(line, "\""); idx >= 0 {
+		endIdx := strings.Index(line[idx+1:], "\"")
+		if endIdx >= 0 {
+			rn.Title = line[idx+1 : idx+1+endIdx]
+			line = line[idx+1+endIdx+1:]
+		}
+	}
+
+	// Try to extract category from parentheses: (category)
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "(") {
+		endIdx := strings.Index(line, ")")
+		if endIdx > 0 {
+			rn.Category = line[1:endIdx]
+		}
+	}
+
+	return rn
 }
 
 // splitIntoSections splits markdown body into sections by headers

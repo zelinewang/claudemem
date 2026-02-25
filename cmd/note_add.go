@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	addTitle   string
-	addContent string
-	addTags    string
+	addTitle     string
+	addContent   string
+	addTags      string
+	addSessionID string
 )
 
 // noteAddCmd represents the note add command
@@ -74,6 +75,11 @@ Examples:
 			note.Tags = tags
 		}
 
+		// Link to session if provided
+		if addSessionID != "" {
+			note.Metadata["session_id"] = addSessionID
+		}
+
 		// Get store and add note
 		store, err := getStore()
 		if err != nil {
@@ -108,4 +114,5 @@ func init() {
 	noteAddCmd.Flags().StringVar(&addTitle, "title", "", "Note title")
 	noteAddCmd.Flags().StringVar(&addContent, "content", "", "Note content")
 	noteAddCmd.Flags().StringVar(&addTags, "tags", "", "Comma-separated tags")
+	noteAddCmd.Flags().StringVar(&addSessionID, "session-id", "", "Link this note to a session ID for cross-referencing")
 }

@@ -3,24 +3,31 @@ description: Search persistent memory for relevant context about a topic
 argument-hint: Topic or keyword to search for
 ---
 
-Search claudemem for anything related to the given topic.
+Search claudemem for anything related to the given topic, showing cross-references between notes and sessions.
 
 ## Instructions
 
-1. If the user provided a topic/keyword, search for it:
+1. **If a topic/keyword was provided**, search for it:
 ```bash
-claudemem search "<topic>" --format json
+claudemem search "<topic>" --format json --limit 10
 ```
 
-2. If no topic provided, show recent activity:
+2. **If no topic provided**, show recent activity overview:
 ```bash
 claudemem session list --last 5
 claudemem stats
 ```
 
-3. Present the results in a clear, organized format:
-   - Group by type (notes vs sessions)
+3. **Present results** in a clear, organized format:
+   - Group by type: **Notes** (knowledge) and **Sessions** (work reports)
    - Show the most relevant content inline (not just titles)
-   - If a note is highly relevant, read the full content with `claudemem note get <id>`
+   - For highly relevant results, read full content: `claudemem note get <id>` or `claudemem session get <id>`
 
-4. Offer to dive deeper into any specific result if the user wants more detail.
+4. **Show cross-references** when available:
+   - If a **note** has `metadata.session_id` → mention which session it came from:
+     `"From session: <session-title> (<date>)"`
+   - If a **session** has `Related Notes` → list the notes extracted from it:
+     `"Notes extracted: <note-title-1>, <note-title-2>"`
+   - Offer to look up the linked session/notes for deeper context
+
+5. **Offer to dive deeper** into any specific result if the user wants more detail.

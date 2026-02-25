@@ -12,18 +12,21 @@ import (
 )
 
 var (
-	sessionTitle     string
-	sessionBranch    string
-	sessionProject   string
-	sessionSessionID string
-	sessionTags      string
-	sessionContent   string
-	sessionSummary   string
-	sessionDecisions []string
-	sessionChanges   []string
-	sessionProblems  []string
-	sessionQuestions []string
-	sessionNextSteps []string
+	sessionTitle        string
+	sessionBranch       string
+	sessionProject      string
+	sessionSessionID    string
+	sessionTags         string
+	sessionContent      string
+	sessionSummary      string
+	sessionWhatHappened string
+	sessionDecisions    []string
+	sessionChanges      []string
+	sessionProblems     []string
+	sessionInsights     []string
+	sessionQuestions    []string
+	sessionNextSteps   []string
+	sessionRelatedNotes []string
 )
 
 var sessionSaveCmd = &cobra.Command{
@@ -68,8 +71,11 @@ func init() {
 	sessionSaveCmd.Flags().StringSliceVar(&sessionDecisions, "decisions", []string{}, "Key decisions (can be used multiple times)")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionChanges, "changes", []string{}, "File changes in format 'path:description'")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionProblems, "problems", []string{}, "Problems in format 'problem:solution'")
+	sessionSaveCmd.Flags().StringSliceVar(&sessionInsights, "insights", []string{}, "Learning insights")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionQuestions, "questions", []string{}, "Questions raised")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionNextSteps, "next-steps", []string{}, "Next steps")
+	sessionSaveCmd.Flags().StringVar(&sessionWhatHappened, "what-happened", "", "What happened narrative")
+	sessionSaveCmd.Flags().StringSliceVar(&sessionRelatedNotes, "related-notes", []string{}, "Related note refs in format 'id:title:category'")
 
 	sessionSaveCmd.MarkFlagRequired("title")
 	sessionSaveCmd.MarkFlagRequired("branch")
@@ -101,11 +107,13 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 	if sessionContent != "" {
 		// Content provided via flag
 		bodyContent = sessionContent
-	} else if sessionSummary != "" || len(sessionDecisions) > 0 || len(sessionChanges) > 0 ||
-		len(sessionProblems) > 0 || len(sessionQuestions) > 0 || len(sessionNextSteps) > 0 {
+	} else if sessionSummary != "" || sessionWhatHappened != "" || len(sessionDecisions) > 0 || len(sessionChanges) > 0 ||
+		len(sessionProblems) > 0 || len(sessionInsights) > 0 || len(sessionQuestions) > 0 || len(sessionNextSteps) > 0 {
 		// Structured input provided
 		session.Summary = sessionSummary
+		session.WhatHappened = sessionWhatHappened
 		session.Decisions = sessionDecisions
+		session.Insights = sessionInsights
 		session.Questions = sessionQuestions
 		session.NextSteps = sessionNextSteps
 
@@ -176,6 +184,8 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 				switch strings.ToLower(name) {
 				case "summary":
 					session.Summary = trimmed
+				case "what happened":
+					session.WhatHappened = trimmed
 				case "key decisions", "decisions":
 					for _, line := range strings.Split(trimmed, "\n") {
 						line = strings.TrimSpace(line)
@@ -197,6 +207,41 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 							}
 						}
 					}
+				case "problems & solutions", "problems and solutions":
+					lines := strings.Split(trimmed, "\n")
+					for i := 0; i < len(lines); i++ {
+						line := strings.TrimSpace(lines[i])
+						if !strings.HasPrefix(line, "- ") {
+							continue
+						}
+						item := strings.TrimPrefix(line, "- ")
+						problem := strings.TrimPrefix(item, "**Problem**: ")
+						problem = strings.TrimPrefix(problem, "Problem: ")
+						solution := ""
+						if i+1 < len(lines) {
+							next := strings.TrimSpace(lines[i+1])
+							if strings.Contains(next, "Solution:") {
+								solution = strings.TrimPrefix(next, "  **Solution**: ")
+								solution = strings.TrimPrefix(solution, "  Solution: ")
+								solution = strings.TrimPrefix(solution, "**Solution**: ")
+								solution = strings.TrimPrefix(solution, "Solution: ")
+								i++
+							}
+						}
+						if problem != "" {
+							session.Problems = append(session.Problems, models.ProblemSolution{
+								Problem:  problem,
+								Solution: solution,
+							})
+						}
+					}
+				case "learning insights", "insights":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							session.Insights = append(session.Insights, strings.TrimPrefix(line, "- "))
+						}
+					}
 				case "next steps":
 					for _, line := range strings.Split(trimmed, "\n") {
 						line = strings.TrimSpace(line)
@@ -214,12 +259,70 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 							session.Questions = append(session.Questions, strings.TrimPrefix(line, "- "))
 						}
 					}
+				case "related notes":
+					for _, line := range strings.Split(trimmed, "\n") {
+						line = strings.TrimSpace(line)
+						if strings.HasPrefix(line, "- ") {
+							item := strings.TrimPrefix(line, "- ")
+							// Parse format: `id` — "title" (category)
+							rn := models.RelatedNote{}
+							if idx := strings.Index(item, "`"); idx >= 0 {
+								endIdx := strings.Index(item[idx+1:], "`")
+								if endIdx >= 0 {
+									rn.ID = item[idx+1 : idx+1+endIdx]
+								}
+							}
+							if idx := strings.Index(item, "\""); idx >= 0 {
+								endIdx := strings.Index(item[idx+1:], "\"")
+								if endIdx >= 0 {
+									rn.Title = item[idx+1 : idx+1+endIdx]
+								}
+							}
+							if idx := strings.LastIndex(item, "("); idx >= 0 {
+								endIdx := strings.Index(item[idx:], ")")
+								if endIdx > 0 {
+									rn.Category = item[idx+1 : idx+endIdx]
+								}
+							}
+							if rn.ID != "" {
+								session.RelatedNotes = append(session.RelatedNotes, rn)
+							}
+						}
+					}
 				}
 			}
 		} else {
 			// No section headers — treat entire content as summary
 			session.Summary = strings.TrimSpace(bodyContent)
 		}
+	}
+
+	// Parse related notes from flag (format: "id:title:category")
+	for _, rn := range sessionRelatedNotes {
+		parts := strings.SplitN(rn, ":", 3)
+		if len(parts) >= 1 && parts[0] != "" {
+			note := models.RelatedNote{ID: parts[0]}
+			if len(parts) >= 2 {
+				note.Title = parts[1]
+			}
+			if len(parts) >= 3 {
+				note.Category = parts[2]
+			}
+			session.RelatedNotes = append(session.RelatedNotes, note)
+		}
+	}
+
+	// Deduplicate RelatedNotes by ID (content parsing and flag may both provide them)
+	if len(session.RelatedNotes) > 0 {
+		seen := make(map[string]bool)
+		var deduped []models.RelatedNote
+		for _, rn := range session.RelatedNotes {
+			if !seen[rn.ID] {
+				seen[rn.ID] = true
+				deduped = append(deduped, rn)
+			}
+		}
+		session.RelatedNotes = deduped
 	}
 
 	// Save session (auto-dedup: same date+project+branch → update)

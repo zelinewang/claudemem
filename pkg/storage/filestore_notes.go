@@ -40,6 +40,15 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 			}
 			// Merge tags (deduplicate)
 			existingNote.Tags = mergeTags(existingNote.Tags, note.Tags)
+			// Merge metadata (new values override, existing keys preserved)
+			if existingNote.Metadata == nil {
+				existingNote.Metadata = make(map[string]string)
+			}
+			for k, v := range note.Metadata {
+				if v != "" {
+					existingNote.Metadata[k] = v
+				}
+			}
 			existingNote.Updated = time.Now()
 
 			if err := fs.UpdateNote(existingNote); err != nil {

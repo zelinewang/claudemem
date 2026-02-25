@@ -1,223 +1,203 @@
 ---
 name: claudemem
 description: >
-  Persistent memory that survives across conversations. Automatically remembers important context
-  (API specs, decisions, quirks, preferences) and saves session summaries. Searches past knowledge
-  before starting new tasks. Responds naturally to phrases like "remember this", "what do you know
-  about...", "save this session", or "what did we do last time". All local, zero network.
+  Persistent memory that survives across conversations. Automatically captures important knowledge
+  as notes during work, and saves detailed session reports on demand. Searches past context before
+  new tasks. Notes and sessions are cross-linked for full traceability. All local, zero network.
 ---
 
-# claudemem — Your Persistent Memory
+# claudemem — Persistent Memory for AI Agents
 
-Memory that carries across conversations. Automatically captures important knowledge during work
-and saves structured session summaries when you're done. Searches past context before new tasks.
+Memory that carries across conversations. Two simple behaviors:
+1. **Automatically** save knowledge notes as you work (silent, no user action needed)
+2. **On command** (`/wrapup`) save a detailed session report with cross-linked notes
 
 ## Slash Commands
 
-- **/wrap-up** — End-of-session save: extracts ALL important knowledge + saves session summary in one step. Deduplicates automatically.
-- **/save-session** — Save only the session summary (without extracting notes)
-- **/recall [topic]** — Search persistent memory for a topic, or show recent activity
+- **/wrapup** [title] — End-of-session: extract knowledge notes + save detailed session report + cross-link everything. This is the primary command.
+- **/recall** [topic] — Search persistent memory for a topic, or show recent activity with cross-references.
 
 ## Natural Trigger Phrases
 
 These natural phrases also activate memory operations:
 
-**To save knowledge:**
-- "remember this" / "save this" / "note this down" / "keep this in mind"
-
-**To search memory:**
-- "what do you remember about..." / "do you recall..." / "what do we know about..."
-
-**To wrap up (save everything):**
-- "wrap up" / "let's wrap up" / "save everything" — triggers /wrap-up (notes + session)
-- "save this session" / "summarize what we did" — triggers /save-session (session only)
-
-**To recall past work:**
-- "what did we do last time" / "show me recent sessions" / "what happened with [topic]"
+**Save knowledge:** "remember this" / "save this" / "note this down"
+**Search memory:** "what do you remember about..." / "do you recall..." / "what do we know about..."
+**Wrap up:** "wrap up" / "let's wrap up" / "save everything" — triggers /wrapup
+**Recall work:** "what did we do last time" / "show me recent sessions"
 
 ## Setup
 
-Before first use, verify the CLI is installed. If `claudemem` is not found on PATH, install it:
+Before first use, verify the CLI is installed. If `claudemem` is not found on PATH:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zelinewang/claudemem/main/skills/claudemem/scripts/install.sh | bash
 ```
 
-Or run the bundled installer:
+Verify: `claudemem --version`
+
+## CLI Reference
 
 ```bash
-bash "SKILL_DIR/scripts/install.sh"
-```
-
-After installation, verify with `claudemem --version`.
-
-## Commands
-
-```bash
-# Notes (knowledge fragments)
-claudemem note add <category> --title "..." --content "..." --tags "tag1,tag2"
-claudemem note search "query" [--in category] [--tag tags]
+# Notes (knowledge fragments — saved automatically during conversation)
+claudemem note add <category> --title "..." --content "..." --tags "..." [--session-id "..."]
+claudemem note search "query" [--in category] [--tag tags] [--format json]
 claudemem note list [category]
 claudemem note get <id>
-claudemem note update <id> --content "..." [--title "..."] [--tags "..."]
 claudemem note append <id> "additional content"
+claudemem note update <id> --content "..." [--title "..."] [--tags "..."]
 claudemem note delete <id>
 claudemem note categories
 claudemem note tags
 
-# Sessions (conversation summaries)
-claudemem session save --title "..." --branch "..." --project "..." --session-id "..." --content "..."
+# Sessions (detailed work reports — saved via /wrapup command)
+claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--related-notes "id:title:cat,..."]
 claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X]
 claudemem session search "query" [--branch X]
 claudemem session get <id>
 
-# Unified search (across notes AND sessions)
-claudemem search "query" [--type note|session] [--limit N]
+# Unified search (notes + sessions together, with cross-references)
+claudemem search "query" [--type note|session] [--limit N] [--format json]
 
-# Statistics
-claudemem stats
-
-# Configuration
-claudemem config set/get/list/delete <key> [value]
-
-# Data portability
-claudemem export [output-file]              # Backup as tar.gz
-claudemem import <archive-file>             # Restore from backup (auto-reindexes)
-
-# Data integrity
-claudemem verify                            # Check DB-file consistency
-claudemem repair                            # Fix orphaned entries
+# Utilities
+claudemem stats                              # Storage statistics
+claudemem config set/get/list/delete <key>   # Configuration
+claudemem export [output-file]               # Backup as tar.gz
+claudemem import <archive-file>              # Restore from backup
+claudemem verify                             # Check consistency
+claudemem repair                             # Fix orphaned entries
 ```
 
 Add `--format json` to any command for structured output.
 
 ## Autonomous Behavior
 
-### Recommended: Auto Wrap-Up Before Session Ends
+### 1. Auto-Save Notes (During Conversation — Silent)
 
-If the user has enabled auto wrap-up in their CLAUDE.md, automatically execute /wrap-up before the conversation ends:
-1. Extract unsaved knowledge fragments → save as notes (with dedup)
-2. Generate session summary → save as session
-3. Show brief report of what was saved
+Automatically capture knowledge **without asking** during normal conversation. This is your
+primary ongoing responsibility — save knowledge AS you discover it, not just at wrap-up.
 
-### Auto-Save Notes (Silent + Brief Indicator)
-
-Automatically capture knowledge **without asking** during normal conversation. After saving,
-add a brief indicator at the end of your response so the user knows what was captured:
-
+After saving, show a brief indicator:
 ```
-[📝 Saved: "TikTok Rate Limits" → api-specs]
+[noted: "TikTok Rate Limits" -> api-specs]
 ```
 
 **What to auto-save** (proactive, no user prompt needed):
-* API specs, field mappings, rate limits, endpoint details
-* Technical decisions with rationale (why X over Y)
-* Integration quirks, gotchas, workarounds
-* Resolved bugs and their root causes
-* Configuration requirements, thresholds, defaults
-* User preferences and project conventions
-* Important URLs, endpoints, environment configs
-* Domain terminology, aliases, abbreviations
-* External context shared by the user (specs, docs, requirements)
-* Business requirements, use cases, user stories
-* System constraints, assumptions, exclusions
+- API specs, endpoints, rate limits, field mappings, authentication quirks
+- Technical decisions with rationale (why X over Y, what alternatives were rejected)
+- Bug root causes, symptoms, diagnosis patterns, and fix approaches
+- Configuration quirks, gotchas, environment-specific settings
+- Architecture patterns discovered or established
+- User preferences: coding style, naming conventions, workflow preferences
+- Integration quirks: third-party API behaviors, undocumented features, workarounds
+- Important commands, URLs, environment configs that someone would need again
 
-**How to auto-save gracefully:**
+**How to auto-save:**
 1. Identify the knowledge fragment during your normal response
-2. Choose an appropriate category (create new if none fits)
-3. Before saving, quickly search to avoid duplicates: `claudemem note search "keyword" --format json`
-4. If related note exists: `claudemem note append <id> "new info"` instead of creating duplicate
-5. Save: `claudemem note add <category> --title "..." --content "..." --tags "..."`
-6. Show the indicator: `[📝 Saved: "<title>" → <category>]`
+2. Choose an appropriate category (check existing: `claudemem note categories`)
+3. Search to avoid duplicates: `claudemem note search "<key phrase>" --format json`
+4. If related note exists: `claudemem note append <id> "new info"`
+5. If new: `claudemem note add <category> --title "..." --content "..." --tags "..."`
+6. Show indicator: `[noted: "<title>" -> <category>]`
 
 **Do NOT auto-save:**
-* Temporary debugging output or transient state
-* File paths or code snippets without context
-* General programming knowledge available in docs
-* Information the user is likely to change immediately
+- Temporary debugging output or transient state
+- Bare file paths or code without explanatory context
+- General programming knowledge available in docs
+- Information the user said is temporary or will change immediately
 
-### Auto-Search Before Tasks (Silent)
+### 2. Auto-Search Before Tasks (Silent)
 
-Search memory at the start of tasks that might benefit from prior context:
-* Before implementing a feature in a domain previously discussed
-* When working with an API or system previously documented
-* Before making architectural decisions
+At the **start of any significant task**, search memory for relevant prior context:
 
-Search silently. If relevant results found, mention them briefly:
-```
-[🔍 Found related memory: "TikTok Rate Limits" — rate limit is 100/min]
+```bash
+claudemem search "<relevant keywords>" --format json --limit 5
 ```
 
-### Save Sessions (On Request via /save-session or Natural Phrase)
+Search when:
+- Starting work on a feature, API, or system previously discussed
+- Before making architectural decisions
+- When the user references something that might have been captured before
+- When working with a codebase or domain you've worked on before
 
-Session summaries are saved when the user explicitly asks — via `/save-session` command
-or natural phrases like "save this session" or "wrap up". Do NOT auto-save sessions
-without the user's request, as they may want to continue the conversation.
+If relevant results found, mention briefly:
+```
+[memory: Found "TikTok Rate Limits" — rate limit is 100/min per API key]
+```
 
-### Workflow Rules
+If a note has `session_id` in its metadata, you can look up the full session for more context:
+```bash
+claudemem session search "<session-id-prefix>" --format json
+```
 
-1. **Before saving**: search existing content first — update or append if related note exists
-2. **Before working**: search for relevant context that may inform the current task
-3. **Merge related information** under existing categories/titles when possible
-4. **Preserve existing content** unless contradicted by new information
-5. **Focus on evergreen knowledge**, not transient conversation artifacts
+### 3. Session Reports (ONLY via /wrapup — Never Auto)
 
-## Session Summary Template
+Session reports are **only** saved when the user explicitly requests via `/wrapup` command
+or natural phrases like "wrap up" or "let's wrap up".
 
-When saving a session, generate content following this structure. Include ALL sections —
-these enable daily/weekly/monthly reporting for personal review and team updates.
+**NEVER auto-save sessions** — the user may want to continue the conversation.
+
+## Cross-Referencing System
+
+Notes and sessions are bidirectionally linked:
+
+- **Note -> Session**: When saving a note during `/wrapup`, include `--session-id "$SESSION_REF"`.
+  This stores the session reference in the note's metadata. When viewing a note with `note get`,
+  the `metadata.session_id` field shows which session it came from.
+
+- **Session -> Notes**: When saving a session, include `--related-notes "id:title:category,..."`.
+  This creates a `## Related Notes` section in the session. When viewing a session, you can see
+  all knowledge extracted from it.
+
+This enables:
+- From any note: trace back to the session that produced it (context/rationale)
+- From any session: see all knowledge extracted (what was learned)
+- In search results: follow cross-references to get the full picture
+
+## Session Report Template
+
+When `/wrapup` is invoked, the session report must include these sections:
 
 ```markdown
 ## Summary
-One or two paragraphs describing what was accomplished.
+2-3 substantial paragraphs: goal, what was accomplished, current state, significance.
 
-## Purpose & Goals
-- Why this work was done
-- What problem it solves
+## What Happened
+Numbered paragraphs (not bullets). Each phase: what was done, why, specific file paths/commands,
+cause-and-effect, decisions made. Minimum 3 phases.
 
 ## Key Decisions
-- Decision 1 with rationale
-- Decision 2 with rationale
+- **Decision**: Rationale. Alternatives considered and why rejected.
 
 ## What Changed
-- `path/to/file.py` — Description of change
-
-## Achievements & Impact
-- What was delivered (quantify where possible: lines of code, tests passing, performance gains)
-- Significance of the work (e.g., "unblocked 3 downstream features", "reduced query time from 2s to 10ms")
+- `path/to/file` — What changed and why
 
 ## Problems & Solutions
-- **Problem**: Description of issue
-  **Solution**: How it was resolved
+- **Problem**: Root cause (not just symptoms)
+  **Solution**: Fix and why it works
 
-## Questions Raised
-- Open question needing future attention
+## Learning Insights
+- Reusable knowledge for future sessions
+
+## Related Notes
+- `note-id` — "Title" (category)
 
 ## Next Steps
-- [ ] First follow-up task
-- [ ] Second follow-up task
+- [ ] Concrete actionable follow-up
 ```
-
-Sessions always include: `--project` (which codebase), `--branch` (which feature), `--tags` (for filtering).
-This enables reviewing by: `claudemem session list --date today` (daily), `--date-range 7d` (weekly), `--date-range 30d` (monthly).
 
 ## What NOT to Capture
 
-* Temporary debugging sessions or transient state
-* File paths or code snippets without context
-* General programming knowledge available in docs
-* Meta-commentary about the conversation itself
-* Information that changes frequently without lasting value
+- Temporary debugging sessions or transient state
+- File paths or code snippets without explanatory context
+- General programming knowledge available in docs
+- Meta-commentary about the conversation itself
+- Information that changes frequently without lasting value
 
-## Data Portability
+## Data & Storage
 
-All data stored at `~/.claudemem/` as plain Markdown files with YAML frontmatter.
-SQLite FTS5 index is a rebuildable cache — only the Markdown files matter.
+All data at `~/.claudemem/` as plain Markdown files with YAML frontmatter.
+SQLite FTS5 index provides sub-10ms full-text search (rebuildable cache).
 
 **Backup**: `claudemem export backup.tar.gz`
-**Restore**: `claudemem import backup.tar.gz` (auto-rebuilds search index)
-
-## Storage
-
-`~/.claudemem/` — Plain text Markdown files organized by type (notes/ and sessions/).
-FTS5 SQLite index for sub-10ms full-text search. File permissions: 0600/0700.
+**Restore**: `claudemem import backup.tar.gz` (auto-rebuilds index)

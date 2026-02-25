@@ -26,6 +26,11 @@ test: build
 	rm -rf $$STORE && \
 	echo "✓ All smoke tests passed"
 
+# End-to-end CLI tests
+e2e-test: build
+	@echo "Running E2E tests..."
+	@bash ./e2e_test.sh
+
 # Verify default build has no net/http (security)
 verify-no-network: build
 	@if go tool nm $(BINARY) 2>/dev/null | grep -q 'net/http\.'; then \

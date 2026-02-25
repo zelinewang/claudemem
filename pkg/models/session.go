@@ -21,12 +21,15 @@ type Session struct {
 	Created   time.Time `yaml:"created" json:"created"`
 
 	// Structured body sections
-	Summary    string           `yaml:"-" json:"summary"`
-	Decisions  []string         `yaml:"-" json:"decisions"`
-	Changes    []FileChange     `yaml:"-" json:"changes"`
-	Problems   []ProblemSolution `yaml:"-" json:"problems"`
-	Questions  []string         `yaml:"-" json:"questions"`
-	NextSteps  []string         `yaml:"-" json:"next_steps"`
+	Summary      string            `yaml:"-" json:"summary"`
+	WhatHappened string            `yaml:"-" json:"what_happened"`
+	Decisions    []string          `yaml:"-" json:"decisions"`
+	Changes      []FileChange      `yaml:"-" json:"changes"`
+	Problems     []ProblemSolution  `yaml:"-" json:"problems"`
+	Insights     []string          `yaml:"-" json:"insights"`
+	Questions    []string          `yaml:"-" json:"questions"`
+	NextSteps    []string          `yaml:"-" json:"next_steps"`
+	RelatedNotes []RelatedNote     `yaml:"-" json:"related_notes"`
 }
 
 // FileChange represents a file that was modified
@@ -39,6 +42,13 @@ type FileChange struct {
 type ProblemSolution struct {
 	Problem  string `json:"problem"`
 	Solution string `json:"solution"`
+}
+
+// RelatedNote represents a note linked to this session
+type RelatedNote struct {
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Category string `json:"category"`
 }
 
 // NewSession creates a new session with generated ID and current timestamp
@@ -54,11 +64,13 @@ func NewSession(title, branch, project, sessionID string) *Session {
 		SessionID: sessionID,
 		Tags:      []string{},
 		Created:   now,
-		Decisions: []string{},
-		Changes:   []FileChange{},
-		Problems:  []ProblemSolution{},
-		Questions: []string{},
-		NextSteps: []string{},
+		Decisions:    []string{},
+		Changes:      []FileChange{},
+		Problems:     []ProblemSolution{},
+		Insights:     []string{},
+		Questions:    []string{},
+		NextSteps:    []string{},
+		RelatedNotes: []RelatedNote{},
 	}
 }
 
@@ -69,6 +81,11 @@ func (s *Session) GetSearchableContent() string {
 	// Add basic fields
 	parts = append(parts, s.Title)
 	parts = append(parts, s.Summary)
+
+	// Add what happened narrative
+	if s.WhatHappened != "" {
+		parts = append(parts, s.WhatHappened)
+	}
 
 	// Add decisions
 	for _, d := range s.Decisions {
@@ -85,11 +102,21 @@ func (s *Session) GetSearchableContent() string {
 		parts = append(parts, fmt.Sprintf("%s %s", p.Problem, p.Solution))
 	}
 
+	// Add insights
+	for _, i := range s.Insights {
+		parts = append(parts, i)
+	}
+
 	// Add questions
 	parts = append(parts, s.Questions...)
 
 	// Add next steps
 	parts = append(parts, s.NextSteps...)
+
+	// Add related note titles for searchability
+	for _, rn := range s.RelatedNotes {
+		parts = append(parts, rn.Title)
+	}
 
 	// Add tags
 	parts = append(parts, strings.Join(s.Tags, " "))
