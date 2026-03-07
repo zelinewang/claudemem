@@ -433,20 +433,37 @@ func mergeProblems(existing, new []models.ProblemSolution) []models.ProblemSolut
 	return result
 }
 
-// mergeRelatedNotes combines related note lists, deduplicating by ID
+// relatedNoteKey normalizes a note ID to 8-char prefix for dedup.
+// Markdown parsing stores 8-char prefixes; auto-discovery stores full UUIDs.
+// Both must match as the same note.
+func relatedNoteKey(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// mergeRelatedNotes combines related note lists, deduplicating by 8-char ID prefix.
+// When a prefix and full UUID collide, the longer (more complete) ID is kept.
 func mergeRelatedNotes(existing, new []models.RelatedNote) []models.RelatedNote {
-	seen := make(map[string]bool)
+	seen := make(map[string]int) // prefix -> index in result
 	var result []models.RelatedNote
 	for _, rn := range existing {
-		if !seen[rn.ID] {
-			seen[rn.ID] = true
+		key := relatedNoteKey(rn.ID)
+		if idx, exists := seen[key]; !exists {
+			seen[key] = len(result)
 			result = append(result, rn)
+		} else if len(rn.ID) > len(result[idx].ID) {
+			result[idx] = rn // prefer longer (full UUID) over prefix
 		}
 	}
 	for _, rn := range new {
-		if !seen[rn.ID] {
-			seen[rn.ID] = true
+		key := relatedNoteKey(rn.ID)
+		if idx, exists := seen[key]; !exists {
+			seen[key] = len(result)
 			result = append(result, rn)
+		} else if len(rn.ID) > len(result[idx].ID) {
+			result[idx] = rn // prefer longer (full UUID) over prefix
 		}
 	}
 	return result

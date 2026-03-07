@@ -329,14 +329,21 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Deduplicate RelatedNotes by ID (content parsing, flag, and auto-discovery may all provide them)
+	// Deduplicate RelatedNotes by 8-char ID prefix.
+	// Markdown parsing stores prefixes, auto-discovery stores full UUIDs — both must match.
 	if len(session.RelatedNotes) > 0 {
-		seen := make(map[string]bool)
+		seen := make(map[string]int) // 8-char prefix -> index in deduped
 		var deduped []models.RelatedNote
 		for _, rn := range session.RelatedNotes {
-			if !seen[rn.ID] {
-				seen[rn.ID] = true
+			key := rn.ID
+			if len(key) > 8 {
+				key = key[:8]
+			}
+			if idx, exists := seen[key]; !exists {
+				seen[key] = len(deduped)
 				deduped = append(deduped, rn)
+			} else if len(rn.ID) > len(deduped[idx].ID) {
+				deduped[idx] = rn // prefer full UUID over prefix
 			}
 		}
 		session.RelatedNotes = deduped
