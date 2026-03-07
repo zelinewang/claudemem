@@ -153,46 +153,47 @@ func validateProblemsHaveSolutions(sections map[string]string) SessionValidation
 		}
 	}
 
-	// Parse problems and solutions
+	// Only validate the structured template format: "- **Problem**: X\n  **Solution**: Y"
+	// Free-form formats (e.g., "- **title**: description") are valid and not checked for structure.
+	// We specifically catch the bug where **Solution**: exists but has empty content.
 	lines := strings.Split(content, "\n")
-	problemCount := 0
 	emptyCount := 0
 	var emptyProblems []string
 
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 
-		// Detect problem lines
-		if strings.HasPrefix(line, "- **Problem**:") || strings.HasPrefix(line, "- Problem:") {
-			problemCount++
-			problemText := strings.TrimPrefix(line, "- **Problem**: ")
-			problemText = strings.TrimPrefix(problemText, "- Problem: ")
-
-			// Look for the solution on next line(s)
-			solutionFound := false
-			for j := i + 1; j < len(lines) && j <= i+3; j++ {
-				sLine := strings.TrimSpace(lines[j])
-				if strings.Contains(sLine, "Solution") && strings.Contains(sLine, ":") {
-					// Extract solution text after ":"
-					parts := strings.SplitN(sLine, ":", 2)
-					if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-						solutionFound = true
+		// Only check lines that explicitly use **Solution**: pattern
+		if strings.Contains(line, "**Solution**:") || strings.Contains(line, "**Solution**:") {
+			// Extract text after "**Solution**:"
+			idx := strings.Index(line, "Solution**:")
+			if idx >= 0 {
+				after := strings.TrimSpace(line[idx+len("Solution**:"):])
+				if after == "" {
+					// Empty solution — find the problem it belongs to
+					problemText := ""
+					for j := i - 1; j >= 0 && j >= i-3; j-- {
+						pLine := strings.TrimSpace(lines[j])
+						if strings.Contains(pLine, "**Problem**:") || strings.Contains(pLine, "Problem:") {
+							problemText = pLine
+							break
+						}
 					}
-					break
-				}
-				// If we hit another Problem or section header, stop looking
-				if strings.HasPrefix(sLine, "- **Problem**") || strings.HasPrefix(sLine, "## ") {
-					break
+					if len(problemText) > 60 {
+						problemText = problemText[:60] + "..."
+					}
+					emptyCount++
+					emptyProblems = append(emptyProblems, problemText)
 				}
 			}
+		}
+	}
 
-			if !solutionFound {
-				emptyCount++
-				if len(problemText) > 50 {
-					problemText = problemText[:50] + "..."
-				}
-				emptyProblems = append(emptyProblems, problemText)
-			}
+	problemCount := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- **Problem**:") || strings.HasPrefix(trimmed, "- Problem:") {
+			problemCount++
 		}
 	}
 
