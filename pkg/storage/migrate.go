@@ -301,8 +301,12 @@ func (fs *FileStore) Reindex() (int, error) {
 			}
 
 			rel, _ := filepath.Rel(fs.baseDir, path)
-			fs.db.Exec(`INSERT OR IGNORE INTO entries (id, type, title, category, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				note.ID, "note", note.Title, note.Category,
+			sessionID := ""
+			if note.Metadata != nil {
+				sessionID = note.Metadata["session_id"]
+			}
+			fs.db.Exec(`INSERT OR IGNORE INTO entries (id, type, title, category, session_id, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				note.ID, "note", note.Title, note.Category, sessionID,
 				strings.Join(note.Tags, " "), rel,
 				note.Created.Unix(), note.Updated.Unix())
 			fs.db.Exec(`INSERT OR IGNORE INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,

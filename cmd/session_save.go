@@ -320,7 +320,16 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		session.RelatedNotes = append(session.RelatedNotes, note)
 	}
 
-	// Deduplicate RelatedNotes by ID (content parsing and flag may both provide them)
+	// Auto-discover notes linked to this session via session_id in DB
+	if sessionSessionID != "" {
+		discoveredNotes, discoverErr := store.FindNotesBySessionRef(sessionSessionID)
+		if discoverErr == nil && len(discoveredNotes) > 0 {
+			session.RelatedNotes = append(session.RelatedNotes, discoveredNotes...)
+			fmt.Fprintf(os.Stderr, "Auto-discovered %d related notes\n", len(discoveredNotes))
+		}
+	}
+
+	// Deduplicate RelatedNotes by ID (content parsing, flag, and auto-discovery may all provide them)
 	if len(session.RelatedNotes) > 0 {
 		seen := make(map[string]bool)
 		var deduped []models.RelatedNote

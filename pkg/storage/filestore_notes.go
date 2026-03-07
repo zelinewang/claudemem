@@ -91,10 +91,10 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`
-		INSERT INTO entries (id, type, title, category, tags, filepath, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, note.ID, note.Type, note.Title, note.Category, strings.Join(note.Tags, " "),
-		relPath, note.Created.Unix(), note.Updated.Unix())
+		INSERT INTO entries (id, type, title, category, session_id, tags, filepath, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, note.ID, note.Type, note.Title, note.Category, noteSessionID(note),
+		strings.Join(note.Tags, " "), relPath, note.Created.Unix(), note.Updated.Unix())
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert entry: %w", err)
 	}
@@ -286,9 +286,9 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to delete from FTS: %w", err)
 	}
-	_, err = tx.Exec(`INSERT INTO entries (id, type, title, category, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		note.ID, note.Type, note.Title, note.Category, strings.Join(note.Tags, " "),
-		newRelPath, note.Created.Unix(), note.Updated.Unix())
+	_, err = tx.Exec(`INSERT INTO entries (id, type, title, category, session_id, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		note.ID, note.Type, note.Title, note.Category, noteSessionID(note),
+		strings.Join(note.Tags, " "), newRelPath, note.Created.Unix(), note.Updated.Unix())
 	if err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to insert new entry: %w", err)
@@ -585,6 +585,39 @@ func wordOverlap(a, b map[string]bool) float64 {
 		return 0
 	}
 	return float64(shared) / float64(smaller)
+}
+
+// noteSessionID safely extracts session_id from note metadata
+func noteSessionID(note *models.Note) string {
+	if note.Metadata == nil {
+		return ""
+	}
+	return note.Metadata["session_id"]
+}
+
+// FindNotesBySessionRef finds all notes linked to a session via metadata.session_id
+func (fs *FileStore) FindNotesBySessionRef(sessionRef string) ([]models.RelatedNote, error) {
+	if sessionRef == "" {
+		return nil, nil
+	}
+	rows, err := fs.db.Query(`
+		SELECT id, title, category FROM entries
+		WHERE type = 'note' AND session_id = ?
+	`, sessionRef)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query notes by session ref: %w", err)
+	}
+	defer rows.Close()
+
+	var notes []models.RelatedNote
+	for rows.Next() {
+		var rn models.RelatedNote
+		if err := rows.Scan(&rn.ID, &rn.Title, &rn.Category); err != nil {
+			continue
+		}
+		notes = append(notes, rn)
+	}
+	return notes, nil
 }
 
 // noteHasAllTags checks if a note has all required tags (case-insensitive)

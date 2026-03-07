@@ -25,6 +25,7 @@ type NoteStore interface {
 	SearchNotes(query, category string, tags []string) ([]*models.Note, error)
 	GetCategories() ([]CategoryInfo, error)
 	GetTags() ([]string, error)
+	FindNotesBySessionRef(sessionRef string) ([]models.RelatedNote, error)
 }
 
 // SessionStore defines operations for sessions

@@ -73,7 +73,8 @@ func (fs *FileStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
 	CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date_str);
 	CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
-	CREATE INDEX IF NOT EXISTS idx_entries_branch ON entries(branch);`
+	CREATE INDEX IF NOT EXISTS idx_entries_branch ON entries(branch);
+	CREATE INDEX IF NOT EXISTS idx_entries_session_id ON entries(session_id);`
 
 	if _, err := fs.db.Exec(entriesSchema); err != nil {
 		return fmt.Errorf("failed to create entries table: %w", err)
