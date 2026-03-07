@@ -491,7 +491,9 @@ func (fs *FileStore) ResolveSessionID(project string, window time.Duration) (str
 	`, today, project).Scan(&sessionID, &updatedStr)
 
 	if err == nil && sessionID != "" {
-		updated, parseErr := time.Parse("2006-01-02T15:04:05Z", updatedStr)
+		// ParseInLocation: DB stores local time with literal "Z" suffix (not real UTC).
+		// Must parse in local timezone to match time.Now() for correct duration comparison.
+		updated, parseErr := time.ParseInLocation("2006-01-02T15:04:05Z", updatedStr, time.Local)
 		if parseErr == nil && time.Since(updated) < window {
 			return sessionID, true, nil
 		}
