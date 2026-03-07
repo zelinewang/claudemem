@@ -34,6 +34,7 @@ type SessionStore interface {
 	GetSession(id string) (*models.Session, error)
 	ListSessions(opts SessionListOpts) ([]*models.Session, error)
 	SearchSessions(query string, opts SessionListOpts) ([]*models.Session, error)
+	ResolveSessionID(project string, window time.Duration) (string, bool, error)
 }
 
 // UnifiedStore combines all store interfaces

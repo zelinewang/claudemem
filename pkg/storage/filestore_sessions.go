@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -475,6 +477,34 @@ func mergeExtraSections(existing, new []models.ExtraSection) []models.ExtraSecti
 		}
 	}
 	return result
+}
+
+// ResolveSessionID finds today's active session for a project within a time window,
+// or generates a new session ID. Returns (sessionID, isExisting, error).
+func (fs *FileStore) ResolveSessionID(project string, window time.Duration) (string, bool, error) {
+	today := time.Now().Format("2006-01-02")
+	var sessionID, updatedStr string
+	err := fs.db.QueryRow(`
+		SELECT session_id, updated FROM entries
+		WHERE type = 'session' AND date_str = ? AND project = ? AND session_id != ''
+		ORDER BY updated DESC LIMIT 1
+	`, today, project).Scan(&sessionID, &updatedStr)
+
+	if err == nil && sessionID != "" {
+		updated, parseErr := time.Parse("2006-01-02T15:04:05Z", updatedStr)
+		if parseErr == nil && time.Since(updated) < window {
+			return sessionID, true, nil
+		}
+	}
+
+	// Generate new session ID
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		// Fallback to timestamp-only if crypto/rand fails
+		return time.Now().Format("20060102-150405"), false, nil
+	}
+	newID := fmt.Sprintf("%s-%x", time.Now().Format("20060102-150405"), b)
+	return newID, false, nil
 }
 
 // Helper to parse date range strings like "7d" or "today"
