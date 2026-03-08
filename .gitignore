@@ -29,3 +29,9 @@ Thumbs.db
 # Project specific
 /test-data/
 /tmp/
+
+# OpenSpec archives (large over time)
+openspec/changes/archive/
+
+# Worktrees
+.worktrees/

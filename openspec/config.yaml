@@ -1,0 +1,37 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.24, cobra CLI framework, modernc.org/sqlite (pure Go, CGO_ENABLED=0)
+  Storage: Dual-write Markdown files + SQLite FTS5 index
+  API style: CLI (no HTTP API), slash commands via Claude Code skills
+  Testing: Go test + bash E2E tests (e2e_test.sh) + feature tests (tests/feature_test.sh)
+  Auth: N/A (local-only tool, no network)
+  Deploy: Single static binary via Makefile, goreleaser for multi-platform
+  Key conventions:
+    - Zero network by default (verified via `make verify-no-network`)
+    - CGO_ENABLED=0 (portable binary, no C deps)
+    - Human-readable Markdown storage (source of truth)
+    - Backward-compatible data format (existing notes/sessions must survive upgrades)
+    - Feature flags for optional capabilities (config.json)
+
+rules:
+  proposal:
+    - Include rollback plan if scope > 1 day of work
+    - Name changes by purpose (add-compact-search, not feature-1)
+    - Reference existing patterns in codebase before inventing new ones
+    - Verify zero-network constraint is preserved
+  specs:
+    - Use Given/When/Then scenario format
+    - Include error and edge case scenarios
+    - Reference existing openspec/specs/ before creating new domains
+    - Use RFC 2119 keywords (MUST/SHALL/SHOULD/MAY) for requirement strength
+  design:
+    - Provide 2-3 approaches with trade-offs and recommendation
+    - Verify CGO_ENABLED=0 compatibility for any new dependency
+    - Consider backward compatibility for data format changes
+  tasks:
+    - Each task completable in 2-5 minutes
+    - Include TDD steps: write failing test, implement, verify
+    - Group related tasks under headings with hierarchical numbering
+    - Include commit step after each task group
+    - Run `make test` after each task to verify no regression
