@@ -58,6 +58,10 @@ claudemem session get <id>
 
 # Unified search (notes + sessions together, with cross-references)
 claudemem search "query" [--type note|session] [--limit N] [--format json]
+claudemem search "query" --compact [--format json]   # Token-efficient: IDs + titles only
+
+# Context injection (for SessionStart hooks)
+claudemem context inject [--limit N] [--project path] [--format json]
 
 # Utilities
 claudemem stats                              # Storage statistics
@@ -70,7 +74,39 @@ claudemem repair                             # Fix orphaned entries
 
 Add `--format json` to any command for structured output.
 
+## Hook Configuration
+
+For automatic context injection at session start, add to your Claude Code settings:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "claudemem context inject --limit 5",
+        "timeout": 10000
+      }]
+    }]
+  }
+}
+```
+
+This automatically loads recent notes and sessions into context when a new conversation begins.
+
 ## Autonomous Behavior
+
+### 0. Session Context (At Conversation Start — Automatic via Hook)
+
+If the SessionStart hook is configured, recent context is automatically injected.
+If NOT configured, manually run at the start of significant tasks:
+
+```bash
+claudemem context inject --limit 5
+```
+
+This provides continuity: recent notes, session summaries, and stats.
 
 ### 1. Auto-Save Notes (During Conversation — Silent)
 
@@ -111,7 +147,11 @@ After saving, show a brief indicator:
 At the **start of any significant task**, search memory for relevant prior context:
 
 ```bash
-claudemem search "<relevant keywords>" --format json --limit 5
+# Quick scan first (token-efficient)
+claudemem search "<relevant keywords>" --compact --format json --limit 5
+
+# If a result looks relevant, get full content
+claudemem note get <id>
 ```
 
 Search when:

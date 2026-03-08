@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	searchType  string
-	searchLimit int
+	searchType    string
+	searchLimit   int
+	searchCompact bool
 )
 
 var searchCmd = &cobra.Command{
@@ -18,10 +19,14 @@ var searchCmd = &cobra.Command{
 	Short: "Search notes and sessions",
 	Long: `Search through notes and sessions using full-text search.
 
+Use --compact for token-efficient output (IDs + titles only).
+Default returns full results with previews and metadata.
+
 Examples:
   claudemem search "api rate limits"
   claudemem search "tiktok" --type note
-  claudemem search "build" --type session --limit 10`,
+  claudemem search "build" --type session --limit 10
+  claudemem search "auth" --compact --format json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
@@ -38,15 +43,52 @@ Examples:
 			return fmt.Errorf("search failed: %w", err)
 		}
 
-		// Output results
-		if outputFormat == "json" {
-			return OutputJSON(results)
-		}
-
-		// Text output
 		if len(results) == 0 {
+			if outputFormat == "json" {
+				return OutputJSON([]struct{}{})
+			}
 			OutputText("No results found for query: %s", query)
 			return nil
+		}
+
+		// Compact output: minimal data for token efficiency
+		if searchCompact {
+			if outputFormat == "json" {
+				type CompactResult struct {
+					ID    string  `json:"id"`
+					Type  string  `json:"type"`
+					Title string  `json:"title"`
+					Score float64 `json:"score"`
+				}
+				compact := make([]CompactResult, len(results))
+				for i, r := range results {
+					compact[i] = CompactResult{
+						ID:    r.ID,
+						Type:  r.Type,
+						Title: r.Title,
+						Score: r.Score,
+					}
+				}
+				return OutputJSON(compact)
+			}
+			// Compact text
+			for i, r := range results {
+				icon := "📝"
+				if r.Type == "session" {
+					icon = "📋"
+				}
+				idShort := r.ID
+				if len(idShort) > 8 {
+					idShort = idShort[:8]
+				}
+				OutputText("%d. %s %s — %s (%.2f)", i+1, icon, idShort, r.Title, r.Score)
+			}
+			return nil
+		}
+
+		// Full output (default)
+		if outputFormat == "json" {
+			return OutputJSON(results)
 		}
 
 		OutputText("Found %d results for \"%s\":\n", len(results), query)
@@ -99,5 +141,6 @@ func getUnifiedStore() (storage.UnifiedStore, error) {
 func init() {
 	searchCmd.Flags().StringVar(&searchType, "type", "", "Filter by type: note, session")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 20, "Maximum number of results")
+	searchCmd.Flags().BoolVar(&searchCompact, "compact", false, "Compact output (ID + title + score only)")
 	rootCmd.AddCommand(searchCmd)
 }
