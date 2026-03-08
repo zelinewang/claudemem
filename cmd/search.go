@@ -9,9 +9,14 @@ import (
 )
 
 var (
-	searchType    string
-	searchLimit   int
-	searchCompact bool
+	searchType     string
+	searchLimit    int
+	searchCompact  bool
+	searchFilterCategory string
+	searchFilterTags     string
+	searchAfter    string
+	searchBefore   string
+	searchSort     string
 )
 
 var searchCmd = &cobra.Command{
@@ -19,13 +24,15 @@ var searchCmd = &cobra.Command{
 	Short: "Search notes and sessions",
 	Long: `Search through notes and sessions using full-text search.
 
+Supports faceted filtering by category, tags, and date range.
+Results are ranked by relevance with a recency boost (recent entries score higher).
 Use --compact for token-efficient output (IDs + titles only).
-Default returns full results with previews and metadata.
 
 Examples:
   claudemem search "api rate limits"
   claudemem search "tiktok" --type note
-  claudemem search "build" --type session --limit 10
+  claudemem search "auth" --category api --tag security
+  claudemem search "deploy" --after 2025-01-01 --sort date
   claudemem search "auth" --compact --format json`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,8 +44,27 @@ Examples:
 			return err
 		}
 
-		// Perform search
-		results, err := store.Search(query, searchType, searchLimit)
+		// Parse tags
+		var tags []string
+		if searchFilterTags != "" {
+			for _, t := range strings.Split(searchFilterTags, ",") {
+				if trimmed := strings.TrimSpace(t); trimmed != "" {
+					tags = append(tags, trimmed)
+				}
+			}
+		}
+
+		// Perform search with faceted options
+		results, err := store.SearchWithOpts(storage.SearchOpts{
+			Query:    query,
+			Type:     searchType,
+			Category: searchFilterCategory,
+			Tags:     tags,
+			After:    searchAfter,
+			Before:   searchBefore,
+			Sort:     searchSort,
+			Limit:    searchLimit,
+		})
 		if err != nil {
 			return fmt.Errorf("search failed: %w", err)
 		}
@@ -142,5 +168,10 @@ func init() {
 	searchCmd.Flags().StringVar(&searchType, "type", "", "Filter by type: note, session")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 20, "Maximum number of results")
 	searchCmd.Flags().BoolVar(&searchCompact, "compact", false, "Compact output (ID + title + score only)")
+	searchCmd.Flags().StringVar(&searchFilterCategory, "category", "", "Filter by category")
+	searchCmd.Flags().StringVar(&searchFilterTags, "tag", "", "Filter by tags (comma-separated)")
+	searchCmd.Flags().StringVar(&searchAfter, "after", "", "Filter entries after date (YYYY-MM-DD)")
+	searchCmd.Flags().StringVar(&searchBefore, "before", "", "Filter entries before date (YYYY-MM-DD)")
+	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")
 	rootCmd.AddCommand(searchCmd)
 }

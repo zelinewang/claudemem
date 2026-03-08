@@ -37,11 +37,24 @@ type SessionStore interface {
 	ResolveSessionID(project string, window time.Duration) (string, bool, error)
 }
 
+// SearchOpts provides filtering and sorting options for unified search
+type SearchOpts struct {
+	Query    string
+	Type     string // "note", "session", or "" for all
+	Category string
+	Tags     []string
+	After    string // YYYY-MM-DD
+	Before   string // YYYY-MM-DD
+	Sort     string // "relevance" (default), "date", "updated"
+	Limit    int
+}
+
 // UnifiedStore combines all store interfaces
 type UnifiedStore interface {
 	NoteStore
 	SessionStore
 	Search(query, entryType string, limit int) ([]SearchResult, error)
+	SearchWithOpts(opts SearchOpts) ([]SearchResult, error)
 	Stats() (*StoreStats, error)
 	MigrateBraindump(sourceDir string) (*MigrateResult, error)
 	MigrateClaudeDone(sourceDir string) (*MigrateResult, error)
