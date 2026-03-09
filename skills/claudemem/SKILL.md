@@ -56,6 +56,7 @@ claudemem search "query" --compact              # IDs + titles only
 claudemem search "query" --category X --tag Y   # Faceted filters
 claudemem search "query" --after 2025-01-01     # Date range
 claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
+claudemem search "query" --semantic             # TF-IDF vector similarity (feature-flagged)
 
 # Context
 claudemem context inject [--limit N] [--project path]  # Recent notes + sessions overview
@@ -63,8 +64,14 @@ claudemem context inject [--limit N] [--project path]  # Recent notes + sessions
 # Code
 claudemem code outline <file>                   # Structural symbols (Go/Python/TS/Rust)
 
+# Knowledge Graph
+claudemem graph                                 # DOT format (pipe to Graphviz)
+claudemem graph --format json                   # Adjacency list
+
 # Utilities
-claudemem stats | config set/get/list/delete | export | import | verify | repair
+claudemem stats [--top-accessed]                # Storage stats + access tracking
+claudemem reindex [--vectors] [--all]           # Rebuild search/vector indexes
+claudemem config set/get/list/delete | export | import | verify | repair
 ```
 
 ---
@@ -142,10 +149,15 @@ These vary by context. Use the trade-offs below to make your own judgment call.
 | `search "X" --compact --format json` | Quick scan: "do I know anything about this?" | ~100 tokens |
 | `search "X" --format json` | Need full context with previews | ~2000 tokens |
 | `search "X" --category Y --tag Z` | Know the domain, want precise results | varies |
+| `search "X" --semantic` | Find conceptually related content (no exact keyword match needed) | ~100-2000 |
 | `note get <id>` | Need complete content of one specific note | ~500 tokens |
 | `context inject` | Session start: recent knowledge overview | ~1-2KB |
+| `stats --top-accessed` | See which notes are most frequently used (ROI tracking) | ~200 tokens |
+| `graph --format json` | Understand note ↔ session relationship structure | ~500-2000 |
 
 Default sort uses relevance with recency boost (entries <7 days get up to 20% score boost, decaying over 30 days). Use `--sort date` for chronological ordering.
+
+**Semantic search** (`--semantic`): Uses TF-IDF vectors + cosine similarity combined with FTS5 via Reciprocal Rank Fusion. Finds conceptually related content even without exact keyword matches. Requires feature flag: `config set features.semantic_search true` + `reindex --vectors`.
 
 ### Code Intelligence
 
