@@ -111,6 +111,9 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 		return nil, err
 	}
 
+	// Index for semantic search (best effort, no-op if disabled)
+	fs.IndexNoteVector(note.ID, note.Title, note.Content, note.Tags)
+
 	return &AddNoteResult{
 		Action:   "created",
 		NoteID:   note.ID,
@@ -317,6 +320,9 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 		os.Remove(tmpPath)
 	}
 
+	// Update semantic search index (best effort, no-op if disabled)
+	fs.IndexNoteVector(note.ID, note.Title, note.Content, note.Tags)
+
 	return nil
 }
 
@@ -356,7 +362,14 @@ func (fs *FileStore) DeleteNote(id string) error {
 		return fmt.Errorf("failed to delete from FTS: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Remove from semantic search index (best effort, no-op if disabled)
+	fs.RemoveVector(fullID)
+
+	return nil
 }
 
 // SearchNotes searches for notes matching the query

@@ -132,6 +132,9 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 			existingID, session.Title, session.GetSearchableContent(),
 			strings.Join(session.Tags, " "))
 
+		// Update semantic search index (best effort, no-op if disabled)
+		fs.IndexSessionVector(existingID, session.Title, session.GetSearchableContent(), session.Tags)
+
 		return &SaveSessionResult{
 			Action:    "updated",
 			SessionID: existingID,
@@ -186,6 +189,9 @@ func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, e
 		fs.db.Exec("DELETE FROM entries WHERE id = ?", session.ID)
 		return nil, fmt.Errorf("failed to insert into FTS: %w", err)
 	}
+
+	// Index for semantic search (best effort, no-op if disabled)
+	fs.IndexSessionVector(session.ID, session.Title, session.GetSearchableContent(), session.Tags)
 
 	return &SaveSessionResult{
 		Action:    "created",

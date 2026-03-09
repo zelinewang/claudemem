@@ -1,9 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
@@ -18,22 +15,12 @@ func init() {
 	rootCmd.AddCommand(sessionCmd)
 }
 
-// getSessionStore returns a configured file store for sessions
+// getSessionStore returns a configured file store for sessions.
+// Also initializes vector store if semantic search feature is enabled.
 func getSessionStore() (storage.UnifiedStore, error) {
-	home, err := os.UserHomeDir()
+	store, err := getFileStoreWithVectors()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, err
 	}
-
-	baseDir := storeDir
-	if baseDir == "" {
-		baseDir = fmt.Sprintf("%s/.claudemem", home)
-	}
-
-	store, err := storage.NewFileStore(baseDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create store: %w", err)
-	}
-
 	return store, nil
 }

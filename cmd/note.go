@@ -1,10 +1,6 @@
 package cmd
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
@@ -23,20 +19,12 @@ func init() {
 	rootCmd.AddCommand(noteCmd)
 }
 
-// getStore creates and returns a FileStore instance
+// getStore creates and returns a FileStore instance.
+// Also initializes vector store if semantic search feature is enabled.
 func getStore() (storage.NoteStore, error) {
-	if storeDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		storeDir = filepath.Join(home, ".claudemem")
-	}
-
-	store, err := storage.NewFileStore(storeDir)
+	store, err := getFileStoreWithVectors()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create store: %w", err)
+		return nil, err
 	}
-
 	return store, nil
 }

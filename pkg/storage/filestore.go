@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
 // FileStore implements UnifiedStore using filesystem and SQLite
@@ -16,6 +18,7 @@ type FileStore struct {
 	sessionsDir string
 	indexDir    string
 	db          *sql.DB
+	vectorStore *vectors.VectorStore // nil when semantic search is disabled
 }
 
 // NewFileStore creates a new file-based store
@@ -91,6 +94,19 @@ func (fs *FileStore) initSchema() error {
 
 	if _, err := fs.db.Exec(ftsSchema); err != nil {
 		return fmt.Errorf("failed to create FTS table: %w", err)
+	}
+
+	// Create access log table for token economics tracking
+	accessLogSchema := `
+	CREATE TABLE IF NOT EXISTS access_log (
+		entry_id TEXT NOT NULL,
+		accessed_at TEXT NOT NULL,
+		access_type TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_access_log_entry ON access_log(entry_id);`
+
+	if _, err := fs.db.Exec(accessLogSchema); err != nil {
+		return fmt.Errorf("failed to create access_log table: %w", err)
 	}
 
 	return nil

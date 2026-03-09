@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
@@ -17,6 +18,7 @@ var (
 	searchAfter    string
 	searchBefore   string
 	searchSort     string
+	searchSemantic bool
 )
 
 var searchCmd = &cobra.Command{
@@ -27,21 +29,37 @@ var searchCmd = &cobra.Command{
 Supports faceted filtering by category, tags, and date range.
 Results are ranked by relevance with a recency boost (recent entries score higher).
 Use --compact for token-efficient output (IDs + titles only).
+Use --semantic for TF-IDF vector similarity search (requires feature flag).
 
 Examples:
   claudemem search "api rate limits"
   claudemem search "tiktok" --type note
   claudemem search "auth" --category api --tag security
   claudemem search "deploy" --after 2025-01-01 --sort date
-  claudemem search "auth" --compact --format json`,
+  claudemem search "auth" --compact --format json
+  claudemem search "authentication" --semantic`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
 
-		// Get unified store
-		store, err := getUnifiedStore()
+		// Get file store (concrete type for vector access)
+		fileStore, err := getFileStore()
 		if err != nil {
 			return err
+		}
+
+		// Initialize vector store if semantic search is requested or feature is enabled
+		if searchSemantic {
+			cfg, cfgErr := config.Load(getStoreDir())
+			if cfgErr != nil {
+				return fmt.Errorf("failed to load config: %w", cfgErr)
+			}
+			if cfg.GetString("features.semantic_search") != "true" {
+				return fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true && claudemem reindex --vectors")
+			}
+			if err := fileStore.InitVectorStore(); err != nil {
+				return fmt.Errorf("failed to initialize vector store: %w", err)
+			}
 		}
 
 		// Parse tags
@@ -54,8 +72,7 @@ Examples:
 			}
 		}
 
-		// Perform search with faceted options
-		results, err := store.SearchWithOpts(storage.SearchOpts{
+		opts := storage.SearchOpts{
 			Query:    query,
 			Type:     searchType,
 			Category: searchFilterCategory,
@@ -64,7 +81,17 @@ Examples:
 			Before:   searchBefore,
 			Sort:     searchSort,
 			Limit:    searchLimit,
-		})
+		}
+
+		// Choose search mode
+		var results []storage.SearchResult
+		if searchSemantic && fileStore.HasVectorStore() {
+			// Hybrid search: combines FTS5 + semantic results
+			results, err = fileStore.HybridSearch(query, opts)
+		} else {
+			// Standard FTS5 search
+			results, err = fileStore.SearchWithOpts(opts)
+		}
 		if err != nil {
 			return fmt.Errorf("search failed: %w", err)
 		}
@@ -164,6 +191,17 @@ func getUnifiedStore() (storage.UnifiedStore, error) {
 	return getSessionStore()
 }
 
+// getFileStore returns the concrete *FileStore for operations that need
+// direct access (e.g., semantic search, vector reindex).
+func getFileStore() (*storage.FileStore, error) {
+	baseDir := getStoreDir()
+	store, err := storage.NewFileStore(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create store: %w", err)
+	}
+	return store, nil
+}
+
 func init() {
 	searchCmd.Flags().StringVar(&searchType, "type", "", "Filter by type: note, session")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 20, "Maximum number of results")
@@ -173,5 +211,6 @@ func init() {
 	searchCmd.Flags().StringVar(&searchAfter, "after", "", "Filter entries after date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchBefore, "before", "", "Filter entries before date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")
+	searchCmd.Flags().BoolVar(&searchSemantic, "semantic", false, "Use semantic search (TF-IDF vectors, requires features.semantic_search=true)")
 	rootCmd.AddCommand(searchCmd)
 }
