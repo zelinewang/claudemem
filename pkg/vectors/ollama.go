@@ -30,6 +30,7 @@ type embedBatchRequest struct {
 
 type embedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
+	Error      string      `json:"error,omitempty"`
 }
 
 // NewOllamaEmbedder creates an embedder pointing at a local Ollama instance.
@@ -86,6 +87,11 @@ func (o *OllamaEmbedder) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
+	// Ollama can return 200 with an error field (e.g., context length exceeded)
+	if result.Error != "" {
+		return nil, fmt.Errorf("ollama error: %s", result.Error)
+	}
+
 	if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
 		return nil, fmt.Errorf("ollama returned empty embeddings")
 	}
@@ -128,6 +134,11 @@ func (o *OllamaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 	var result embedResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	// Ollama can return 200 with an error field (e.g., context length exceeded)
+	if result.Error != "" {
+		return nil, fmt.Errorf("ollama error: %s", result.Error)
 	}
 
 	if len(result.Embeddings) != len(texts) {

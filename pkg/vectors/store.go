@@ -245,7 +245,23 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 
 			embeddings, embErr := vs.ollama.EmbedBatch(texts)
 			if embErr != nil {
-				return fmt.Errorf("ollama batch embed failed at offset %d: %w", i, embErr)
+				// Batch failed — fall back to individual embedding with TF-IDF per doc
+				fmt.Fprintf(os.Stderr, "ollama batch failed at offset %d, falling back per-doc: %v\n", i, embErr)
+				for _, doc := range batch {
+					vec, singleErr := vs.ollama.Embed(doc.Text)
+					if singleErr != nil {
+						// Individual doc also failed — use TF-IDF
+						vec = vs.vectorizer.Vectorize(doc.Text)
+					}
+					if vec == nil {
+						continue
+					}
+					blob := vectorToBlob(vec)
+					if _, err := stmt.Exec(doc.ID, blob); err != nil {
+						return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
+					}
+				}
+				continue
 			}
 
 			for j, doc := range batch {
