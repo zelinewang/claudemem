@@ -48,17 +48,19 @@ Examples:
 			return err
 		}
 
-		// Initialize vector store if semantic search is requested or feature is enabled
-		if searchSemantic {
-			cfg, cfgErr := config.Load(getStoreDir())
-			if cfgErr != nil {
-				return fmt.Errorf("failed to load config: %w", cfgErr)
-			}
-			if cfg.GetString("features.semantic_search") != "true" {
-				return fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true && claudemem reindex --vectors")
-			}
+		// Auto-enable hybrid search when feature flag is on
+		useHybrid := searchSemantic
+		cfg, cfgErr := config.Load(getStoreDir())
+		if cfgErr == nil && cfg.GetBool("features.semantic_search") {
+			useHybrid = true
+		}
+		if searchSemantic && !useHybrid {
+			return fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true && claudemem reindex --vectors")
+		}
+		if useHybrid {
 			if err := fileStore.InitVectorStore(); err != nil {
-				return fmt.Errorf("failed to initialize vector store: %w", err)
+				// Graceful: fall back to FTS5 if vector init fails
+				useHybrid = false
 			}
 		}
 
@@ -83,13 +85,11 @@ Examples:
 			Limit:    searchLimit,
 		}
 
-		// Choose search mode
+		// Choose search mode: hybrid (FTS5 + vectors) when available, FTS5 otherwise
 		var results []storage.SearchResult
-		if searchSemantic && fileStore.HasVectorStore() {
-			// Hybrid search: combines FTS5 + semantic results
+		if useHybrid && fileStore.HasVectorStore() {
 			results, err = fileStore.HybridSearch(query, opts)
 		} else {
-			// Standard FTS5 search
 			results, err = fileStore.SearchWithOpts(opts)
 		}
 		if err != nil {
