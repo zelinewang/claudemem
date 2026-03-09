@@ -162,3 +162,28 @@ func (o *OllamaEmbedder) Dims() int {
 func (o *OllamaEmbedder) Model() string {
 	return o.model
 }
+
+// maxEmbedChars is a conservative character limit for nomic-embed-text.
+// nomic-embed-text supports 8192 tokens. Empirically tested: markdown/code content
+// with UUIDs, file paths, and special chars tokenizes at ~1.0 chars/token (worst case).
+// Boundary tested at 7800 OK / 8000 FAIL on real session reports.
+// Use 7500 chars for safe margin across all content types.
+const maxEmbedChars = 7500
+
+// TruncateForEmbed truncates text to fit within the embedding model's context window.
+// Returns the (possibly truncated) text. Truncation is at a word boundary when possible.
+func TruncateForEmbed(text string) string {
+	if len(text) <= maxEmbedChars {
+		return text
+	}
+	// Find last space before the limit to avoid splitting words
+	truncated := text[:maxEmbedChars]
+	lastSpace := len(truncated) - 1
+	for lastSpace > maxEmbedChars-200 && truncated[lastSpace] != ' ' {
+		lastSpace--
+	}
+	if truncated[lastSpace] == ' ' {
+		return truncated[:lastSpace]
+	}
+	return truncated
+}

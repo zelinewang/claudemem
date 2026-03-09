@@ -96,17 +96,20 @@ func (vs *VectorStore) initSchema() error {
 }
 
 // IndexDocument adds or updates a document's vector in the store.
-// Uses Ollama embeddings if available, falls back to TF-IDF.
+// Uses a single backend per session: Ollama when available, TF-IDF otherwise.
+// Never mixes backends — this prevents dimension mismatches that make documents invisible.
 func (vs *VectorStore) IndexDocument(id, text string) error {
 	var vec []float32
 	var err error
 
 	if vs.useOllama {
-		vec, err = vs.ollama.Embed(text)
+		// Truncate to fit model context window, then embed
+		vec, err = vs.ollama.Embed(TruncateForEmbed(text))
 		if err != nil {
-			// Ollama failed — fall back to TF-IDF for this document
-			fmt.Fprintf(os.Stderr, "ollama embed failed for %s, using tfidf: %v\n", id[:8], err)
-			vec = vs.vectorizer.Vectorize(text)
+			// Ollama failed even after truncation — skip this document for semantic search.
+			// Better absent than invisible (TF-IDF would create wrong-dimension vector).
+			fmt.Fprintf(os.Stderr, "ollama embed failed for %s (skipping): %v\n", id[:8], err)
+			return nil
 		}
 	} else {
 		vec = vs.vectorizer.Vectorize(text)
@@ -147,10 +150,10 @@ func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 	var queryVec []float32
 	if vs.useOllama {
 		var err error
-		queryVec, err = vs.ollama.Embed(query)
+		queryVec, err = vs.ollama.Embed(TruncateForEmbed(query))
 		if err != nil {
-			// Fall back to TF-IDF
-			queryVec = vs.vectorizer.Vectorize(query)
+			// Ollama failed for query — cannot search (mixing backends would miss documents)
+			return nil, nil
 		}
 	} else {
 		queryVec = vs.vectorizer.Vectorize(query)
@@ -240,20 +243,18 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 
 			texts := make([]string, len(batch))
 			for j, doc := range batch {
-				texts[j] = doc.Text
+				texts[j] = TruncateForEmbed(doc.Text)
 			}
 
 			embeddings, embErr := vs.ollama.EmbedBatch(texts)
 			if embErr != nil {
-				// Batch failed — fall back to individual embedding with TF-IDF per doc
-				fmt.Fprintf(os.Stderr, "ollama batch failed at offset %d, falling back per-doc: %v\n", i, embErr)
+				// Batch failed — retry individually with truncation (never mix in TF-IDF)
+				fmt.Fprintf(os.Stderr, "ollama batch failed at offset %d, retrying per-doc with truncation: %v\n", i, embErr)
 				for _, doc := range batch {
-					vec, singleErr := vs.ollama.Embed(doc.Text)
+					vec, singleErr := vs.ollama.Embed(TruncateForEmbed(doc.Text))
 					if singleErr != nil {
-						// Individual doc also failed — use TF-IDF
-						vec = vs.vectorizer.Vectorize(doc.Text)
-					}
-					if vec == nil {
+						// Still failed after truncation — skip (better absent than wrong-dimension)
+						fmt.Fprintf(os.Stderr, "  skipping %s: %v\n", doc.ID[:8], singleErr)
 						continue
 					}
 					blob := vectorToBlob(vec)
