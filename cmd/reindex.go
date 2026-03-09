@@ -57,11 +57,12 @@ Examples:
 				return fmt.Errorf("failed to initialize vector store: %w", err)
 			}
 
+			backend := store.VectorBackend()
 			count, err := store.ReindexVectors()
 			if err != nil {
 				return fmt.Errorf("vector reindex failed: %w", err)
 			}
-			OutputText("Vector index rebuilt: %d documents indexed (vocab size: reported at completion)", count)
+			OutputText("Vector index rebuilt: %d documents indexed (backend: %s)", count, backend)
 		}
 
 		return nil

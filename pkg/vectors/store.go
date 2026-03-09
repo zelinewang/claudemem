@@ -6,17 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 )
 
-// VectorStore manages TF-IDF vectors stored in SQLite for semantic search.
-// Vectors are stored as BLOBs alongside their document IDs.
+// VectorStore manages embedding vectors stored in SQLite for semantic search.
+// Supports two backends: Ollama (real embeddings) and TF-IDF (fallback).
+// Ollama provides true semantic understanding; TF-IDF provides keyword similarity.
 type VectorStore struct {
 	db         *sql.DB
-	vectorizer *Vectorizer
+	vectorizer *Vectorizer     // TF-IDF fallback
+	ollama     *OllamaEmbedder // Ollama primary (nil if unavailable)
+	useOllama  bool            // whether Ollama is active for this session
 }
 
 // NewVectorStore creates a new VectorStore using the provided SQLite database.
-// It creates the necessary tables if they don't exist.
+// It tries to connect to Ollama for real embeddings; falls back to TF-IDF.
 func NewVectorStore(db *sql.DB) (*VectorStore, error) {
 	vs := &VectorStore{
 		db:         db,
@@ -27,10 +31,52 @@ func NewVectorStore(db *sql.DB) (*VectorStore, error) {
 		return nil, fmt.Errorf("failed to init vector schema: %w", err)
 	}
 
-	// Try to load persisted vectorizer state
+	// Try to load persisted vectorizer state (TF-IDF fallback)
 	vs.loadVectorizerState()
 
+	// Try Ollama — primary path for real semantic search
+	vs.tryInitOllama("")
+
 	return vs, nil
+}
+
+// NewVectorStoreWithModel creates a VectorStore with a specific Ollama model.
+func NewVectorStoreWithModel(db *sql.DB, model string) (*VectorStore, error) {
+	vs := &VectorStore{
+		db:         db,
+		vectorizer: NewVectorizer(),
+	}
+
+	if err := vs.initSchema(); err != nil {
+		return nil, fmt.Errorf("failed to init vector schema: %w", err)
+	}
+
+	vs.loadVectorizerState()
+	vs.tryInitOllama(model)
+
+	return vs, nil
+}
+
+// tryInitOllama attempts to connect to a local Ollama instance.
+func (vs *VectorStore) tryInitOllama(model string) {
+	embedder := NewOllamaEmbedder(model)
+	if embedder.Available() {
+		vs.ollama = embedder
+		vs.useOllama = true
+	}
+}
+
+// UsingOllama returns true if Ollama embeddings are active.
+func (vs *VectorStore) UsingOllama() bool {
+	return vs.useOllama
+}
+
+// EmbeddingBackend returns "ollama" or "tfidf" to indicate active backend.
+func (vs *VectorStore) EmbeddingBackend() string {
+	if vs.useOllama {
+		return "ollama:" + vs.ollama.Model()
+	}
+	return "tfidf"
 }
 
 // initSchema creates the vector storage tables.
@@ -50,16 +96,28 @@ func (vs *VectorStore) initSchema() error {
 }
 
 // IndexDocument adds or updates a document's vector in the store.
-// The text is vectorized using TF-IDF and stored as a BLOB.
+// Uses Ollama embeddings if available, falls back to TF-IDF.
 func (vs *VectorStore) IndexDocument(id, text string) error {
-	vec := vs.vectorizer.Vectorize(text)
+	var vec []float32
+	var err error
+
+	if vs.useOllama {
+		vec, err = vs.ollama.Embed(text)
+		if err != nil {
+			// Ollama failed — fall back to TF-IDF for this document
+			fmt.Fprintf(os.Stderr, "ollama embed failed for %s, using tfidf: %v\n", id[:8], err)
+			vec = vs.vectorizer.Vectorize(text)
+		}
+	} else {
+		vec = vs.vectorizer.Vectorize(text)
+	}
+
 	if vec == nil {
-		return nil // no vocabulary yet, skip silently
+		return nil
 	}
 
 	blob := vectorToBlob(vec)
-
-	_, err := vs.db.Exec(`
+	_, err = vs.db.Exec(`
 		INSERT OR REPLACE INTO vectors (id, vector)
 		VALUES (?, ?)
 	`, id, blob)
@@ -78,17 +136,27 @@ type SearchResult struct {
 	Similarity float32 `json:"similarity"`
 }
 
-// Search performs semantic search by computing the TF-IDF vector for the query
-// and finding the most similar documents via cosine similarity.
+// Search performs semantic search by finding the most similar documents.
+// Uses Ollama embeddings if available, falls back to TF-IDF cosine similarity.
 // Returns up to limit results sorted by similarity (highest first).
 func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
-	queryVec := vs.vectorizer.Vectorize(query)
+	var queryVec []float32
+	if vs.useOllama {
+		var err error
+		queryVec, err = vs.ollama.Embed(query)
+		if err != nil {
+			// Fall back to TF-IDF
+			queryVec = vs.vectorizer.Vectorize(query)
+		}
+	} else {
+		queryVec = vs.vectorizer.Vectorize(query)
+	}
 	if queryVec == nil {
-		return nil, nil // no vocabulary, return empty
+		return nil, nil
 	}
 
 	// Scan all vectors and compute similarity
@@ -137,7 +205,7 @@ func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 }
 
 // RebuildIndex rebuilds the entire vector index from the provided documents.
-// Each document is a (id, text) pair. This rebuilds the vocabulary and re-vectorizes everything.
+// Uses Ollama batch embedding if available, falls back to TF-IDF.
 func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	// Clear existing vectors
 	if _, err := vs.db.Exec(`DELETE FROM vectors`); err != nil {
@@ -148,16 +216,6 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 		return nil
 	}
 
-	// Extract text corpus for vocabulary building
-	corpus := make([]string, len(documents))
-	for i, doc := range documents {
-		corpus[i] = doc.Text
-	}
-
-	// Build vocabulary from corpus
-	vs.vectorizer.BuildVocab(corpus)
-
-	// Vectorize and store each document
 	tx, err := vs.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -170,23 +228,64 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	}
 	defer stmt.Close()
 
-	for _, doc := range documents {
-		vec := vs.vectorizer.Vectorize(doc.Text)
-		if vec == nil {
-			continue
+	if vs.useOllama {
+		// Ollama path: batch embed in chunks of 50
+		batchSize := 50
+		for i := 0; i < len(documents); i += batchSize {
+			end := i + batchSize
+			if end > len(documents) {
+				end = len(documents)
+			}
+			batch := documents[i:end]
+
+			texts := make([]string, len(batch))
+			for j, doc := range batch {
+				texts[j] = doc.Text
+			}
+
+			embeddings, embErr := vs.ollama.EmbedBatch(texts)
+			if embErr != nil {
+				return fmt.Errorf("ollama batch embed failed at offset %d: %w", i, embErr)
+			}
+
+			for j, doc := range batch {
+				blob := vectorToBlob(embeddings[j])
+				if _, err := stmt.Exec(doc.ID, blob); err != nil {
+					return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
+				}
+			}
 		}
-		blob := vectorToBlob(vec)
-		if _, err := stmt.Exec(doc.ID, blob); err != nil {
-			return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
+	} else {
+		// TF-IDF fallback path
+		corpus := make([]string, len(documents))
+		for i, doc := range documents {
+			corpus[i] = doc.Text
 		}
+		vs.vectorizer.BuildVocab(corpus)
+
+		for _, doc := range documents {
+			vec := vs.vectorizer.Vectorize(doc.Text)
+			if vec == nil {
+				continue
+			}
+			blob := vectorToBlob(vec)
+			if _, err := stmt.Exec(doc.ID, blob); err != nil {
+				return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
+			}
+		}
+
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Persist vectorizer state
-	return vs.saveVectorizerState()
+	// Persist TF-IDF vectorizer state (after commit, outside transaction)
+	if !vs.useOllama {
+		return vs.saveVectorizerState()
+	}
+
+	return nil
 }
 
 // Count returns the number of vectors in the store.

@@ -30,6 +30,14 @@ func (fs *FileStore) HasVectorStore() bool {
 	return fs.vectorStore != nil
 }
 
+// VectorBackend returns the active embedding backend name.
+func (fs *FileStore) VectorBackend() string {
+	if fs.vectorStore == nil {
+		return "none"
+	}
+	return fs.vectorStore.EmbeddingBackend()
+}
+
 // IndexNoteVector indexes a note's content for semantic search.
 // No-op if vector store is not initialized.
 func (fs *FileStore) IndexNoteVector(id, title, content string, tags []string) {
