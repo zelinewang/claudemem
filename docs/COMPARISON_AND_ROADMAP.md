@@ -321,29 +321,61 @@ which universal-ctags  # If found, use it; otherwise, regex fallback
 
 ---
 
-### Phase 4: Advanced Features (v3.0.0) — Future
+### Phase 4: Advanced Features (v3.0.0) — COMPLETED
 
-#### 4A. In-Process Vector Search (chromem-go)
-**What**: Pure Go vector database for semantic search without external services
-- Library: `github.com/philippgille/chromem-go` (pure Go, CGO_ENABLED=0 compatible)
-- Binary impact: +3 MB
-- No network, no external process
+All Phase 4 features implemented and shipped:
 
-#### 4B. Token Economics Tracking
-**Borrow from**: claude-mem's discovery-tokens vs read-tokens model
-- Track: How many tokens were spent creating a note vs reading it
-- Show ROI: "This note saved 12,000 tokens across 5 sessions"
+#### 4A. Semantic Search with Ollama Embeddings — DONE
+- chromem-go disqualified (imports net/http unconditionally)
+- Built pure Go TF-IDF as fallback + Ollama real embeddings as primary
+- Ollama `nomic-embed-text` (768-dim) via localhost:11434
+- Hybrid search: FTS5 + vectors via Reciprocal Rank Fusion (RRF)
+- `search --semantic` flag, feature-flagged, auto-detects Ollama availability
 
-#### 4C. Knowledge Graph Visualization
-- `claudemem graph --format dot` → Graphviz visualization of Note ↔ Session links
-- `claudemem graph --format json` → Adjacency list for programmatic use
+#### 4B. Token Economics Tracking — DONE
+- `access_log` table tracks search_hit/get events
+- `stats --top-accessed` shows most frequently used entries
+- Non-blocking logging (errors to stderr, never blocks)
 
-#### 4D. Auto-Capture Hook (PostToolUse)
-**Borrow from**: claude-mem's automatic observation capture
-- Hook into Claude Code's PostToolUse lifecycle
-- Auto-extract key decisions/discoveries from tool outputs
-- Store as notes with auto-generated titles and tags
-- Feature-flagged, opt-in
+#### 4C. Knowledge Graph Visualization — DONE
+- `graph --format dot` — Graphviz DOT for visualization
+- `graph --format json` — Adjacency list for programmatic use
+
+#### 4D. Auto-Capture Hook (PostToolUse) — DONE
+- `claudemem capture` reads tool output from stdin
+- Extracts errors, warnings, test results as notes
+- 5-minute dedup window, fails silently
+
+---
+
+### Future Roadmap (v3.1+) — Optional
+
+Informed by Mem0, Zep, and industry best practices for agent memory:
+
+#### F1. Mem0-Style Two-Stage Fact Extraction
+**Source**: Mem0's core architecture
+- Stage 1: LLM extracts facts from conversation (`"User prefers dark mode"`)
+- Stage 2: LLM compares new facts vs old memories → ADD/UPDATE/DELETE/NONE
+- Requires Ollama running an LLM (not just embedding), e.g. `llama3.2`
+- Impact: True "80% token reduction" — store compressed facts, not raw content
+
+#### F2. Temporal Fact Management
+**Source**: Zep's knowledge graph
+- Facts have validity periods; new contradicting facts expire old ones
+- Example: "Uses React" → later "Migrated to Vue" → auto-expires React fact
+- Could use LLM comparison or simple heuristic matching
+
+#### F3. Memory Compression Pipeline
+**Source**: Mem0's compression engine
+- Conversation → extract facts → deduplicate → index
+- Automatic during `/wrapup` or via background process
+- Reduces storage and improves retrieval precision
+
+#### F4. Smart Auto-Capture with LLM Filtering
+**Source**: claude-mem's PostToolUse hooks + Mem0's extraction prompts
+- Upgrade `claudemem capture` to use Ollama LLM for intelligent filtering
+- Instead of regex pattern matching, LLM decides what's noteworthy
+- Much higher signal-to-noise ratio than current keyword-based capture
 
 ---
 
