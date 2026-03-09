@@ -33,6 +33,7 @@ persist beyond this session — things you or a future agent would want to know.
 1. **Search first** — avoid duplicates:
    ```bash
    claudemem note search "<key phrase>" --format json
+   # Or for broader concept matching: claudemem search "<key phrase>" --semantic --compact --format json --limit 5
    ```
 2. **If related note exists** — append new info:
    ```bash

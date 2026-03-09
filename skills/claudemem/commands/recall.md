@@ -9,13 +9,19 @@ Search claudemem for anything related to the given topic, showing cross-referenc
 
 1. **If a topic/keyword was provided**, search for it:
 ```bash
-claudemem search "<topic>" --format json --limit 10
+# Quick scan first (token-efficient)
+claudemem search "<topic>" --compact --format json --limit 10
+
+# For concept-level discovery (finds related content without exact keywords)
+claudemem search "<topic>" --semantic --compact --format json --limit 10
+
+# Fetch full content for relevant results
+claudemem note get <id>
 ```
 
 2. **If no topic provided**, show recent activity overview:
 ```bash
-claudemem session list --last 5
-claudemem stats
+claudemem context inject --format json --limit 5
 ```
 
 3. **Present results** in a clear, organized format:
