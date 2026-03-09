@@ -126,11 +126,29 @@ claudemem provides three capabilities. How and when to use them is your judgment
 
 ### Capability 1: Knowledge Capture
 
-Save knowledge fragments as notes during conversation. Useful for information that would be valuable in future sessions — API quirks, decisions with rationale, bug root causes, user preferences, architecture patterns.
+Save knowledge fragments as notes during conversation — proactively, without asking the user.
 
-Not useful for: temporary debugging state, general programming knowledge available in docs, information the user says is ephemeral.
+**High-value knowledge** (tends to be useful across sessions):
+- API specs, endpoints, rate limits, field mappings, authentication quirks
+- Technical decisions with rationale (why X over Y, what alternatives were rejected)
+- Bug root causes, symptoms, diagnosis patterns, and proven fix approaches
+- Configuration quirks, gotchas, environment-specific settings
+- Architecture patterns discovered or established in this codebase
+- User preferences: coding style, naming conventions, workflow preferences
+- Integration quirks: third-party API behaviors, undocumented features, workarounds
+- Important commands, URLs, environment configs that someone would need again
 
-When saving, check for duplicates first (`note search`) and append to existing notes when the topic already exists. Show a brief indicator after saving: `[noted: "title" -> category]`
+**Low-value / skip** (creates noise, not useful across sessions):
+- Temporary debugging output or transient state
+- Bare file paths or code snippets without explanatory context
+- General programming knowledge available in documentation
+- Information the user explicitly says is temporary or will change soon
+- Meta-commentary about the conversation itself
+
+**Quality practices:**
+- Search for duplicates before saving (`note search "<key phrase>"`). Append to existing notes (`note append <id>`) when the topic already exists — this accumulates knowledge rather than scattering it.
+- Choose categories that match existing ones (`note categories`) for consistency.
+- After saving, show a brief indicator so the user knows: `[noted: "title" -> category]`
 
 Session reports (`session save`) are only created when the user explicitly requests via `/wrapup` or phrases like "wrap up" — never automatically.
 
@@ -146,7 +164,9 @@ Search stored knowledge when prior context would improve your response. The sear
 | `note get <id>` | Need complete content of a specific note | ~500 tokens |
 | `context inject` | Session start: load recent knowledge overview | ~1-2KB |
 
-If a note has `session_id` in metadata, `session get <session_id>` provides the full conversation context that produced it.
+When prior knowledge is found and used, a brief indicator helps the user know: `[memory: Found "TikTok Rate Limits" — 100/min per API key]`
+
+If a note has `session_id` in metadata, `session get <session_id>` provides the full conversation context that produced it. This enables tracing from a knowledge fragment back to the session where it was discovered.
 
 ### Capability 3: Code Intelligence
 
