@@ -9,11 +9,8 @@ Search claudemem for anything related to the given topic, showing cross-referenc
 
 1. **If a topic/keyword was provided**, search for it:
 ```bash
-# Quick scan first (token-efficient)
+# Search (hybrid FTS5 + semantic is automatic when enabled)
 claudemem search "<topic>" --compact --format json --limit 10
-
-# For concept-level discovery (finds related content without exact keywords)
-claudemem search "<topic>" --semantic --compact --format json --limit 10
 
 # Fetch full content for relevant results
 claudemem note get <id>
