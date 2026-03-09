@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 // noteGetCmd represents the note get command
@@ -30,6 +31,11 @@ Examples:
 			note, err := store.GetNote(args[0])
 			if err != nil {
 				return fmt.Errorf("failed to get note: %w", err)
+			}
+
+			// Log access (non-blocking, best-effort)
+			if fs, ok := store.(*storage.FileStore); ok {
+				fs.LogAccess(note.ID, "get")
 			}
 
 			if outputFormat == "json" {
@@ -57,6 +63,11 @@ Examples:
 		// First try exact match
 		note, err := store.GetNoteByTitle(category, titlePattern)
 		if err == nil {
+			// Log access (non-blocking, best-effort)
+			if fs, ok := store.(*storage.FileStore); ok {
+				fs.LogAccess(note.ID, "get")
+			}
+
 			if outputFormat == "json" {
 				return OutputJSON(note)
 			}
@@ -97,6 +108,12 @@ Examples:
 		if len(matches) == 1 {
 			// Single match, show it
 			note = matches[0]
+
+			// Log access (non-blocking, best-effort)
+			if fs, ok := store.(*storage.FileStore); ok {
+				fs.LogAccess(note.ID, "get")
+			}
+
 			if outputFormat == "json" {
 				return OutputJSON(note)
 			}

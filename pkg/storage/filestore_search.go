@@ -103,6 +103,11 @@ func (fs *FileStore) Search(query, entryType string, limit int) ([]SearchResult,
 		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 
+	// Log access for each search hit (non-blocking)
+	for _, r := range results {
+		fs.LogAccess(r.ID, "search_hit")
+	}
+
 	return results, nil
 }
 
@@ -248,6 +253,11 @@ func (fs *FileStore) SearchWithOpts(opts SearchOpts) ([]SearchResult, error) {
 	// Apply limit after reranking
 	if len(results) > limit {
 		results = results[:limit]
+	}
+
+	// Log access for each search hit (non-blocking)
+	for _, r := range results {
+		fs.LogAccess(r.ID, "search_hit")
 	}
 
 	return results, nil

@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
+
+var statsTopAccessed bool
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
@@ -27,6 +30,23 @@ categories, tags, and recent activity.`,
 
 		// Output statistics
 		if outputFormat == "json" {
+			// If --top-accessed is set, include access data in JSON output
+			if statsTopAccessed {
+				if fs, ok := store.(*storage.FileStore); ok {
+					topAccessed, err := fs.GetTopAccessed(10)
+					if err != nil {
+						return fmt.Errorf("failed to get top accessed: %w", err)
+					}
+					combined := struct {
+						*storage.StoreStats
+						TopAccessed []storage.AccessStat `json:"top_accessed"`
+					}{
+						StoreStats:  stats,
+						TopAccessed: topAccessed,
+					}
+					return OutputJSON(combined)
+				}
+			}
 			return OutputJSON(stats)
 		}
 
@@ -80,6 +100,31 @@ categories, tags, and recent activity.`,
 			}
 		}
 
+		// Top accessed entries (token economics)
+		if statsTopAccessed {
+			if fs, ok := store.(*storage.FileStore); ok {
+				topAccessed, err := fs.GetTopAccessed(10)
+				if err != nil {
+					return fmt.Errorf("failed to get top accessed: %w", err)
+				}
+
+				OutputText("")
+				if len(topAccessed) == 0 {
+					OutputText("Top Accessed: (no access data yet)")
+				} else {
+					OutputText("Top Accessed:")
+					for i, a := range topAccessed {
+						idShort := a.ID
+						if len(idShort) > 8 {
+							idShort = idShort[:8]
+						}
+						OutputText("  %d. [%s] %s — %d accesses (last: %s)",
+							i+1, a.Type, a.Title, a.AccessCount, a.LastAccessed[:10])
+					}
+				}
+			}
+		}
+
 		return nil
 	},
 }
@@ -105,5 +150,6 @@ func min(a, b int) int {
 }
 
 func init() {
+	statsCmd.Flags().BoolVar(&statsTopAccessed, "top-accessed", false, "Show most accessed entries (token economics)")
 	rootCmd.AddCommand(statsCmd)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var sessionGetCmd = &cobra.Command{
@@ -42,6 +43,11 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	session, err := store.GetSession(id)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// Log access (non-blocking, best-effort)
+	if fs, ok := store.(*storage.FileStore); ok {
+		fs.LogAccess(session.ID, "get")
 	}
 
 	// Output result
