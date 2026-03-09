@@ -68,12 +68,17 @@ func (c *Config) GetString(key string) string {
 	return ""
 }
 
-// GetBool retrieves a boolean config value
+// GetBool retrieves a boolean config value.
+// Handles both JSON booleans (true) and string-encoded booleans ("true").
 func (c *Config) GetBool(key string) bool {
-	if v, ok := c.data[key].(bool); ok {
+	switch v := c.data[key].(type) {
+	case bool:
 		return v
+	case string:
+		return v == "true" || v == "1" || v == "yes"
+	default:
+		return false
 	}
-	return false
 }
 
 // GetInt retrieves an integer config value
