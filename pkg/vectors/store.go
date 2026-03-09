@@ -20,39 +20,43 @@ type VectorStore struct {
 }
 
 // NewVectorStore creates a new VectorStore using the provided SQLite database.
-// It tries to connect to Ollama for real embeddings; falls back to TF-IDF.
+// Prioritizes Ollama for real semantic search; TF-IDF only when Ollama is unavailable.
 func NewVectorStore(db *sql.DB) (*VectorStore, error) {
-	vs := &VectorStore{
-		db:         db,
-		vectorizer: NewVectorizer(),
-	}
+	vs := &VectorStore{db: db}
 
 	if err := vs.initSchema(); err != nil {
 		return nil, fmt.Errorf("failed to init vector schema: %w", err)
 	}
 
-	// Try to load persisted vectorizer state (TF-IDF fallback)
-	vs.loadVectorizerState()
-
-	// Try Ollama — primary path for real semantic search
+	// Try Ollama first — primary path
 	vs.tryInitOllama("")
+	if !vs.useOllama {
+		// Ollama unavailable — initialize TF-IDF as fallback
+		vs.vectorizer = NewVectorizer()
+		vs.loadVectorizerState()
+	}
+
+	// Check backend consistency: warn if index was built with a different backend
+	vs.checkBackendConsistency()
 
 	return vs, nil
 }
 
 // NewVectorStoreWithModel creates a VectorStore with a specific Ollama model.
 func NewVectorStoreWithModel(db *sql.DB, model string) (*VectorStore, error) {
-	vs := &VectorStore{
-		db:         db,
-		vectorizer: NewVectorizer(),
-	}
+	vs := &VectorStore{db: db}
 
 	if err := vs.initSchema(); err != nil {
 		return nil, fmt.Errorf("failed to init vector schema: %w", err)
 	}
 
-	vs.loadVectorizerState()
 	vs.tryInitOllama(model)
+	if !vs.useOllama {
+		vs.vectorizer = NewVectorizer()
+		vs.loadVectorizerState()
+	}
+
+	vs.checkBackendConsistency()
 
 	return vs, nil
 }
@@ -297,10 +301,15 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Persist TF-IDF vectorizer state (after commit, outside transaction)
-	if !vs.useOllama {
-		return vs.saveVectorizerState()
+	// Persist backend-specific state (after commit, outside transaction)
+	if !vs.useOllama && vs.vectorizer != nil {
+		if err := vs.saveVectorizerState(); err != nil {
+			return err
+		}
 	}
+
+	// Record which backend was used to build this index
+	vs.saveIndexBackend()
 
 	return nil
 }
@@ -349,6 +358,28 @@ func (vs *VectorStore) loadVectorizerState() {
 	}
 
 	vs.vectorizer.ImportState(&state)
+}
+
+// saveIndexBackend records which embedding backend was used to build the current index.
+func (vs *VectorStore) saveIndexBackend() {
+	backend := vs.EmbeddingBackend()
+	vs.db.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('index_backend', ?)`, backend)
+}
+
+// checkBackendConsistency warns if the current backend doesn't match the indexed backend.
+// This catches the "Ollama was running, now it's down" scenario where semantic search
+// would silently return nothing due to dimension mismatch.
+func (vs *VectorStore) checkBackendConsistency() {
+	var indexedBackend string
+	err := vs.db.QueryRow(`SELECT value FROM vector_meta WHERE key = 'index_backend'`).Scan(&indexedBackend)
+	if err != nil {
+		return // no backend recorded yet (first run), nothing to check
+	}
+
+	currentBackend := vs.EmbeddingBackend()
+	if indexedBackend != currentBackend {
+		fmt.Fprintf(os.Stderr, "warning: vector index built with %s but current backend is %s — semantic search may be degraded, run 'claudemem reindex --vectors' to rebuild\n", indexedBackend, currentBackend)
+	}
 }
 
 // vectorToBlob converts a float32 vector to a byte slice (little-endian IEEE 754).
