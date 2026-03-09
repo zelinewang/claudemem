@@ -38,32 +38,61 @@ Verify: `claudemem --version`
 
 ## CLI Reference
 
+All commands support `--format json` for structured output.
+
+### Notes (knowledge fragments)
 ```bash
-# Notes (knowledge fragments — saved automatically during conversation)
 claudemem note add <category> --title "..." --content "..." --tags "..." [--session-id "..."]
 claudemem note search "query" [--in category] [--tag tags] [--format json]
 claudemem note list [category]
-claudemem note get <id>
+claudemem note get <id>                      # Full content by ID (supports 8-char prefix)
 claudemem note append <id> "additional content"
 claudemem note update <id> --content "..." [--title "..."] [--tags "..."]
 claudemem note delete <id>
 claudemem note categories
 claudemem note tags
+```
 
-# Sessions (detailed work reports — saved via /wrapup command)
+### Sessions (work reports)
+```bash
 claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--related-notes "id:title:cat,..."]
 claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X]
 claudemem session search "query" [--branch X]
 claudemem session get <id>
+```
 
-# Unified search (notes + sessions together, with cross-references)
-claudemem search "query" [--type note|session] [--limit N] [--format json]
-claudemem search "query" --compact [--format json]   # Token-efficient: IDs + titles only
+### Unified Search
+```bash
+claudemem search "query" [--type note|session] [--limit N]
+claudemem search "query" --compact            # IDs + titles only (~100 tokens vs ~2000)
+claudemem search "query" --category api --tag security  # Faceted filters
+claudemem search "query" --after 2025-01-01 --before 2025-12-31  # Date range
+claudemem search "query" --sort date          # Sort by date (default: relevance with recency boost)
+```
 
-# Context injection (for SessionStart hooks)
-claudemem context inject [--limit N] [--project path] [--format json]
+Search modes and when each is useful:
+- **Default**: Full results with previews, metadata, scores. Best when you need complete context.
+- **--compact**: Only IDs, titles, types, scores. ~20x fewer tokens. Best for scanning "do I have anything on this?" before deciding to fetch full content.
+- **Faceted filters** (--category, --tag, --after, --before): Narrow results when you know the domain. Combinable with --compact.
+- **--sort date**: Chronological ordering. Useful for "what happened recently?" queries. Default sort uses relevance with a recency boost (entries <7 days get up to 20% score boost, decaying over 30 days).
 
-# Utilities
+### Context Injection
+```bash
+claudemem context inject [--limit N] [--project path]
+```
+Returns recent notes + session summaries + stats in a compact format (~1-2KB).
+Designed for session-start context loading, but usable anytime to get a quick overview of stored knowledge.
+
+### Code Intelligence
+```bash
+claudemem code outline <file>                # Extract symbols (functions, classes, types)
+```
+Extracts structural outline from source files: function signatures, class definitions, type declarations, method signatures — without full implementation bodies.
+Supports Go, Python, TypeScript/JavaScript, Rust. Uses regex-based pattern matching (~80-95% accuracy depending on language; Go is highest via stdlib AST patterns).
+Returns ~10-20 tokens per symbol vs ~500+ tokens for full file reads. Useful when you need to understand a file's structure before deciding which parts to read in full.
+
+### Utilities
+```bash
 claudemem stats                              # Storage statistics
 claudemem config set/get/list/delete <key>   # Configuration
 claudemem export [output-file]               # Backup as tar.gz
@@ -72,11 +101,9 @@ claudemem verify                             # Check consistency
 claudemem repair                             # Fix orphaned entries
 ```
 
-Add `--format json` to any command for structured output.
+## Hook Configuration (Optional)
 
-## Hook Configuration
-
-For automatic context injection at session start, add to your Claude Code settings:
+If you want automatic context loading at conversation start, add to Claude Code settings:
 
 ```json
 {
@@ -93,89 +120,39 @@ For automatic context injection at session start, add to your Claude Code settin
 }
 ```
 
-This automatically loads recent notes and sessions into context when a new conversation begins.
+## Agent Guidelines
 
-## Autonomous Behavior
+claudemem provides three capabilities. How and when to use them is your judgment call based on conversation context.
 
-### 0. Session Context (At Conversation Start — Automatic via Hook)
+### Capability 1: Knowledge Capture
 
-If the SessionStart hook is configured, recent context is automatically injected.
-If NOT configured, manually run at the start of significant tasks:
+Save knowledge fragments as notes during conversation. Useful for information that would be valuable in future sessions — API quirks, decisions with rationale, bug root causes, user preferences, architecture patterns.
 
-```bash
-claudemem context inject --limit 5
-```
+Not useful for: temporary debugging state, general programming knowledge available in docs, information the user says is ephemeral.
 
-This provides continuity: recent notes, session summaries, and stats.
+When saving, check for duplicates first (`note search`) and append to existing notes when the topic already exists. Show a brief indicator after saving: `[noted: "title" -> category]`
 
-### 1. Auto-Save Notes (During Conversation — Silent)
+Session reports (`session save`) are only created when the user explicitly requests via `/wrapup` or phrases like "wrap up" — never automatically.
 
-Automatically capture knowledge **without asking** during normal conversation. This is your
-primary ongoing responsibility — save knowledge AS you discover it, not just at wrap-up.
+### Capability 2: Knowledge Retrieval
 
-After saving, show a brief indicator:
-```
-[noted: "TikTok Rate Limits" -> api-specs]
-```
+Search stored knowledge when prior context would improve your response. The search tools offer different trade-offs:
 
-**What to auto-save** (proactive, no user prompt needed):
-- API specs, endpoints, rate limits, field mappings, authentication quirks
-- Technical decisions with rationale (why X over Y, what alternatives were rejected)
-- Bug root causes, symptoms, diagnosis patterns, and fix approaches
-- Configuration quirks, gotchas, environment-specific settings
-- Architecture patterns discovered or established
-- User preferences: coding style, naming conventions, workflow preferences
-- Integration quirks: third-party API behaviors, undocumented features, workarounds
-- Important commands, URLs, environment configs that someone would need again
+| Approach | When useful | Token cost |
+|----------|------------|------------|
+| `search "X" --compact --format json` | Quick scan: "do I know anything about this?" | ~100 tokens |
+| `search "X" --format json` | Need full context including previews | ~2000 tokens |
+| `search "X" --category Y --tag Z` | Know the domain, want precise results | varies |
+| `note get <id>` | Need complete content of a specific note | ~500 tokens |
+| `context inject` | Session start: load recent knowledge overview | ~1-2KB |
 
-**How to auto-save:**
-1. Identify the knowledge fragment during your normal response
-2. Choose an appropriate category (check existing: `claudemem note categories`)
-3. Search to avoid duplicates: `claudemem note search "<key phrase>" --format json`
-4. If related note exists: `claudemem note append <id> "new info"`
-5. If new: `claudemem note add <category> --title "..." --content "..." --tags "..."`
-6. Show indicator: `[noted: "<title>" -> <category>]`
+If a note has `session_id` in metadata, `session get <session_id>` provides the full conversation context that produced it.
 
-**Do NOT auto-save:**
-- Temporary debugging output or transient state
-- Bare file paths or code without explanatory context
-- General programming knowledge available in docs
-- Information the user said is temporary or will change immediately
+### Capability 3: Code Intelligence
 
-### 2. Auto-Search Before Tasks (Silent)
+`code outline <file>` extracts structural symbols from source files — function signatures, classes, types — without full bodies. Useful when you need to understand a file's API surface before deciding which parts to read in full. Costs ~10-20 tokens per symbol vs ~500+ for full file reads.
 
-At the **start of any significant task**, search memory for relevant prior context:
-
-```bash
-# Quick scan first (token-efficient)
-claudemem search "<relevant keywords>" --compact --format json --limit 5
-
-# If a result looks relevant, get full content
-claudemem note get <id>
-```
-
-Search when:
-- Starting work on a feature, API, or system previously discussed
-- Before making architectural decisions
-- When the user references something that might have been captured before
-- When working with a codebase or domain you've worked on before
-
-If relevant results found, mention briefly:
-```
-[memory: Found "TikTok Rate Limits" — rate limit is 100/min per API key]
-```
-
-If a note has `session_id` in its metadata, you can look up the full session for more context:
-```bash
-claudemem session search "<session-id-prefix>" --format json
-```
-
-### 3. Session Reports (ONLY via /wrapup — Never Auto)
-
-Session reports are **only** saved when the user explicitly requests via `/wrapup` command
-or natural phrases like "wrap up" or "let's wrap up".
-
-**NEVER auto-save sessions** — the user may want to continue the conversation.
+Currently supports Go, Python, TypeScript/JavaScript, Rust. For unsupported languages, falls back to empty result.
 
 ## Cross-Referencing System
 
