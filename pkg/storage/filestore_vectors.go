@@ -133,11 +133,19 @@ func (fs *FileStore) SemanticSearch(query string, limit int) ([]SearchResult, er
 	return results, nil
 }
 
-// HybridSearch combines FTS5 and semantic search results using reciprocal rank fusion.
-// FTS results are weighted slightly higher (0.6) than semantic results (0.4)
-// since exact keyword matches are generally more precise for memory retrieval.
+// HybridSearch combines FTS5 and semantic search using min-max normalized score fusion.
+//
+// Algorithm (industry standard, used by Weaviate relativeScoreFusion and OpenSearch):
+//  1. Run both FTS5 and semantic search
+//  2. Min-max normalize each result set's scores to [0, 1]
+//  3. Convex combination: final = α * norm_fts + (1-α) * norm_semantic
+//  4. Documents appearing in both lists get contributions from both sides
+//
+// Weight α = 0.7 (keyword-heavy) because claudemem queries are predominantly
+// exact keyword lookups (note titles, tech terms). Semantic fills gaps when
+// FTS5 has no keyword match. Researched from Weaviate, Elasticsearch, OpenSearch.
 func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult, error) {
-	// Get FTS5 results
+	// Get FTS5 results (respects all facet filters: category, tags, date range)
 	ftsResults, err := fs.SearchWithOpts(opts)
 	if err != nil {
 		return nil, err
@@ -151,26 +159,90 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 	// Get semantic results
 	semanticResults, err := fs.SemanticSearch(query, opts.Limit)
 	if err != nil {
-		// Semantic search failed; fall back to FTS only
 		return ftsResults, nil
 	}
 
-	// Reciprocal Rank Fusion (RRF)
-	// Score = sum of 1/(k+rank) for each result list where the doc appears
-	const k = 60.0 // RRF constant (standard value)
-	const ftsWeight = 0.6
-	const semanticWeight = 0.4
+	// Build ID set of FTS results that pass facet filters (source of truth for filtering)
+	ftsIDs := make(map[string]bool, len(ftsResults))
+	for _, r := range ftsResults {
+		ftsIDs[r.ID] = true
+	}
+
+	// Filter semantic results: only keep those that also pass facet filters.
+	// If no facet filters active (no category/tag/date), keep all semantic results.
+	hasFacets := opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
+	if hasFacets {
+		filtered := semanticResults[:0]
+		for _, r := range semanticResults {
+			if ftsIDs[r.ID] {
+				filtered = append(filtered, r)
+			}
+		}
+		// Also add semantic-only results that match filters via DB check
+		for _, r := range semanticResults {
+			if !ftsIDs[r.ID] && fs.matchesFacets(r.ID, opts) {
+				filtered = append(filtered, r)
+			}
+		}
+		semanticResults = filtered
+	}
+
+	// If either side is empty, return the other directly
+	if len(ftsResults) == 0 && len(semanticResults) == 0 {
+		return nil, nil
+	}
+	if len(semanticResults) == 0 {
+		return ftsResults, nil
+	}
+	if len(ftsResults) == 0 {
+		return semanticResults, nil
+	}
+
+	// Min-max normalize FTS scores to [0, 1]
+	ftsMin, ftsMax := ftsResults[0].Score, ftsResults[0].Score
+	for _, r := range ftsResults[1:] {
+		if r.Score < ftsMin {
+			ftsMin = r.Score
+		}
+		if r.Score > ftsMax {
+			ftsMax = r.Score
+		}
+	}
+	ftsRange := ftsMax - ftsMin
+	if ftsRange == 0 {
+		ftsRange = 1 // avoid division by zero when all scores are equal
+	}
+
+	// Min-max normalize semantic scores to [0, 1]
+	semMin, semMax := semanticResults[0].Score, semanticResults[0].Score
+	for _, r := range semanticResults[1:] {
+		if r.Score < semMin {
+			semMin = r.Score
+		}
+		if r.Score > semMax {
+			semMax = r.Score
+		}
+	}
+	semRange := semMax - semMin
+	if semRange == 0 {
+		semRange = 1
+	}
+
+	// Convex combination: α * norm_fts + (1-α) * norm_semantic
+	const alpha = 0.7 // keyword weight (researched: claudemem is keyword-heavy use case)
 
 	scores := make(map[string]float64)
 	resultMap := make(map[string]SearchResult)
 
-	for rank, r := range ftsResults {
-		scores[r.ID] += ftsWeight * (1.0 / (k + float64(rank+1)))
+	for _, r := range ftsResults {
+		normScore := (r.Score - ftsMin) / ftsRange
+		scores[r.ID] += alpha * normScore
 		resultMap[r.ID] = r
 	}
 
-	for rank, r := range semanticResults {
-		scores[r.ID] += semanticWeight * (1.0 / (k + float64(rank+1)))
+	for _, r := range semanticResults {
+		normScore := (r.Score - semMin) / semRange
+		scores[r.ID] += (1 - alpha) * normScore
 		if _, exists := resultMap[r.ID]; !exists {
 			resultMap[r.ID] = r
 		}
@@ -194,7 +266,41 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 		results = results[:limit]
 	}
 
+	// Log access for hybrid results
+	for _, r := range results {
+		fs.LogAccess(r.ID, "search_hit")
+	}
+
 	return results, nil
+}
+
+// matchesFacets checks if an entry passes the facet filters via DB lookup.
+func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
+	query := `SELECT 1 FROM entries WHERE id = ?`
+	args := []interface{}{id}
+
+	if opts.Category != "" {
+		query += " AND category = ?"
+		args = append(args, opts.Category)
+	}
+	if len(opts.Tags) > 0 {
+		for _, tag := range opts.Tags {
+			query += " AND tags LIKE ?"
+			args = append(args, "%"+tag+"%")
+		}
+	}
+	if opts.After != "" {
+		query += " AND date_str >= ?"
+		args = append(args, opts.After)
+	}
+	if opts.Before != "" {
+		query += " AND date_str <= ?"
+		args = append(args, opts.Before)
+	}
+
+	var exists int
+	err := fs.db.QueryRow(query, args...).Scan(&exists)
+	return err == nil
 }
 
 // ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.
