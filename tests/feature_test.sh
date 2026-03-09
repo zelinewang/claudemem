@@ -488,7 +488,8 @@ echo ""
 echo "--- Level 7: Data Lifecycle & Integrity ---"
 
 # 7.1 export
-EXPORT_FILE=$(mktemp --suffix=.tar.gz)
+EXPORT_DIR=$(mktemp -d)
+EXPORT_FILE="$EXPORT_DIR/export.tar.gz"
 B export "$EXPORT_FILE" > /dev/null 2>&1
 [ -s "$EXPORT_FILE" ] && pass "7.1 export creates non-empty tar.gz" || fail "7.1 export" "empty/missing"
 

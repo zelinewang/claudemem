@@ -325,7 +325,9 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		discoveredNotes, discoverErr := store.FindNotesBySessionRef(sessionSessionID)
 		if discoverErr == nil && len(discoveredNotes) > 0 {
 			session.RelatedNotes = append(session.RelatedNotes, discoveredNotes...)
-			fmt.Fprintf(os.Stderr, "Auto-discovered %d related notes\n", len(discoveredNotes))
+			if outputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "Auto-discovered %d related notes\n", len(discoveredNotes))
+			}
 		}
 	}
 

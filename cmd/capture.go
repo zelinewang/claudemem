@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/models"
 )
 
@@ -37,6 +38,12 @@ func init() {
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {
+	// Check feature flag — capture is opt-in
+	cfg, err := config.Load(getStoreDir())
+	if err == nil && !cfg.GetBool("features.auto_capture") {
+		return nil // Feature not enabled — exit silently
+	}
+
 	// Read hook payload from stdin
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil || len(data) == 0 {
