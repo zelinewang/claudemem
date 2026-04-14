@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
@@ -35,7 +36,15 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	}
 	defer fileStore.Close()
 
-	_ = fileStore.InitVectorStore()
+	// Same gate as cmd/health.go: only activate vector-based invariants
+	// when the user has opted into semantic search. Otherwise health +
+	// repair would disagree for the same state — health passes (vectors
+	// skipped) while repair would offer to rebuild TF-IDF vectors the
+	// user never asked for. Keeps both commands consistent.
+	cfg, _ := config.Load(getStoreDir())
+	if cfg != nil && cfg.GetBool("features.semantic_search") {
+		_ = fileStore.InitVectorStore()
+	}
 
 	in := vectors.HealthInputs{
 		DB:          fileStore.DB(),

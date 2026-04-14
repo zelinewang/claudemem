@@ -137,15 +137,13 @@ func TestOllamaEmbedder_Available_Reachable(t *testing.T) {
 // load-bearing UX (the plan documents it verbatim); regression here
 // silently breaks the CLI's recovery message.
 func TestOllamaEmbedder_Available_Unreachable(t *testing.T) {
-	// Create a test server then immediately close it so the URL stays
-	// valid but TCP connect returns ECONNREFUSED fast (< 1ms). Avoids
-	// the 30s dial timeout of pointing at an unreachable IP.
-	srv := newMockOllamaServer(t, 200, `{}`)
-	closedURL := srv.URL
-	srv.Close()
-
+	// Use port 1 (privileged, never bound by a real server under a normal
+	// user) → dial returns ECONNREFUSED fast and deterministically.
+	// Avoids the httptest.Close()+URL-reuse pattern whose port could
+	// theoretically be rebound by another process between Close() and
+	// the test's dial on busy CI runners.
 	emb := NewOllamaEmbedder("qwen3-embedding:4b")
-	emb.baseURL = closedURL
+	emb.baseURL = "http://127.0.0.1:1"
 
 	err := emb.Available()
 	if err == nil {
@@ -156,7 +154,9 @@ func TestOllamaEmbedder_Available_Unreachable(t *testing.T) {
 	}
 
 	var ebu *ErrBackendUnavailable
-	errors.As(err, &ebu)
+	if !errors.As(err, &ebu) {
+		t.Fatalf("could not unwrap ErrBackendUnavailable from %T: %v", err, err)
+	}
 	if ebu.Backend != "ollama:qwen3-embedding:4b" {
 		t.Errorf("Backend: want ollama:qwen3-embedding:4b, got %q", ebu.Backend)
 	}
