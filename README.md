@@ -70,6 +70,18 @@ claudemem session get <id-or-prefix>
 # Search everything
 claudemem search "query" [--type note|session] [--limit N]
 
+# Embedding backend (pick one; no silent fallback)
+claudemem setup                              # interactive wizard: Local / Gemini / Voyage / OpenAI / TF-IDF
+claudemem health                             # I1-I3 parity check (markdown ↔ FTS ↔ vectors, <100ms)
+claudemem health --deep                      # also I4/I5 (orphans, config match)
+claudemem repair                             # fix drift detected by health (interactive)
+
+# Cross-machine sync (markdown-only via git)
+claudemem sync init <remote-url>             # git init ~/.claudemem with remote
+claudemem sync push                          # commit + push notes/sessions
+claudemem sync pull                          # pull + rebuild FTS + embed missing vectors
+claudemem sync status                        # git status + index health
+
 # Utilities
 claudemem stats
 claudemem verify
@@ -80,6 +92,75 @@ claudemem import backup.tar.gz
 ```
 
 Add `--format json` to any command for structured output.
+
+## Setup — Pick Your Search Backend
+
+Semantic search uses an embedding model. Pick it explicitly — claudemem never
+falls back silently to a worse backend behind your back.
+
+```bash
+claudemem setup
+```
+
+The wizard walks through:
+
+| Option | Where it runs | Cost | Chinese | When to pick |
+|---|---|---|---|---|
+| **Local — Ollama** | Your machine | Free | qwen3 ✅ / nomic weaker | Daily use, offline, airgapped |
+| **Cloud — Gemini** | Google | $0.15/M tokens (≈$0.50/mo for 3K notes) | ✅ 100+ langs | Best quality, you already have a key |
+| **Cloud — Voyage** | Voyage AI | $0.02/M, 200M free tokens | ✅ | Budget pick, effectively free |
+| **Cloud — OpenAI** | OpenAI | $0.02/M (3-small) | ⚠️ English-heavy | You already pay OpenAI for other things |
+| **TF-IDF** | Your machine | Free | OK | No daemon, no keys, keyword-ish similarity |
+
+API keys are always read from environment variables (`GEMINI_API_KEY`,
+`VOYAGE_API_KEY`, `OPENAI_API_KEY`) — claudemem refuses to store them in
+`config.json`. Only the env var **name** is recorded, so configs are safe
+to commit + sync across machines.
+
+Manual equivalent (for scripts):
+
+```bash
+claudemem config set embedding.backend gemini
+claudemem config set embedding.model gemini-embedding-001
+claudemem config set embedding.dimensions 768
+claudemem config set embedding.api_key_env GEMINI_API_KEY
+claudemem reindex --vectors
+```
+
+### When the backend is down
+
+claudemem never degrades silently. If the configured backend is unreachable:
+
+- **Non-interactive shells / CI**: error with recovery instructions + exit 1.
+- **Interactive terminals**: prompt offering retry / FTS-only-this-query / run setup.
+
+Use `claudemem search "..." --fts-only` to skip semantic for one query
+when you know the backend is down.
+
+## Cross-Machine Memory
+
+Memory can follow you between machines (web_dev ↔ MacBook, etc.) via a
+private git repo.
+
+```bash
+# once, per user
+claudemem sync init git@github.com:YOU/claudemem-memory.git
+
+# after work
+claudemem sync push
+
+# on another machine, first time
+git clone git@github.com:YOU/claudemem-memory.git ~/.claudemem
+claudemem sync pull
+```
+
+Only markdown travels over the wire — SQLite index and config stay
+per-machine. Each machine embeds under ITS configured backend, so
+a cloud-Gemini laptop and a local-Ollama workstation can share the
+same corpus with zero backend coupling.
+
+See [docs/HOOK_INTEGRATION.md](docs/HOOK_INTEGRATION.md) for Claude Code
+hook integration (auto-pull on SessionStart, auto-push on SessionEnd).
 
 ## Recommended: Auto Wrap-Up
 
