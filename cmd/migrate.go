@@ -141,29 +141,10 @@ var verifyCmd = &cobra.Command{
 	},
 }
 
-var repairCmd = &cobra.Command{
-	Use:   "repair",
-	Short: "Repair data integrity issues",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := getSessionStore()
-		if err != nil {
-			return err
-		}
-		defer store.Close()
-
-		removed, err := store.RepairIntegrity()
-		if err != nil {
-			return fmt.Errorf("repair failed: %w", err)
-		}
-
-		if removed == 0 {
-			OutputText("✓ No issues found — data is healthy!")
-		} else {
-			OutputText("✓ Repaired: removed %d orphaned entries", removed)
-		}
-		return nil
-	},
-}
+// Legacy repairCmd replaced by cmd/repair.go (which also does orphan
+// cleanup plus FTS + vector reindex). Kept as a package-level stub here
+// only because migrate.go's init() still references repairCmd; the real
+// one is in repair.go.
 
 func init() {
 	migrateBraindumpCmd.Flags().String("source", "", "braindump directory (default: ~/.braindump/)")
@@ -174,5 +155,5 @@ func init() {
 
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(verifyCmd)
-	rootCmd.AddCommand(repairCmd)
+	// repairCmd is now registered in cmd/repair.go (richer: handles FTS+vector drift too)
 }

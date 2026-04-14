@@ -120,5 +120,27 @@ func (fs *FileStore) Close() error {
 	return nil
 }
 
+// DB returns the underlying *sql.DB for use by health / repair tools that
+// need to run custom queries without threading them through FileStore.
+// Kept intentionally read-write so the repair command can DELETE orphan
+// rows directly — but callers SHOULD prefer FileStore methods when one exists.
+func (fs *FileStore) DB() *sql.DB { return fs.db }
+
+// NotesDir returns the filesystem path where markdown notes live.
+func (fs *FileStore) NotesDir() string { return fs.notesDir }
+
+// SessionsDir returns the filesystem path where session reports live.
+func (fs *FileStore) SessionsDir() string { return fs.sessionsDir }
+
+// VectorStoreEmbedder returns the active Embedder, or nil if semantic
+// search is not configured. Used by health/repair to know which
+// (backend, model) tuple to validate for invariant I3.
+func (fs *FileStore) VectorStoreEmbedder() vectors.Embedder {
+	if fs.vectorStore == nil {
+		return nil
+	}
+	return fs.vectorStore.Embedder()
+}
+
 // UnifiedStore methods (Note/Session methods implemented in filestore_notes.go and filestore_sessions.go)
 // Search and Stats methods are implemented in filestore_search.go and filestore_stats.go
