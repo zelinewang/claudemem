@@ -46,9 +46,26 @@ func BuildEmbedder(cfg BackendConfig) (Embedder, error) {
 		}
 		return emb, nil
 	case "voyage":
-		return nil, fmt.Errorf("voyage backend not yet implemented (lands in P7)")
+		model := cfg.Model
+		if model == "" {
+			model = "voyage-3.5-lite"
+		}
+		emb := NewVoyageEmbedder(model, cfg.APIKey, cfg.Dim)
+		if cfg.Endpoint != "" {
+			emb.WithBaseURL(cfg.Endpoint)
+		}
+		return emb, nil
+
 	case "openai":
-		return nil, fmt.Errorf("openai backend not yet implemented (lands in P7)")
+		model := cfg.Model
+		if model == "" {
+			model = "text-embedding-3-small"
+		}
+		emb := NewOpenAIEmbedder(model, cfg.APIKey, cfg.Dim)
+		if cfg.Endpoint != "" {
+			emb.WithBaseURL(cfg.Endpoint)
+		}
+		return emb, nil
 
 	default:
 		return nil, fmt.Errorf("unknown embedding backend %q (known: tfidf, ollama, gemini, voyage, openai)", cfg.Backend)

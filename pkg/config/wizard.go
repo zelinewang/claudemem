@@ -50,8 +50,8 @@ func RunSetupWizard(opts WizardOptions) (*WizardResult, error) {
 	fmt.Fprintln(opts.Out, "")
 	fmt.Fprintln(opts.Out, "  1) Local — Ollama         (offline, zero cost, recommended for daily use)")
 	fmt.Fprintln(opts.Out, "  2) Cloud — Gemini         (best quality, ~$0.15/M tokens, requires API key)")
-	fmt.Fprintln(opts.Out, "  3) Cloud — Voyage         (budget pick, $0.02/M, [not yet implemented, lands in P7])")
-	fmt.Fprintln(opts.Out, "  4) Cloud — OpenAI         (widely available, weaker Chinese, [not yet implemented, lands in P7])")
+	fmt.Fprintln(opts.Out, "  3) Cloud — Voyage         (budget pick, $0.02/M, 200M free tokens)")
+	fmt.Fprintln(opts.Out, "  4) Cloud — OpenAI         (widely available, weaker Chinese)")
 	fmt.Fprintln(opts.Out, "  5) No semantic search     — TF-IDF (keyword-ish; no daemon/key needed)")
 	fmt.Fprintln(opts.Out, "")
 
@@ -66,9 +66,9 @@ func RunSetupWizard(opts WizardOptions) (*WizardResult, error) {
 	case 2:
 		return setupGemini(opts.Out, r, opts.StoreDir)
 	case 3:
-		return nil, fmt.Errorf("voyage backend lands in P7 — pick another for now")
+		return setupVoyage(opts.Out, r, opts.StoreDir)
 	case 4:
-		return nil, fmt.Errorf("openai backend lands in P7 — pick another for now")
+		return setupOpenAI(opts.Out, r, opts.StoreDir)
 	case 5:
 		return setupTFIDF(opts.Out, r)
 	}
@@ -222,6 +222,121 @@ func setupGemini(w io.Writer, r *bufio.Reader, storeDir string) (*WizardResult, 
 	return &WizardResult{
 		Config: vectors.BackendConfig{
 			Backend: "gemini",
+			Model:   model,
+			APIKey:  key,
+			Dim:     dim,
+		},
+		APIKeyEnvVar: envVarName,
+		RunReindex:   confirmReindex(w, r),
+	}, nil
+}
+
+// --- Voyage path ---
+
+func setupVoyage(w io.Writer, r *bufio.Reader, storeDir string) (*WizardResult, error) {
+	const envVarName = "VOYAGE_API_KEY"
+	key := os.Getenv(envVarName)
+	if key == "" {
+		fmt.Fprintf(w, "\nEnvironment variable %s is NOT set.\n", envVarName)
+		fmt.Fprintln(w, "claudemem never stores API keys in config files. Set the env var and re-run.")
+		fmt.Fprintf(w, "\n  export %s=your-key-here\n  claudemem setup\n\n", envVarName)
+		fmt.Fprintln(w, "Get a key at: https://dash.voyageai.com/api-keys")
+		return nil, fmt.Errorf("%s not set in environment", envVarName)
+	}
+	fmt.Fprintf(w, "Environment variable %s: set ✓\n", envVarName)
+
+	fmt.Fprintln(w, "\nWhich model?")
+	fmt.Fprintln(w, "  1) voyage-3.5-lite   (recommended — $0.02/M, 200M free tokens)")
+	fmt.Fprintln(w, "  2) voyage-3.5        (higher quality, $0.06/M)")
+	fmt.Fprintln(w, "  3) voyage-3-large    (legacy — kept for users already on it)")
+	choice, err := promptChoice(w, r, "> ", 3)
+	if err != nil {
+		return nil, err
+	}
+	var model string
+	switch choice {
+	case 1:
+		model = "voyage-3.5-lite"
+	case 2:
+		model = "voyage-3.5"
+	case 3:
+		model = "voyage-3-large"
+	}
+
+	dim, err := promptDim(w, r, 1024)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Fprint(w, "Testing embedding ... ")
+	emb := vectors.NewVoyageEmbedder(model, key, dim)
+	vec, err := emb.Embed("hello world", vectors.InputTypeDocument)
+	if err != nil {
+		fmt.Fprintln(w, "FAIL")
+		return nil, fmt.Errorf("voyage test embed failed: %w", err)
+	}
+	fmt.Fprintf(w, "✓ got %d-dim vector\n", len(vec))
+
+	return &WizardResult{
+		Config: vectors.BackendConfig{
+			Backend: "voyage",
+			Model:   model,
+			APIKey:  key,
+			Dim:     dim,
+		},
+		APIKeyEnvVar: envVarName,
+		RunReindex:   confirmReindex(w, r),
+	}, nil
+}
+
+// --- OpenAI path ---
+
+func setupOpenAI(w io.Writer, r *bufio.Reader, storeDir string) (*WizardResult, error) {
+	const envVarName = "OPENAI_API_KEY"
+	key := os.Getenv(envVarName)
+	if key == "" {
+		fmt.Fprintf(w, "\nEnvironment variable %s is NOT set.\n", envVarName)
+		fmt.Fprintf(w, "\n  export %s=your-key-here\n  claudemem setup\n\n", envVarName)
+		fmt.Fprintln(w, "Get a key at: https://platform.openai.com/api-keys")
+		return nil, fmt.Errorf("%s not set in environment", envVarName)
+	}
+	fmt.Fprintf(w, "Environment variable %s: set ✓\n", envVarName)
+
+	fmt.Fprintln(w, "\nWhich model?")
+	fmt.Fprintln(w, "  1) text-embedding-3-small   (recommended — $0.02/M, 512-dim matryoshka)")
+	fmt.Fprintln(w, "  2) text-embedding-3-large   (higher quality, $0.13/M, 3072-dim)")
+	choice, err := promptChoice(w, r, "> ", 2)
+	if err != nil {
+		return nil, err
+	}
+	var model string
+	var defaultDim int
+	switch choice {
+	case 1:
+		model = "text-embedding-3-small"
+		defaultDim = 512
+	case 2:
+		model = "text-embedding-3-large"
+		defaultDim = 1024
+	}
+
+	dim, err := promptDim(w, r, defaultDim)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Fprint(w, "Testing embedding ... ")
+	emb := vectors.NewOpenAIEmbedder(model, key, dim)
+	vec, err := emb.Embed("hello world", vectors.InputTypeDocument)
+	if err != nil {
+		fmt.Fprintln(w, "FAIL")
+		return nil, fmt.Errorf("openai test embed failed: %w", err)
+	}
+	fmt.Fprintf(w, "✓ got %d-dim vector\n", len(vec))
+
+	return &WizardResult{
+		Config: vectors.BackendConfig{
+			Backend: "openai",
 			Model:   model,
 			APIKey:  key,
 			Dim:     dim,

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -40,15 +41,24 @@ func TestWizard_TFIDFPath_ReindexAccepted(t *testing.T) {
 	}
 }
 
-// TestWizard_RejectsVoyageStub verifies P7-deferred backends return a
-// helpful error rather than a crash.
-func TestWizard_RejectsVoyageStub(t *testing.T) {
+// TestWizard_VoyageRequiresAPIKey checks that selecting Voyage without
+// VOYAGE_API_KEY set aborts with a clear message pointing to the env var.
+// This is the "don't store secrets in config" rule manifest at the UX layer.
+func TestWizard_VoyageRequiresAPIKey(t *testing.T) {
+	// Ensure the env var is NOT set for this test
+	orig := os.Getenv("VOYAGE_API_KEY")
+	os.Unsetenv("VOYAGE_API_KEY")
+	defer os.Setenv("VOYAGE_API_KEY", orig)
+
 	in := bytes.NewBufferString("3\n")
 	out := &bytes.Buffer{}
 
 	_, err := RunSetupWizard(WizardOptions{In: in, Out: out})
-	if err == nil || !strings.Contains(err.Error(), "voyage") {
-		t.Errorf("expected voyage-not-implemented error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "VOYAGE_API_KEY") {
+		t.Errorf("expected VOYAGE_API_KEY-not-set error, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "dash.voyageai.com/api-keys") {
+		t.Errorf("expected key signup URL in output, got: %s", out.String())
 	}
 }
 
