@@ -38,6 +38,12 @@ func (g *GitSync) IsInitialized() bool {
 // create an initial commit — the caller should add markdown + commit
 // explicitly so the user sees what is about to be pushed.
 func (g *GitSync) Init(remoteURL string) error {
+	// First-run safety: the ~/.claudemem dir may not exist yet on a fresh
+	// install. `git init` refuses to create its parent; fail here with a
+	// useful message rather than the cryptic git error.
+	if err := os.MkdirAll(g.Dir, 0700); err != nil {
+		return fmt.Errorf("create %s: %w", g.Dir, err)
+	}
 	if g.IsInitialized() {
 		return fmt.Errorf("%s is already a git repo; use `sync status` to inspect", g.Dir)
 	}

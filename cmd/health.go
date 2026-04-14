@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/storage"
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
@@ -53,8 +54,15 @@ func runHealth(cmd *cobra.Command, args []string) error {
 	}
 	defer fileStore.Close()
 
-	// Try to initialize vector store so we know the active backend for I3/I5
-	_ = fileStore.InitVectorStore()
+	// Only activate vector-based invariants (I3 for active backend, I5 for
+	// config match) when the user has explicitly opted in to semantic
+	// search. Otherwise existing installs that never enabled it would see
+	// I3/I5 drift for vectors they never asked for. Matches the precedent
+	// set in cmd/reindex.go and cmd/search.go.
+	cfg, _ := config.Load(getStoreDir())
+	if cfg != nil && cfg.GetBool("features.semantic_search") {
+		_ = fileStore.InitVectorStore()
+	}
 
 	in := vectors.HealthInputs{
 		DB:          fileStore.DB(),

@@ -467,10 +467,17 @@ func (vs *VectorStore) loadTFIDFState(tf *TFIDFEmbedder) {
 	tf.Vectorizer().ImportState(&state)
 }
 
+// saveIndexBackend writes the active (backend:model) to vector_meta for
+// diagnostics only — per-doc metadata is the real source of truth now.
+// Errors are logged but not fatal: this runs after a successful commit
+// and a missed update just triggers a false-positive I5 warning.
 func (vs *VectorStore) saveIndexBackend() {
-	vs.db.Exec(
+	if _, err := vs.db.Exec(
 		`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('index_backend', ?)`,
-		vs.EmbeddingBackend())
+		vs.EmbeddingBackend()); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warn: could not update vector_meta.index_backend (%v)\n", err)
+	}
 }
 
 // --- helpers ---

@@ -138,7 +138,15 @@ func (v *VoyageEmbedder) embedBatchOne(texts []string, t InputType) ([][]float32
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("decode voyage: %w", err)
 	}
-	out := make([][]float32, len(parsed.Data))
+	// Defensive: size the output by INPUT length, not response length. A
+	// partial response (rate-limited, mid-batch failure) can otherwise
+	// panic downstream RebuildIndex which does `embeddings[j]` assuming
+	// response length == batch length. Matches Gemini's guard.
+	if len(parsed.Data) != len(texts) {
+		return nil, fmt.Errorf("voyage returned %d embeddings for %d inputs (partial response not supported)",
+			len(parsed.Data), len(texts))
+	}
+	out := make([][]float32, len(texts))
 	for _, d := range parsed.Data {
 		if d.Index < 0 || d.Index >= len(out) {
 			return nil, fmt.Errorf("voyage returned out-of-range index %d", d.Index)

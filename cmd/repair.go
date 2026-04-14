@@ -90,21 +90,26 @@ func runRepair(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Fix 3: orphan rows → delete
+	// Fix 3: orphan rows → delete.
+	// DESTRUCTIVE operation — errors must surface to the user. Previous
+	// version silently swallowed Exec errors into a "Removed 0" message,
+	// which violates the "no silent fallback" rule for the repair path.
 	if report.DidDeepCheck && !report.I4NoOrphanRows {
 		if confirmRepair(reader, "Delete orphan FTS / vector rows?") {
 			var removed int
-			result, err := fileStore.DB().Exec(`DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM entries)`)
-			if err == nil {
-				if n, _ := result.RowsAffected(); n > 0 {
-					removed += int(n)
-				}
+			ftsResult, err := fileStore.DB().Exec(`DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM entries)`)
+			if err != nil {
+				return fmt.Errorf("delete orphan FTS rows: %w", err)
 			}
-			result, err = fileStore.DB().Exec(`DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`)
-			if err == nil {
-				if n, _ := result.RowsAffected(); n > 0 {
-					removed += int(n)
-				}
+			if n, _ := ftsResult.RowsAffected(); n > 0 {
+				removed += int(n)
+			}
+			vecResult, err := fileStore.DB().Exec(`DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`)
+			if err != nil {
+				return fmt.Errorf("delete orphan vector rows: %w", err)
+			}
+			if n, _ := vecResult.RowsAffected(); n > 0 {
+				removed += int(n)
 			}
 			OutputText("  ✓ Removed %d orphan rows", removed)
 			repairs++

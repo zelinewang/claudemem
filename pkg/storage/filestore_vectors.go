@@ -200,9 +200,19 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 		return ftsResults, nil
 	}
 
-	// Get semantic results
+	// Get semantic results. CRITICAL: when the configured embedding backend
+	// is unreachable, SemanticSearch returns ErrBackendUnavailable. We MUST
+	// propagate that to the caller — otherwise the fail-loud UX in
+	// cmd/search.go never triggers and we silently degrade to FTS-only,
+	// violating the "no silent fallback" design rule.
+	//
+	// For all OTHER errors (e.g. transient DB read issues), keep the old
+	// forgiving behavior so hybrid search stays useful.
 	semanticResults, err := fs.SemanticSearch(query, opts.Limit)
 	if err != nil {
+		if vectors.IsBackendUnavailable(err) {
+			return nil, err
+		}
 		return ftsResults, nil
 	}
 

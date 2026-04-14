@@ -70,7 +70,14 @@ func (o *OpenAIEmbedder) Available() error {
 		}
 	}
 	// List-models is cheap and auth-scoped.
-	req, _ := http.NewRequest("GET", o.baseURL+"/models/"+o.model, nil)
+	req, err := http.NewRequest("GET", o.baseURL+"/models/"+o.model, nil)
+	if err != nil {
+		return &ErrBackendUnavailable{
+			Backend: "openai:" + o.model,
+			Cause:   fmt.Errorf("build request: %w", err),
+			Hint:    "check embedding.endpoint config — is the URL well-formed?",
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
 	resp, err := o.client.Do(req)
 	if err != nil {
@@ -160,7 +167,14 @@ func (o *OpenAIEmbedder) embedBatchOne(texts []string) ([][]float32, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("decode openai: %w", err)
 	}
-	out := make([][]float32, len(parsed.Data))
+	// Defensive: size by INPUT length and verify response count matches.
+	// Partial responses would otherwise panic in RebuildIndex at
+	// `embeddings[j]`. Matches Gemini's guard.
+	if len(parsed.Data) != len(texts) {
+		return nil, fmt.Errorf("openai returned %d embeddings for %d inputs (partial response not supported)",
+			len(parsed.Data), len(texts))
+	}
+	out := make([][]float32, len(texts))
 	for _, d := range parsed.Data {
 		if d.Index < 0 || d.Index >= len(out) {
 			return nil, fmt.Errorf("openai returned out-of-range index %d", d.Index)
