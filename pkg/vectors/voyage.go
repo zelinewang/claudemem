@@ -55,22 +55,19 @@ func (v *VoyageEmbedder) Dimensions() int {
 	return 1024 // voyage-3.5-lite native
 }
 
+// Available does a LIGHTWEIGHT check: api_key present. We intentionally
+// do NOT probe the API here because Voyage has no cheap metadata
+// endpoint — a real probe would burn billed tokens on every CLI start.
+// If the key is invalid, the first real Embed call surfaces it as an
+// ErrBackendUnavailable via the same code path; we trade precision of
+// error timing for zero idle cost. Matches the "embedder is not pinged
+// at construct time" design comment in store.go.
 func (v *VoyageEmbedder) Available() error {
 	if v.apiKey == "" {
 		return &ErrBackendUnavailable{
 			Backend: "voyage:" + v.model,
 			Cause:   fmt.Errorf("no API key configured"),
 			Hint:    "export VOYAGE_API_KEY=... (or run `claudemem setup`)",
-		}
-	}
-	// Voyage doesn't expose a cheap metadata endpoint; do a minimal embed
-	// of a single short string as the health probe.
-	_, err := v.Embed("health", InputTypeQuery)
-	if err != nil {
-		return &ErrBackendUnavailable{
-			Backend: "voyage:" + v.model,
-			Cause:   err,
-			Hint:    "check VOYAGE_API_KEY is valid at https://dash.voyageai.com/api-keys",
 		}
 	}
 	return nil

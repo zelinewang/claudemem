@@ -10,10 +10,9 @@ import (
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
-var (
-	healthQuick bool
-	healthDeep  bool
-)
+// healthDeep is the only runtime flag — "--quick" is the default and
+// doesn't need a separate bool since `health` without flags IS quick.
+var healthDeep bool
 
 var healthCmd = &cobra.Command{
 	Use:   "health",
@@ -45,7 +44,6 @@ Drift output:
 }
 
 func runHealth(cmd *cobra.Command, args []string) error {
-	// --quick is the default; --deep overrides
 	isDeep := healthDeep
 
 	fileStore, err := getFileStore()
@@ -127,7 +125,9 @@ func printHealthReport(r *vectors.HealthReport, fs *storage.FileStore) {
 }
 
 func init() {
-	healthCmd.Flags().BoolVar(&healthQuick, "quick", false, "Quick mode (default; <100ms SessionStart-safe)")
+	// --quick is the default; we keep it as a no-op flag for docs/explicit
+	// scripts that want to signal intent. --deep adds I4/I5 invariants.
+	healthCmd.Flags().Bool("quick", false, "Quick mode (default; <100ms SessionStart-safe)")
 	healthCmd.Flags().BoolVar(&healthDeep, "deep", false, "Deep mode: also check for orphans + config match (I4/I5)")
 	rootCmd.AddCommand(healthCmd)
 }

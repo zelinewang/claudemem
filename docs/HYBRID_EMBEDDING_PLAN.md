@@ -287,11 +287,16 @@ claudemem sync status   # git status + index health report
 ```
 
 ### Reconcile (`claudemem sync pull` internal):
-1. `git pull` (fast-forward or merge, with markdown-aware conflict strategy)
-2. `reindex --fts` (quick — just re-populates SQLite FTS from markdown)
-3. Scan vectors table: `SELECT doc_id FROM entries WHERE id NOT IN (SELECT doc_id FROM vectors WHERE backend=? AND model=?)`
-4. Embed missing docs with configured backend (cost: only NEW docs since last pull)
-5. Report: "Reconciled 17 new notes, embedded with gemini:gemini-embedding-001 in 3.2s"
+1. `git pull --ff-only` (fast-forward only — no auto-merge for markdown)
+2. `Reindex()` (rebuilds the SQLite entries + memory_fts from markdown)
+3. `ReindexVectors()` (wipes + rebuilds vectors for the active `(backend, model)` only; rows from other backends preserved for cross-machine coexistence)
+4. Report: "Reconciled N FTS entries + M vectors (backend: <name>)"
+
+**Note**: The current implementation does a full reindex-for-active-backend
+on each pull, not a diff-based incremental embed. For corpora up to ~5K
+notes this is ~<30s with Gemini and acceptable. A future optimization
+would be to diff the last-synced git SHA against HEAD and embed only
+changed files; tracked in open decisions #3.
 
 ### Hooks integration
 

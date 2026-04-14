@@ -157,9 +157,14 @@ func (vs *VectorStore) createV22Schema() error {
 // every existing row with the backend that produced it and copy forward.
 // If vector_meta.index_backend is absent (pre-66c3fdc installs), we fall
 // back to a conservative ("tfidf", "tfidf") tuple — users can re-run
-// setup to re-embed with a real backend later.
+// setup to re-embed with a real backend later. A REAL DB error reading
+// the meta row is fatal: silently falling back to tfidf would mis-tag
+// MacBook's real Ollama embeddings.
 func (vs *VectorStore) migrateV21ToV22() error {
-	indexedBackend := readMeta(vs.db, "index_backend")
+	indexedBackend, err := readMeta(vs.db, "index_backend")
+	if err != nil {
+		return fmt.Errorf("read vector_meta.index_backend (required for migration): %w", err)
+	}
 	backend, model := parseBackendTuple(indexedBackend)
 
 	dim, err := firstRowDim(vs.db)
@@ -209,9 +214,24 @@ func parseBackendTuple(s string) (backend, model string) {
 	return s, s
 }
 
-func readMeta(db *sql.DB, key string) string {
+// readMeta returns the vector_meta value for a key. Distinguishes between
+// "not set" (returns empty string + nil) and "DB error" (returns empty +
+// error). The migration path MUST treat a real DB error as fatal because
+// silently returning "" would mis-tag every preserved vector as tfidf.
+func readMeta(db *sql.DB, key string) (string, error) {
 	var v string
-	db.QueryRow(`SELECT value FROM vector_meta WHERE key=?`, key).Scan(&v)
+	err := db.QueryRow(`SELECT value FROM vector_meta WHERE key=?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
+
+// readMetaOrEmpty is the forgiving variant for callers that don't care
+// about distinguishing "missing" from "error" (e.g. diagnostic health
+// output where we'd rather show "unknown" than abort).
+func readMetaOrEmpty(db *sql.DB, key string) string {
+	v, _ := readMeta(db, key)
 	return v
 }
 

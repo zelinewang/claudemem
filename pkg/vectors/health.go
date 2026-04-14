@@ -154,7 +154,7 @@ func CheckHealthDeep(in HealthInputs) (*HealthReport, error) {
 
 	// I5 — vector_meta.index_backend matches active embedder
 	if in.Embedder != nil {
-		meta := readMeta(in.DB, "index_backend")
+		meta := readMetaOrEmpty(in.DB, "index_backend")
 		expected := in.Embedder.Name() + ":" + in.Embedder.Model()
 		r.I5VectorMetaMatchesActive = meta == expected || meta == ""
 		if !r.I5VectorMetaMatchesActive {

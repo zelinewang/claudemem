@@ -208,11 +208,24 @@ func (g *GitSync) Pull() error {
 
 // --- internal helpers ---
 
+// git runs `git <args>` in g.Dir and surfaces stderr+stdout in the error
+// message when the command fails. Hook contexts (SessionEnd) often
+// suppress stderr, so wrapping the full output into the returned error
+// is the only way users see "fatal: refusing to merge unrelated
+// histories" or similar actionable git messages.
 func (g *GitSync) git(args ...string) error {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = g.Dir
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// Trim trailing newlines from git's output for cleaner error format.
+		msg := strings.TrimRight(string(out), "\n")
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%w\n%s", err, msg)
+	}
+	return nil
 }
 
 func (g *GitSync) gitOutput(args ...string) (string, error) {
@@ -222,17 +235,8 @@ func (g *GitSync) gitOutput(args ...string) (string, error) {
 	return string(out), err
 }
 
-// gitMaybe is `git <args>` but tolerates "no files matched" errors that
-// happen when notes/ or MEMORY.md doesn't exist yet.
-func (g *GitSync) gitMaybe(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = g.Dir
-	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), "did not match any files") {
-		return fmt.Errorf("%s: %s", strings.Join(args, " "), string(out))
-	}
-	return nil
-}
+// (gitMaybe removed — Push now per-path stats each target before adding,
+// which makes "missing file" tolerance unnecessary.)
 
 func hostname() string {
 	h, err := os.Hostname()
