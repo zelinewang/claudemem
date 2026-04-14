@@ -5,7 +5,8 @@ description: >
   Provides full-text search with faceted filters, code structure analysis, and
   bidirectional cross-referencing between notes and sessions. Use when saving
   knowledge for future sessions, recalling past work, searching stored context,
-  wrapping up a session, or analyzing code structure. All local, zero network.
+  wrapping up a session, or analyzing code structure. Default: local, zero network.
+  Cloud embedding backends (Gemini, Voyage, OpenAI) are opt-in via `claudemem setup`.
 ---
 
 # claudemem — Persistent Memory for AI Agents

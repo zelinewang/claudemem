@@ -48,19 +48,43 @@ func NewOllamaEmbedder(model string) *OllamaEmbedder {
 	}
 }
 
-// Available checks if Ollama is running and the embedding model is available.
-func (o *OllamaEmbedder) Available() bool {
-	// Quick health check
+// Available returns nil if the Ollama daemon is reachable. On failure it
+// returns an ErrBackendUnavailable carrying a recovery hint — this is the
+// failure signal the search/read path uses to fail loud instead of falling
+// back to TF-IDF silently.
+func (o *OllamaEmbedder) Available() error {
 	resp, err := o.client.Get(o.baseURL + "/api/tags")
 	if err != nil {
-		return false
+		return &ErrBackendUnavailable{
+			Backend: o.Name() + ":" + o.model,
+			Cause:   err,
+			Hint:    "start the daemon: `ollama serve` (or switch backend: `claudemem setup`)",
+		}
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == 200
+	if resp.StatusCode != 200 {
+		return &ErrBackendUnavailable{
+			Backend: o.Name() + ":" + o.model,
+			Cause:   fmt.Errorf("ollama /api/tags returned HTTP %d", resp.StatusCode),
+			Hint:    "check `ollama serve` logs or run `claudemem setup` to switch backend",
+		}
+	}
+	return nil
 }
 
-// Embed generates an embedding vector for a single text input.
-func (o *OllamaEmbedder) Embed(text string) ([]float32, error) {
+// Name returns "ollama" — the backend identifier used in the composite
+// (backend, model) key that tags each vector row.
+func (o *OllamaEmbedder) Name() string { return "ollama" }
+
+// Dimensions returns the vector length produced by this model. Returns 0
+// until the first successful Embed call (Ollama does not advertise dims
+// up-front, so we cache after observing the first response).
+func (o *OllamaEmbedder) Dimensions() int { return o.dims }
+
+// Embed generates an embedding. The InputType hint is accepted for interface
+// conformance and ignored — Ollama does not distinguish document vs query
+// modes at the API level.
+func (o *OllamaEmbedder) Embed(text string, _ InputType) ([]float32, error) {
 	reqBody := embedRequest{
 		Model: o.model,
 		Input: text,
@@ -105,7 +129,8 @@ func (o *OllamaEmbedder) Embed(text string) ([]float32, error) {
 }
 
 // EmbedBatch generates embeddings for multiple texts in one request.
-func (o *OllamaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+// InputType is accepted for interface conformance and ignored (see Embed).
+func (o *OllamaEmbedder) EmbedBatch(texts []string, _ InputType) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -151,11 +176,6 @@ func (o *OllamaEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
 	}
 
 	return result.Embeddings, nil
-}
-
-// Dims returns the embedding dimension size (0 if no embedding generated yet).
-func (o *OllamaEmbedder) Dims() int {
-	return o.dims
 }
 
 // Model returns the model name being used.

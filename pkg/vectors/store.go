@@ -7,382 +7,509 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
+	"time"
 )
 
-// VectorStore manages embedding vectors stored in SQLite for semantic search.
-// Supports two backends: Ollama (real embeddings) and TF-IDF (fallback).
-// Ollama provides true semantic understanding; TF-IDF provides keyword similarity.
+// VectorStore manages per-document embedding vectors stored in SQLite.
+//
+// Schema (v22 — see docs/HYBRID_EMBEDDING_PLAN.md):
+//
+//	vectors(doc_id, backend, model, dim, vector, created_at) PK(doc_id, backend, model)
+//
+// Rationale for the composite key: two machines can share the same markdown
+// corpus via git and each embed with a different backend (e.g., web_dev uses
+// Gemini cloud; MacBook uses local Ollama). Both sets of vectors coexist in
+// the same table; each machine's searches filter by its active backend.
+// This also lets "switch backend" be an O(new rows) operation instead of
+// O(full reindex) — old rows stay queryable if you switch back.
+//
+// The store holds exactly one Embedder (the active backend). Read-path
+// failures (search) bubble up ErrBackendUnavailable to the caller — no
+// silent fallback. Write-path failures (index) are logged and skipped so
+// a down backend does not block note/session creation; `claudemem repair`
+// heals missing vectors later.
 type VectorStore struct {
-	db         *sql.DB
-	vectorizer *Vectorizer     // TF-IDF fallback
-	ollama     *OllamaEmbedder // Ollama primary (nil if unavailable)
-	useOllama  bool            // whether Ollama is active for this session
+	db       *sql.DB
+	embedder Embedder
 }
 
-// NewVectorStore creates a new VectorStore using the provided SQLite database.
-// Prioritizes Ollama for real semantic search; TF-IDF only when Ollama is unavailable.
-func NewVectorStore(db *sql.DB) (*VectorStore, error) {
-	vs := &VectorStore{db: db}
-
+// NewVectorStore creates a store bound to a specific Embedder. The embedder
+// is not pinged here; callers that care about freshness should call
+// embedder.Available() themselves before constructing the store.
+func NewVectorStore(db *sql.DB, embedder Embedder) (*VectorStore, error) {
+	if embedder == nil {
+		return nil, fmt.Errorf("vectors.NewVectorStore: embedder must not be nil (pass NewTFIDFEmbedder for tests)")
+	}
+	vs := &VectorStore{db: db, embedder: embedder}
 	if err := vs.initSchema(); err != nil {
 		return nil, fmt.Errorf("failed to init vector schema: %w", err)
 	}
-
-	// Try Ollama first — primary path
-	vs.tryInitOllama("")
-	if !vs.useOllama {
-		// Ollama unavailable — initialize TF-IDF as fallback
-		vs.vectorizer = NewVectorizer()
-		vs.loadVectorizerState()
+	// TF-IDF embedders persist their vocabulary in vector_meta; restore it.
+	if tf, ok := embedder.(*TFIDFEmbedder); ok {
+		vs.loadTFIDFState(tf)
 	}
-
-	// Check backend consistency: warn if index was built with a different backend
-	vs.checkBackendConsistency()
-
 	return vs, nil
 }
 
-// NewVectorStoreWithModel creates a VectorStore with a specific Ollama model.
-func NewVectorStoreWithModel(db *sql.DB, model string) (*VectorStore, error) {
-	vs := &VectorStore{db: db}
+// Embedder returns the active backend. Exposed so callers (e.g., health
+// checks, CLI "stats" output) can inspect Name()/Model()/Dimensions()
+// without reaching into the store's internals.
+func (vs *VectorStore) Embedder() Embedder { return vs.embedder }
 
-	if err := vs.initSchema(); err != nil {
-		return nil, fmt.Errorf("failed to init vector schema: %w", err)
-	}
-
-	vs.tryInitOllama(model)
-	if !vs.useOllama {
-		vs.vectorizer = NewVectorizer()
-		vs.loadVectorizerState()
-	}
-
-	vs.checkBackendConsistency()
-
-	return vs, nil
-}
-
-// tryInitOllama attempts to connect to a local Ollama instance.
-func (vs *VectorStore) tryInitOllama(model string) {
-	embedder := NewOllamaEmbedder(model)
-	if embedder.Available() {
-		vs.ollama = embedder
-		vs.useOllama = true
-	}
-}
-
-// UsingOllama returns true if Ollama embeddings are active.
-func (vs *VectorStore) UsingOllama() bool {
-	return vs.useOllama
-}
-
-// EmbeddingBackend returns "ollama" or "tfidf" to indicate active backend.
+// EmbeddingBackend returns the "backend:model" tuple string used in
+// diagnostic output. Preserved for compatibility with existing callers
+// (filestore_vectors.go, stats command).
 func (vs *VectorStore) EmbeddingBackend() string {
-	if vs.useOllama {
-		return "ollama:" + vs.ollama.Model()
-	}
-	return "tfidf"
+	return vs.embedder.Name() + ":" + vs.embedder.Model()
 }
 
-// initSchema creates the vector storage tables.
+// initSchema creates or migrates the vectors + vector_meta tables.
+// On first run with the old v21 schema (id, vector), this migrates rows
+// in place, tagging them with whatever backend previously produced them.
+// This preserves MacBook's real Ollama vectors across the upgrade.
 func (vs *VectorStore) initSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS vectors (
-		id TEXT PRIMARY KEY,
-		vector BLOB NOT NULL
-	);
-	CREATE TABLE IF NOT EXISTS vector_meta (
-		key TEXT PRIMARY KEY,
-		value TEXT NOT NULL
-	);`
-
-	_, err := vs.db.Exec(schema)
-	return err
-}
-
-// IndexDocument adds or updates a document's vector in the store.
-// Uses a single backend per session: Ollama when available, TF-IDF otherwise.
-// Never mixes backends — this prevents dimension mismatches that make documents invisible.
-func (vs *VectorStore) IndexDocument(id, text string) error {
-	var vec []float32
-	var err error
-
-	if vs.useOllama {
-		// Truncate to fit model context window, then embed
-		vec, err = vs.ollama.Embed(TruncateForEmbed(text))
-		if err != nil {
-			// Ollama failed even after truncation — skip this document for semantic search.
-			// Better absent than invisible (TF-IDF would create wrong-dimension vector).
-			fmt.Fprintf(os.Stderr, "ollama embed failed for %s (skipping): %v\n", id[:8], err)
-			return nil
-		}
-	} else {
-		vec = vs.vectorizer.Vectorize(text)
+	// vector_meta is stable across versions
+	if _, err := vs.db.Exec(`
+		CREATE TABLE IF NOT EXISTS vector_meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`); err != nil {
+		return err
 	}
 
-	if vec == nil {
+	kind, err := detectVectorsSchema(vs.db)
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case schemaNone:
+		return vs.createV22Schema()
+	case schemaV21:
+		return vs.migrateV21ToV22()
+	case schemaV22:
 		return nil
 	}
+	return fmt.Errorf("unknown vectors schema kind %d", kind)
+}
 
-	blob := vectorToBlob(vec)
+type vectorsSchemaKind int
+
+const (
+	schemaNone vectorsSchemaKind = iota
+	schemaV21                    // (id, vector)
+	schemaV22                    // (doc_id, backend, model, dim, vector, created_at)
+)
+
+func detectVectorsSchema(db *sql.DB) (vectorsSchemaKind, error) {
+	rows, err := db.Query(`PRAGMA table_info(vectors)`)
+	if err != nil {
+		return schemaNone, fmt.Errorf("pragma table_info: %w", err)
+	}
+	defer rows.Close()
+	var cols []string
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return schemaNone, err
+		}
+		cols = append(cols, name)
+	}
+	if len(cols) == 0 {
+		return schemaNone, nil
+	}
+	has := map[string]bool{}
+	for _, c := range cols {
+		has[c] = true
+	}
+	if has["doc_id"] && has["backend"] && has["model"] {
+		return schemaV22, nil
+	}
+	if has["id"] && has["vector"] {
+		return schemaV21, nil
+	}
+	return schemaNone, fmt.Errorf("vectors table has unexpected columns: %v", cols)
+}
+
+const v22Schema = `
+CREATE TABLE vectors (
+	doc_id     TEXT    NOT NULL,
+	backend    TEXT    NOT NULL,
+	model      TEXT    NOT NULL,
+	dim        INTEGER NOT NULL,
+	vector     BLOB    NOT NULL,
+	created_at TEXT    NOT NULL,
+	PRIMARY KEY (doc_id, backend, model)
+);
+CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
+CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
+`
+
+func (vs *VectorStore) createV22Schema() error {
+	_, err := vs.db.Exec(v22Schema)
+	return err
+}
+
+// migrateV21ToV22 is the preservation-first migration. Rather than dropping
+// the old flat (id, vector) table and forcing a costly re-embed, we tag
+// every existing row with the backend that produced it and copy forward.
+// If vector_meta.index_backend is absent (pre-66c3fdc installs), we fall
+// back to a conservative ("tfidf", "tfidf") tuple — users can re-run
+// setup to re-embed with a real backend later. A REAL DB error reading
+// the meta row is fatal: silently falling back to tfidf would mis-tag
+// MacBook's real Ollama embeddings.
+func (vs *VectorStore) migrateV21ToV22() error {
+	indexedBackend, err := readMeta(vs.db, "index_backend")
+	if err != nil {
+		return fmt.Errorf("read vector_meta.index_backend (required for migration): %w", err)
+	}
+	backend, model := parseBackendTuple(indexedBackend)
+
+	dim, err := firstRowDim(vs.db)
+	if err != nil {
+		return fmt.Errorf("inspect existing vector dim: %w", err)
+	}
+
+	tx, err := vs.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE vectors RENAME TO vectors_v21`); err != nil {
+		return fmt.Errorf("rename v21: %w", err)
+	}
+	if _, err := tx.Exec(v22Schema); err != nil {
+		return fmt.Errorf("create v22: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
+		SELECT id, ?, ?, ?, vector, ? FROM vectors_v21`,
+		backend, model, dim, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("copy rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE vectors_v21`); err != nil {
+		return fmt.Errorf("drop v21: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr,
+		"claudemem: migrated vectors table from v21 to v22 (tagged %d existing rows as %s:%s @%dd)\n",
+		countRows(vs.db, "vectors"), backend, model, dim)
+	return nil
+}
+
+// parseBackendTuple splits "ollama:nomic-embed-text" into ("ollama",
+// "nomic-embed-text"). A bare string (legacy "tfidf") gets duplicated.
+func parseBackendTuple(s string) (backend, model string) {
+	if s == "" {
+		return "tfidf", "tfidf"
+	}
+	if i := strings.Index(s, ":"); i > 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, s
+}
+
+// readMeta returns the vector_meta value for a key. Distinguishes between
+// "not set" (returns empty string + nil) and "DB error" (returns empty +
+// error). The migration path MUST treat a real DB error as fatal because
+// silently returning "" would mis-tag every preserved vector as tfidf.
+func readMeta(db *sql.DB, key string) (string, error) {
+	var v string
+	err := db.QueryRow(`SELECT value FROM vector_meta WHERE key=?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
+
+// readMetaOrEmpty is the forgiving variant for callers that don't care
+// about distinguishing "missing" from "error" (e.g. diagnostic health
+// output where we'd rather show "unknown" than abort).
+func readMetaOrEmpty(db *sql.DB, key string) string {
+	v, _ := readMeta(db, key)
+	return v
+}
+
+func firstRowDim(db *sql.DB) (int, error) {
+	var blob []byte
+	err := db.QueryRow(`SELECT vector FROM vectors LIMIT 1`).Scan(&blob)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return len(blob) / 4, nil
+}
+
+func countRows(db *sql.DB, table string) int {
+	var n int
+	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&n)
+	return n
+}
+
+// IndexDocument adds/updates a single document's vector under the active
+// (backend, model). Forgiving by design: embed failures are logged and
+// skipped so a down backend does not block the write path. The health
+// subsystem (P5) can heal missing rows later via `claudemem repair`.
+func (vs *VectorStore) IndexDocument(id, text string) error {
+	vec, err := vs.embedder.Embed(TruncateForEmbed(text), InputTypeDocument)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "index %s skipped (%s:%s embed failed: %v) — run `claudemem repair` to retry\n",
+			shortID(id), vs.embedder.Name(), vs.embedder.Model(), err)
+		return nil
+	}
+	if vec == nil {
+		return nil // TF-IDF returns nil before vocabulary is built
+	}
+
 	_, err = vs.db.Exec(`
-		INSERT OR REPLACE INTO vectors (id, vector)
-		VALUES (?, ?)
-	`, id, blob)
+		INSERT OR REPLACE INTO vectors
+			(doc_id, backend, model, dim, vector, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		id, vs.embedder.Name(), vs.embedder.Model(), len(vec),
+		vectorToBlob(vec), time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
-// RemoveDocument removes a document's vector from the store.
+// RemoveDocument removes ALL vectors for a given doc (across any backends
+// that have rows for it). This matches the filesystem truth — if a markdown
+// note is deleted, its embeddings are garbage regardless of backend.
 func (vs *VectorStore) RemoveDocument(id string) error {
-	_, err := vs.db.Exec(`DELETE FROM vectors WHERE id = ?`, id)
+	_, err := vs.db.Exec(`DELETE FROM vectors WHERE doc_id = ?`, id)
 	return err
 }
 
-// SearchResult represents a semantic search result with similarity score.
+// SearchResult is a single semantic search hit.
 type SearchResult struct {
 	ID         string  `json:"id"`
 	Similarity float32 `json:"similarity"`
 }
 
-// Search performs semantic search by finding the most similar documents.
-// Uses Ollama embeddings if available, falls back to TF-IDF cosine similarity.
-// Returns up to limit results sorted by similarity (highest first).
+// Search performs semantic search over vectors produced by the ACTIVE
+// (backend, model). Read-path contract: if the backend is unreachable,
+// this propagates the error to the caller (no silent fallback). The CLI
+// layer translates it into fail-loud / interactive recovery (P4).
 func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
-	var queryVec []float32
-	if vs.useOllama {
-		var err error
-		queryVec, err = vs.ollama.Embed(TruncateForEmbed(query))
-		if err != nil {
-			// Ollama failed for query — cannot search (mixing backends would miss documents)
-			return nil, nil
-		}
-	} else {
-		queryVec = vs.vectorizer.Vectorize(query)
+	queryVec, err := vs.embedder.Embed(TruncateForEmbed(query), InputTypeQuery)
+	if err != nil {
+		return nil, err // bubble up; do NOT degrade
 	}
 	if queryVec == nil {
 		return nil, nil
 	}
 
-	// Scan all vectors and compute similarity
-	// For the typical claudemem scale (<10K docs), brute-force is fine.
-	rows, err := vs.db.Query(`SELECT id, vector FROM vectors`)
+	rows, err := vs.db.Query(`
+		SELECT doc_id, vector FROM vectors
+		WHERE backend = ? AND model = ?`,
+		vs.embedder.Name(), vs.embedder.Model())
 	if err != nil {
-		return nil, fmt.Errorf("failed to query vectors: %w", err)
+		return nil, fmt.Errorf("query vectors: %w", err)
 	}
 	defer rows.Close()
 
 	var results []SearchResult
+	queryDim := len(queryVec)
 	for rows.Next() {
 		var id string
 		var blob []byte
 		if err := rows.Scan(&id, &blob); err != nil {
 			continue
 		}
-
 		docVec := blobToVector(blob)
-		if len(docVec) != len(queryVec) {
-			continue // dimension mismatch (stale vector from old vocab), skip
+		if len(docVec) != queryDim {
+			continue
 		}
-
-		similarity := CosineSimilarity(queryVec, docVec)
-		if similarity > 0.01 { // filter out near-zero matches
-			results = append(results, SearchResult{
-				ID:         id,
-				Similarity: similarity,
-			})
+		sim := CosineSimilarity(queryVec, docVec)
+		if sim > 0.01 {
+			results = append(results, SearchResult{ID: id, Similarity: sim})
 		}
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows iteration error: %w", err)
+		return nil, fmt.Errorf("rows iter: %w", err)
 	}
 
-	// Sort by similarity descending
 	sortResultsBySimilarity(results)
-
-	// Apply limit
 	if len(results) > limit {
 		results = results[:limit]
 	}
-
 	return results, nil
 }
 
-// RebuildIndex rebuilds the entire vector index from the provided documents.
-// Uses Ollama batch embedding if available, falls back to TF-IDF.
-func (vs *VectorStore) RebuildIndex(documents []Document) error {
-	// Clear existing vectors
-	if _, err := vs.db.Exec(`DELETE FROM vectors`); err != nil {
-		return fmt.Errorf("failed to clear vectors: %w", err)
-	}
-
-	if len(documents) == 0 {
-		return nil
-	}
-
-	tx, err := vs.db.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(`INSERT INTO vectors (id, vector) VALUES (?, ?)`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-	defer stmt.Close()
-
-	if vs.useOllama {
-		// Ollama path: batch embed in chunks of 50
-		batchSize := 50
-		for i := 0; i < len(documents); i += batchSize {
-			end := i + batchSize
-			if end > len(documents) {
-				end = len(documents)
-			}
-			batch := documents[i:end]
-
-			texts := make([]string, len(batch))
-			for j, doc := range batch {
-				texts[j] = TruncateForEmbed(doc.Text)
-			}
-
-			embeddings, embErr := vs.ollama.EmbedBatch(texts)
-			if embErr != nil {
-				// Batch failed — retry individually with truncation (never mix in TF-IDF)
-				fmt.Fprintf(os.Stderr, "ollama batch failed at offset %d, retrying per-doc with truncation: %v\n", i, embErr)
-				for _, doc := range batch {
-					vec, singleErr := vs.ollama.Embed(TruncateForEmbed(doc.Text))
-					if singleErr != nil {
-						// Still failed after truncation — skip (better absent than wrong-dimension)
-						fmt.Fprintf(os.Stderr, "  skipping %s: %v\n", doc.ID[:8], singleErr)
-						continue
-					}
-					blob := vectorToBlob(vec)
-					if _, err := stmt.Exec(doc.ID, blob); err != nil {
-						return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
-					}
-				}
-				continue
-			}
-
-			for j, doc := range batch {
-				blob := vectorToBlob(embeddings[j])
-				if _, err := stmt.Exec(doc.ID, blob); err != nil {
-					return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
-				}
-			}
-		}
-	} else {
-		// TF-IDF fallback path
-		corpus := make([]string, len(documents))
-		for i, doc := range documents {
-			corpus[i] = doc.Text
-		}
-		vs.vectorizer.BuildVocab(corpus)
-
-		for _, doc := range documents {
-			vec := vs.vectorizer.Vectorize(doc.Text)
-			if vec == nil {
-				continue
-			}
-			blob := vectorToBlob(vec)
-			if _, err := stmt.Exec(doc.ID, blob); err != nil {
-				return fmt.Errorf("failed to insert vector for %s: %w", doc.ID, err)
-			}
-		}
-
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
-	}
-
-	// Persist backend-specific state (after commit, outside transaction)
-	if !vs.useOllama && vs.vectorizer != nil {
-		if err := vs.saveVectorizerState(); err != nil {
-			return err
-		}
-	}
-
-	// Record which backend was used to build this index
-	vs.saveIndexBackend()
-
-	return nil
-}
-
-// Count returns the number of vectors in the store.
-func (vs *VectorStore) Count() (int, error) {
-	var count int
-	err := vs.db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&count)
-	return count, err
-}
-
-// Document represents a document to be indexed.
+// Document is the input shape for RebuildIndex.
 type Document struct {
 	ID   string
 	Text string
 }
 
-// saveVectorizerState persists the vectorizer state to the database.
-func (vs *VectorStore) saveVectorizerState() error {
-	state := vs.vectorizer.ExportState()
-	data, err := json.Marshal(state)
-	if err != nil {
-		return fmt.Errorf("failed to marshal vectorizer state: %w", err)
+// RebuildIndex embeds every document with the ACTIVE backend+model, tagging
+// each row accordingly. Existing rows under OTHER (backend, model) tuples
+// are preserved (cross-machine / switch-back use cases). Only rows under
+// the CURRENT backend+model are wiped and rebuilt.
+//
+// For TF-IDF embedders, this also rebuilds the vocabulary from the corpus.
+func (vs *VectorStore) RebuildIndex(documents []Document) error {
+	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
+		corpus := make([]string, len(documents))
+		for i, d := range documents {
+			corpus[i] = d.Text
+		}
+		tf.BuildVocab(corpus)
 	}
 
+	tx, err := vs.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM vectors WHERE backend = ? AND model = ?`,
+		vs.embedder.Name(), vs.embedder.Model()); err != nil {
+		return fmt.Errorf("clear active backend rows: %w", err)
+	}
+
+	if len(documents) == 0 {
+		return tx.Commit()
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	const batchSize = 50
+	now := time.Now().UTC().Format(time.RFC3339)
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
+
+	for i := 0; i < len(documents); i += batchSize {
+		end := i + batchSize
+		if end > len(documents) {
+			end = len(documents)
+		}
+		batch := documents[i:end]
+
+		texts := make([]string, len(batch))
+		for j, d := range batch {
+			texts[j] = TruncateForEmbed(d.Text)
+		}
+		embeddings, err := vs.embedder.EmbedBatch(texts, InputTypeDocument)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"embed batch failed at offset %d (%s:%s): %v — retrying per-doc\n",
+				i, backend, model, err)
+			for _, d := range batch {
+				vec, singleErr := vs.embedder.Embed(TruncateForEmbed(d.Text), InputTypeDocument)
+				if singleErr != nil || vec == nil {
+					fmt.Fprintf(os.Stderr, "  skip %s: %v\n", shortID(d.ID), singleErr)
+					continue
+				}
+				if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+					return fmt.Errorf("insert vector for %s: %w", d.ID, err)
+				}
+			}
+			continue
+		}
+
+		for j, d := range batch {
+			vec := embeddings[j]
+			if vec == nil {
+				continue
+			}
+			if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+				return fmt.Errorf("insert vector for %s: %w", d.ID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+
+	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
+		vs.saveTFIDFState(tf)
+	}
+	vs.saveIndexBackend()
+	return nil
+}
+
+// Count returns the number of vector rows under the active (backend, model).
+func (vs *VectorStore) Count() (int, error) {
+	var n int
+	err := vs.db.QueryRow(`
+		SELECT COUNT(*) FROM vectors WHERE backend = ? AND model = ?`,
+		vs.embedder.Name(), vs.embedder.Model()).Scan(&n)
+	return n, err
+}
+
+// CountAll returns the total number of vector rows across all backends.
+func (vs *VectorStore) CountAll() (int, error) {
+	var n int
+	err := vs.db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&n)
+	return n, err
+}
+
+// saveTFIDFState persists the TF-IDF vocabulary to vector_meta.
+func (vs *VectorStore) saveTFIDFState(tf *TFIDFEmbedder) error {
+	state := tf.Vectorizer().ExportState()
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal tfidf state: %w", err)
+	}
 	_, err = vs.db.Exec(`
 		INSERT OR REPLACE INTO vector_meta (key, value)
-		VALUES ('vectorizer_state', ?)
-	`, string(data))
+		VALUES ('vectorizer_state', ?)`, string(data))
 	return err
 }
 
-// loadVectorizerState restores the vectorizer state from the database.
-func (vs *VectorStore) loadVectorizerState() {
+func (vs *VectorStore) loadTFIDFState(tf *TFIDFEmbedder) {
 	var data string
-	err := vs.db.QueryRow(`
+	if err := vs.db.QueryRow(`
 		SELECT value FROM vector_meta WHERE key = 'vectorizer_state'
-	`).Scan(&data)
-	if err != nil {
-		return // no state yet, that's fine
+	`).Scan(&data); err != nil {
+		return
 	}
-
 	var state VectorizerState
 	if err := json.Unmarshal([]byte(data), &state); err != nil {
-		return // corrupted state, will be rebuilt on next reindex
+		return
 	}
-
-	vs.vectorizer.ImportState(&state)
+	tf.Vectorizer().ImportState(&state)
 }
 
-// saveIndexBackend records which embedding backend was used to build the current index.
+// saveIndexBackend writes the active (backend:model) to vector_meta for
+// diagnostics only — per-doc metadata is the real source of truth now.
+// Errors are logged but not fatal: this runs after a successful commit
+// and a missed update just triggers a false-positive I5 warning.
 func (vs *VectorStore) saveIndexBackend() {
-	backend := vs.EmbeddingBackend()
-	vs.db.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('index_backend', ?)`, backend)
-}
-
-// checkBackendConsistency warns if the current backend doesn't match the indexed backend.
-// This catches the "Ollama was running, now it's down" scenario where semantic search
-// would silently return nothing due to dimension mismatch.
-func (vs *VectorStore) checkBackendConsistency() {
-	var indexedBackend string
-	err := vs.db.QueryRow(`SELECT value FROM vector_meta WHERE key = 'index_backend'`).Scan(&indexedBackend)
-	if err != nil {
-		return // no backend recorded yet (first run), nothing to check
-	}
-
-	currentBackend := vs.EmbeddingBackend()
-	if indexedBackend != currentBackend {
-		fmt.Fprintf(os.Stderr, "warning: vector index built with %s but current backend is %s — semantic search may be degraded, run 'claudemem reindex --vectors' to rebuild\n", indexedBackend, currentBackend)
+	if _, err := vs.db.Exec(
+		`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('index_backend', ?)`,
+		vs.EmbeddingBackend()); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warn: could not update vector_meta.index_backend (%v)\n", err)
 	}
 }
 
-// vectorToBlob converts a float32 vector to a byte slice (little-endian IEEE 754).
+// --- helpers ---
+
+func shortID(id string) string {
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// vectorToBlob converts a float32 vector to a little-endian IEEE 754 byte slice.
 func vectorToBlob(vec []float32) []byte {
 	buf := make([]byte, len(vec)*4)
 	for i, v := range vec {
@@ -391,7 +518,6 @@ func vectorToBlob(vec []float32) []byte {
 	return buf
 }
 
-// blobToVector converts a byte slice back to a float32 vector.
 func blobToVector(blob []byte) []float32 {
 	if len(blob)%4 != 0 {
 		return nil
@@ -403,7 +529,6 @@ func blobToVector(blob []byte) []float32 {
 	return vec
 }
 
-// sortResultsBySimilarity sorts results by similarity descending (insertion sort).
 func sortResultsBySimilarity(results []SearchResult) {
 	for i := 1; i < len(results); i++ {
 		for j := i; j > 0 && results[j].Similarity > results[j-1].Similarity; j-- {

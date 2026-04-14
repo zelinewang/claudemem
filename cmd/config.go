@@ -25,6 +25,20 @@ var configSetCmd = &cobra.Command{
 		key := args[0]
 		value := args[1]
 
+		// Secret guard: claudemem never stores API keys / tokens / passwords
+		// in config.json. Those live in env vars; config stores only the
+		// NAME of the env var (e.g. embedding.api_key_env=GEMINI_API_KEY).
+		// Rejecting here catches the "copy-pasted curl command" footgun.
+		if config.IsSecretKey(key) {
+			return fmt.Errorf(
+				"refusing to store secret-looking key %q in config.json\n"+
+					"  claudemem keeps secrets in env vars only. Set your key there:\n"+
+					"    export GEMINI_API_KEY=...\n"+
+					"  And record the env var NAME (not the value) via:\n"+
+					"    claudemem config set embedding.api_key_env GEMINI_API_KEY",
+				key)
+		}
+
 		cfg, err := loadConfig()
 		if err != nil {
 			return err

@@ -6,23 +6,67 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
-// InitVectorStore initializes the vector store for semantic search.
-// This should be called after NewFileStore when the feature is enabled.
+// InitVectorStore initializes the vector store for semantic search using
+// the configured embedding backend. Config keys consulted:
+//
+//	embedding.backend       (default: "tfidf" on fresh install)
+//	embedding.model         (backend-specific default)
+//	embedding.dimensions    (matryoshka truncation; 0 = native)
+//	embedding.endpoint      (optional URL override, e.g., Ollama on a remote host)
+//	embedding.api_key_env   (name of the env var holding the API key for cloud)
+//
+// For P1 this only supports Ollama and TF-IDF; Gemini/Voyage/OpenAI land in
+// later phases. The backend is constructed but NOT pinged here — availability
+// is checked at use time so write-path ops stay forgiving and read-path ops
+// can surface the error with recovery instructions (P4).
 func (fs *FileStore) InitVectorStore() error {
 	if fs.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
-	vs, err := vectors.NewVectorStore(fs.db)
+	bc, err := loadBackendConfig(fs.baseDir)
+	if err != nil {
+		return fmt.Errorf("load embedding config: %w", err)
+	}
+	embedder, err := vectors.BuildEmbedder(bc)
+	if err != nil {
+		return fmt.Errorf("build embedder (%s:%s): %w — run `claudemem setup` to fix",
+			bc.Backend, bc.Model, err)
+	}
+
+	vs, err := vectors.NewVectorStore(fs.db, embedder)
 	if err != nil {
 		return fmt.Errorf("failed to initialize vector store: %w", err)
 	}
-
 	fs.vectorStore = vs
 	return nil
+}
+
+// loadBackendConfig reads embedding.* keys from ~/.claudemem/config.json
+// and resolves the API key from the named env var (never stored on disk).
+func loadBackendConfig(storeDir string) (vectors.BackendConfig, error) {
+	cfg, err := config.Load(storeDir)
+	if err != nil {
+		return vectors.BackendConfig{}, err
+	}
+	backend := cfg.GetString("embedding.backend")
+	if backend == "" {
+		backend = "tfidf" // first-run default; user can upgrade via `claudemem setup`
+	}
+	bc := vectors.BackendConfig{
+		Backend:  backend,
+		Model:    cfg.GetString("embedding.model"),
+		Endpoint: cfg.GetString("embedding.endpoint"),
+		Dim:      cfg.GetInt("embedding.dimensions"),
+	}
+	if keyEnv := cfg.GetString("embedding.api_key_env"); keyEnv != "" {
+		bc.APIKey = os.Getenv(keyEnv)
+	}
+	return bc, nil
 }
 
 // HasVectorStore returns true if semantic search is initialized.
@@ -156,9 +200,19 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 		return ftsResults, nil
 	}
 
-	// Get semantic results
+	// Get semantic results. CRITICAL: when the configured embedding backend
+	// is unreachable, SemanticSearch returns ErrBackendUnavailable. We MUST
+	// propagate that to the caller — otherwise the fail-loud UX in
+	// cmd/search.go never triggers and we silently degrade to FTS-only,
+	// violating the "no silent fallback" design rule.
+	//
+	// For all OTHER errors (e.g. transient DB read issues), keep the old
+	// forgiving behavior so hybrid search stays useful.
 	semanticResults, err := fs.SemanticSearch(query, opts.Limit)
 	if err != nil {
+		if vectors.IsBackendUnavailable(err) {
+			return nil, err
+		}
 		return ftsResults, nil
 	}
 
