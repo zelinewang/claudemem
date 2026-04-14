@@ -2,9 +2,10 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -s -w -X github.com/zelinewang/claudemem/cmd.Version=$(VERSION)
 BINARY  := claudemem
 
-.PHONY: build install test feature-test e2e-test clean verify-no-network test-all
+.PHONY: build install test feature-test e2e-test clean test-all
 
-# Default build: no network, no sync
+# Build a single static binary (pure Go, no CGO). Network calls are
+# opt-in at runtime via `claudemem setup` — default is zero network.
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
@@ -48,9 +49,6 @@ test-all: build
 	@echo ""
 	@echo "=== Feature Tests ==="
 	@bash tests/feature_test.sh
-
-verify-no-network: build
-	@echo "✓ Network check: net/http allowed for localhost Ollama only (no external URLs)"
 
 clean:
 	rm -f $(BINARY)

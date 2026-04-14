@@ -178,7 +178,7 @@ Want every session saved automatically? Add this to your `~/.claude/CLAUDE.md`:
 - **Custom sections preserved** — architecture diagrams, performance tables, file lists — nothing silently dropped
 - **Smart dedup** — notes merge by topic; sessions stay separate by conversation (session_id-based)
 - **FTS5 search** — full-text search across all notes and sessions in <10ms
-- **Zero network** — everything local, no cloud, no telemetry
+- **Opt-in network** — default is zero-network (TF-IDF or offline). Cloud embedding backends (Gemini / Voyage / OpenAI) are explicit per-machine choices via `claudemem setup`; API keys come from env vars only, never stored in config
 - **Portable** — export/import as tar.gz, move between machines
 - **200+ tests** — unit, integration, E2E, and black-box feature tests
 
@@ -240,7 +240,7 @@ skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **an
 | Socket | 1 alert | `install.sh` downloads binary via curl | Standard Go distribution |
 | Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) has CVEs | Industry-standard SQLite lib |
 
-**What claudemem actually does**: zero network calls, all data local, parameterized SQL queries, path traversal protection, 200+ tests passing. Full source: ~5,500 lines of Go, fully auditable.
+**What claudemem actually does**: zero network by default (TF-IDF or offline Ollama); cloud embedding backends are opt-in per-machine via `claudemem setup` with API keys from env vars only. Parameterized SQL queries, path traversal protection, 269+ tests passing. Full source: ~8,500 lines of Go, fully auditable.
 
 ## Tell a Friend
 

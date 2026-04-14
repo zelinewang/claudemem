@@ -17,11 +17,21 @@ Persistent memory CLI for AI coding agents. Notes + sessions with bidirectional 
 - `tests/` — Black-box feature test suite
 
 ## Core Constraints (Inviolable)
-1. **Zero network** — Binary MUST NOT import net/http. Verified: `make verify-no-network`
+1. **Opt-in network** — Default install makes **zero** network calls. Network is only
+   activated when the user explicitly selects a backend that needs it via
+   `claudemem setup`:
+   - TF-IDF (default) → no network ever
+   - Local Ollama → localhost only
+   - Gemini / Voyage / OpenAI → external API calls (explicit user choice)
+   Secrets (API keys) are **always** env-var-only; config.json stores only the env
+   var NAME. Enforced by `IsSecretKey` guard in `pkg/config/wizard.go`.
 2. **CGO_ENABLED=0** — All deps must be pure Go. No C bindings.
-3. **Single binary** — No runtime dependencies, no daemon processes
-4. **Human-readable storage** — Markdown files with YAML frontmatter, always inspectable
-5. **Backward compatible** — Existing notes/sessions must survive upgrades
+3. **Single binary** — No runtime dependencies, no daemon processes required by
+   the tool itself (user may opt into an Ollama daemon via setup).
+4. **Human-readable storage** — Markdown files with YAML frontmatter, always
+   inspectable. SQLite index + vectors are regenerable from markdown.
+5. **Backward compatible** — Existing notes/sessions must survive upgrades.
+   Schema migrations preserve data (see v21→v22 migration in pkg/vectors/store.go).
 
 ## Build & Test
 ```bash
@@ -30,7 +40,6 @@ make test               # Smoke tests (5 cases)
 make e2e-test           # E2E CLI tests (10 cases)
 make feature-test       # Black-box feature tests (82 cases)
 make test-all           # All tests: unit + smoke + E2E + feature
-make verify-no-network  # Verify no net/http in binary
 make install            # Install to ~/.local/bin/
 ```
 
