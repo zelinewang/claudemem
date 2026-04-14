@@ -20,7 +20,7 @@ func TestNewVectorStore(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	vs, err := NewVectorStore(db)
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestVectorStore_RebuildIndex(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	vs, err := NewVectorStore(db)
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestVectorStore_Search(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	vs, err := NewVectorStore(db)
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestVectorStore_Search_EmptyIndex(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	vs, err := NewVectorStore(db)
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestVectorStore_RemoveDocument(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
-	vs, err := NewVectorStore(db)
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestVectorStore_PersistState(t *testing.T) {
 	defer db.Close()
 
 	// Build index and persist state
-	vs1, err := NewVectorStore(db)
+	vs1, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore failed: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestVectorStore_PersistState(t *testing.T) {
 	}
 
 	// Create new VectorStore on the same DB — should load persisted state
-	vs2, err := NewVectorStore(db)
+	vs2, err := NewVectorStore(db, NewTFIDFEmbedder())
 	if err != nil {
 		t.Fatalf("NewVectorStore (reload) failed: %v", err)
 	}
