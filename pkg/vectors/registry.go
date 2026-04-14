@@ -36,7 +36,15 @@ func BuildEmbedder(cfg BackendConfig) (Embedder, error) {
 		return emb, nil
 
 	case "gemini":
-		return nil, fmt.Errorf("gemini backend not yet implemented (lands in P2)")
+		model := cfg.Model
+		if model == "" {
+			model = "gemini-embedding-001"
+		}
+		emb := NewGeminiEmbedder(model, cfg.APIKey, cfg.Dim)
+		if cfg.Endpoint != "" {
+			emb.WithBaseURL(cfg.Endpoint)
+		}
+		return emb, nil
 	case "voyage":
 		return nil, fmt.Errorf("voyage backend not yet implemented (lands in P7)")
 	case "openai":
