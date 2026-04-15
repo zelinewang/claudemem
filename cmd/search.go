@@ -24,6 +24,7 @@ var (
 	searchSort           string
 	searchSemantic       bool
 	searchFTSOnly        bool // P4: explicit opt-in to skip semantic search for this query
+	searchAutoFallbackFTS bool // Non-TTY opt-in: fall back to FTS (warn on stderr) instead of exit 1 when backend is unreachable
 )
 
 var searchCmd = &cobra.Command{
@@ -253,6 +254,7 @@ func init() {
 	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")
 	searchCmd.Flags().BoolVar(&searchSemantic, "semantic", false, "Use semantic search (TF-IDF vectors, requires features.semantic_search=true)")
 	searchCmd.Flags().BoolVar(&searchFTSOnly, "fts-only", false, "Skip semantic search for this query (FTS5 keyword only). Useful when the embedding backend is down and you want to search anyway.")
+	searchCmd.Flags().BoolVar(&searchAutoFallbackFTS, "auto-fallback-fts", false, "In non-TTY mode, if the embedding backend is unreachable, fall back to FTS keyword search (with a stderr warning) instead of exiting 1. Useful for cron / hooks / CI. Interactive mode is unaffected.")
 	rootCmd.AddCommand(searchCmd)
 }
 
@@ -284,11 +286,24 @@ func handleBackendFailure(err error, wasHybridRequested bool) (recoveryChoice, e
 
 func handleSpecificBackendFailure(ebu *vectors.ErrBackendUnavailable, wasHybridRequested bool) (recoveryChoice, error) {
 	if !isInteractive() {
-		// Non-TTY: emit the full error with recovery options, exit 1.
+		// Non-TTY + explicit opt-in: emit a warning and degrade to FTS keyword
+		// search for this query. Keeps automation (cron, hooks, /wrapup, CI)
+		// from breaking on transient backend outages while still being
+		// completely transparent about what happened (stderr warning + the
+		// FTS-only result set is clearly distinguishable from semantic).
+		if searchAutoFallbackFTS {
+			fmt.Fprintf(os.Stderr, "[warn] claudemem: semantic backend %q unavailable (%v) — auto-falling back to FTS keyword search\n", ebu.Backend, ebu.Cause)
+			fmt.Fprintf(os.Stderr, "       to resolve permanently: %s\n", ebu.Hint)
+			return recoveryFTSOnly, nil
+		}
+		// Non-TTY default: emit the full error with recovery options, exit 1.
+		// Strict by design — "no silent fallback" — callers must opt in via
+		// --auto-fallback-fts if they want graceful degradation.
 		fmt.Fprintf(os.Stderr, "Error: embedding backend %q unreachable: %v\n", ebu.Backend, ebu.Cause)
 		fmt.Fprintf(os.Stderr, "\n  Recovery options:\n")
 		fmt.Fprintf(os.Stderr, "    - %s\n", ebu.Hint)
 		fmt.Fprintf(os.Stderr, "    - Re-run this search with --fts-only to use keyword search this one time\n")
+		fmt.Fprintf(os.Stderr, "    - Re-run with --auto-fallback-fts to degrade gracefully in future runs\n")
 		fmt.Fprintf(os.Stderr, "    - Run `claudemem setup` to switch backend\n")
 		return recoveryFail, fmt.Errorf("%w", ebu)
 	}
@@ -330,7 +345,9 @@ func handleGenericEmbeddingFailure(err error) (recoveryChoice, error) {
 
 // isInteractive reports whether stdin is connected to a TTY. Used to
 // branch between "ask the user" and "fail loud with recovery message."
-func isInteractive() bool {
+// Declared as a var so tests can substitute a deterministic value —
+// `go test` itself may or may not have a TTY depending on the invoker.
+var isInteractive = func() bool {
 	fi, err := os.Stdin.Stat()
 	if err != nil {
 		return false
