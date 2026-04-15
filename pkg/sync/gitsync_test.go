@@ -157,3 +157,61 @@ func TestGitSync_GitignoreExcludesStateFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestGitSync_Push_HandlesRemoteSwitch pins the fix for a silent-skip bug:
+// when a user runs `git remote set-url origin <new>`, the local tracking
+// ref `refs/remotes/origin/main` is NOT updated, so localAheadOfRemote()
+// returns false against the stale ref even though the new remote is
+// completely empty. Pre-fix behaviour: sync push reports success but
+// pushes nothing; a fresh clone sees an empty repo.
+//
+// Fix: Push runs `git fetch --quiet origin` before the skip-check, so the
+// tracking refs reflect the real remote state.
+func TestGitSync_Push_HandlesRemoteSwitch(t *testing.T) {
+	requireGit(t)
+	remote1 := setupLocalBare(t)
+	remote2 := setupLocalBare(t) // empty — represents the "new" remote
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "notes", "demo"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes", "demo", "x.md"), []byte("# x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := NewGitSync(dir)
+	if err := g.Init(remote1); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	setGitUser(t, dir)
+	if err := g.Push(""); err != nil {
+		t.Fatalf("first push to remote1: %v", err)
+	}
+
+	// Simulate the failure-mode: user (or we) switch the remote via
+	// `git remote set-url`. Tracking refs for origin/main still point at
+	// remote1's commit, while remote2 is completely empty.
+	cmd := exec.Command("git", "remote", "set-url", "origin", remote2)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("remote set-url: %v\n%s", err, string(out))
+	}
+
+	// No new changes; with the pre-fix localAheadOfRemote heuristic this
+	// would silent-skip. The fetch we added forces the tracking ref to
+	// catch up (remote2 has no main branch), making the push proceed.
+	if err := g.Push(""); err != nil {
+		t.Fatalf("push after remote switch: %v", err)
+	}
+
+	// Verify remote2 actually received the content via a throwaway clone.
+	cloneDir := t.TempDir()
+	cmd = exec.Command("git", "clone", remote2, cloneDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone remote2: %v\n%s", err, string(out))
+	}
+	if _, err := os.Stat(filepath.Join(cloneDir, "notes", "demo", "x.md")); err != nil {
+		t.Errorf("remote2 still empty after push (silent skip regressed): %v", err)
+	}
+}

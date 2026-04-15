@@ -164,6 +164,17 @@ func (g *GitSync) Push(message string) error {
 		return fmt.Errorf("no remote configured; run `git remote add origin <url>` inside %s", g.Dir)
 	}
 
+	// Refresh remote tracking refs before deciding whether to skip.
+	// Rationale: `git remote set-url` doesn't update `refs/remotes/origin/*`,
+	// so a freshly-re-pointed remote (e.g. file:// → github.com) can appear
+	// "up to date" via stale tracking — causing Push to silent-skip while
+	// the real remote is empty. `--prune` is load-bearing: without it,
+	// an old tracking ref whose branch no longer exists on the new remote
+	// stays around and keeps misleading localAheadOfRemote.
+	// Failure (offline / auth) is non-fatal: we fall through to the push
+	// below, which will surface a real error to the user.
+	_ = g.git("fetch", "--prune", "--quiet", "origin")
+
 	// If nothing was committed AND local is already up-to-date with remote,
 	// skip the push — avoids a noisy "Everything up-to-date" on every hook.
 	if !hasChanges {
@@ -198,14 +209,21 @@ func (g *GitSync) hasStagedChanges() bool {
 }
 
 // localAheadOfRemote reports whether HEAD has commits not yet on origin.
-// Best-effort: returns false on any error (new branch with no upstream,
-// network issues, etc.) so the caller doesn't push blindly.
+// Used by Push to decide whether to skip an up-to-date no-op push.
+//
+// Semantics on error: returns TRUE (assume "ahead"). Rationale — the
+// only errors rev-list produces here are "upstream ref doesn't resolve"
+// (new remote, branch renamed, tracking ref pruned). In all those cases
+// the correct action is to push, not skip — the push itself will set up
+// tracking via `-u`. False-positive cost is one noisy "Everything
+// up-to-date" line; false-negative cost is a silent-skip bug where the
+// user thinks they've synced and hasn't.
 func (g *GitSync) localAheadOfRemote() bool {
 	cmd := exec.Command("git", "rev-list", "--count", "@{u}..HEAD")
 	cmd.Dir = g.Dir
 	out, err := cmd.Output()
 	if err != nil {
-		return false
+		return true // err on the side of pushing — see comment above
 	}
 	return strings.TrimSpace(string(out)) != "0"
 }
