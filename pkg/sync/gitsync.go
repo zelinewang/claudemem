@@ -100,6 +100,14 @@ config.json
 *.tmp
 *.swp
 .DS_Store
+
+# macOS cross-filesystem residue (AppleDouble extended-attribute files)
+# Appear as ._* next to every real file when memory was touched via SMB/SFTP
+# from a Mac. Worthless on non-Mac machines, no cross-machine value.
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
 `
 	return os.WriteFile(filepath.Join(g.Dir, ".gitignore"), []byte(content), 0644)
 }

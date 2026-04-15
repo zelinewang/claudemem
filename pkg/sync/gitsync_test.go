@@ -148,6 +148,9 @@ func TestGitSync_GitignoreExcludesStateFiles(t *testing.T) {
 		"*.tar",
 		// defensive: legacy self-referential symlinks
 		".claudemem",
+		// macOS cross-filesystem residue
+		"._*",
+		".Spotlight-V100",
 	} {
 		if !strings.Contains(string(data), mustExclude) {
 			t.Errorf(".gitignore missing rule for %q", mustExclude)
