@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Config provides simple JSON configuration management
@@ -81,12 +82,22 @@ func (c *Config) GetBool(key string) bool {
 	}
 }
 
-// GetInt retrieves an integer config value
+// GetInt retrieves an integer config value.
+// Handles both JSON numbers (parsed as float64) and string-encoded ints
+// ("768") — the latter is what `claudemem config set KEY VAL` produces.
 func (c *Config) GetInt(key string) int {
-	if v, ok := c.data[key].(float64); ok {
+	switch v := c.data[key].(type) {
+	case float64:
 		return int(v)
+	case string:
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
 	}
-	return 0
 }
 
 // Set updates a config value
