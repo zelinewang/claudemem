@@ -141,6 +141,13 @@ func TestGitSync_GitignoreExcludesStateFiles(t *testing.T) {
 		"config.json",
 		".sync_auto_pull",
 		".sync_auto_push",
+		// archive artifacts — never cross machines
+		"*.tar.gz",
+		"*.tgz",
+		"*.zip",
+		"*.tar",
+		// defensive: legacy self-referential symlinks
+		".claudemem",
 	} {
 		if !strings.Contains(string(data), mustExclude) {
 			t.Errorf(".gitignore missing rule for %q", mustExclude)

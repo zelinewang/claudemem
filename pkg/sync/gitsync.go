@@ -85,6 +85,16 @@ config.json
 .sync_auto_pull
 .sync_auto_push
 
+# defensive: self-referential or stray symlinks inside the memory dir
+# (e.g. legacy .claudemem -> /home/*/.claudemem left by older installs)
+.claudemem
+
+# backup archives — per-machine snapshots, never sync
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
 # editor / OS temp files
 *.bak
 *.tmp
