@@ -3,7 +3,7 @@
 Persistent memory CLI for AI coding agents. Notes + sessions with bidirectional cross-referencing.
 
 ## Tech Stack
-- **Language**: Go 1.24 (CGO_ENABLED=0, pure Go, single static binary)
+- **Language**: Go 1.24+ / toolchain 1.25 (CGO_ENABLED=0, pure Go, single static binary)
 - **CLI**: spf13/cobra
 - **Storage**: Markdown files (source of truth) + SQLite FTS5 index (modernc.org/sqlite)
 - **Testing**: `go test` (unit) + `e2e_test.sh` (E2E) + `tests/feature_test.sh` (82 black-box tests)
