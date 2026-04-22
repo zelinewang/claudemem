@@ -67,7 +67,7 @@ func quoteFTSToken(tok string) string {
 }
 
 func needsQuoting(s string) bool {
-	return strings.ContainsAny(s, "-:^")
+	return strings.ContainsAny(s, `-:^"()`)
 }
 
 // Search implements full-text search across notes and sessions

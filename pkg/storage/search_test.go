@@ -332,6 +332,10 @@ func TestSanitizeFTSQuery(t *testing.T) {
 		{"mixed-hyphen normal", `"mixed-hyphen" normal`},
 		{"", ""},
 		{"  spaces  ", "spaces"},
+		// Review findings: embedded quotes and parens must be quoted
+		{`dev"orchestrator`, `"dev""orchestrator"`},
+		{"(grouped)", `"(grouped)"`},
+		{`he said "hello"`, `he said "hello"`},
 	}
 
 	for _, tt := range tests {
@@ -395,5 +399,27 @@ func TestSearchSessions_HyphenatedQuery(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Errorf("SearchSessions('auto-amy') returned 0 results, want >= 1")
+	}
+}
+
+func TestSearch_EmbeddedQuoteDoesNotCrash(t *testing.T) {
+	store := setupTestStore(t)
+
+	note := models.NewNote("test", "Quote Test", "some content with dev orchestrator")
+	_, err := store.AddNote(note)
+	if err != nil {
+		t.Fatalf("AddNote() failed: %v", err)
+	}
+
+	// This crashed before the fix: embedded " produced unterminated FTS5 string
+	_, err = store.Search(`dev"orchestrator`, "", 10)
+	if err != nil {
+		t.Fatalf("Search with embedded quote should not error, got: %v", err)
+	}
+
+	// Parentheses should not be interpreted as FTS5 grouping
+	_, err = store.Search("(test)", "", 10)
+	if err != nil {
+		t.Fatalf("Search with parens should not error, got: %v", err)
 	}
 }
