@@ -7,6 +7,69 @@ import (
 	"time"
 )
 
+// sanitizeFTSQuery makes user input safe for FTS5 MATCH by quoting tokens
+// that contain special characters (hyphens, colons, carets). Without this,
+// "dev-orchestrator" is parsed as column:dev NOT orchestrator, which errors
+// because no "dev" column exists.
+//
+// Preserves intentional FTS5 syntax: OR/AND/NOT operators, * suffix wildcards,
+// and already-quoted phrases.
+func sanitizeFTSQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return query
+	}
+
+	// Already a quoted phrase — pass through
+	if strings.HasPrefix(query, `"`) && strings.HasSuffix(query, `"`) {
+		return query
+	}
+
+	tokens := strings.Fields(query)
+	if len(tokens) == 0 {
+		return query
+	}
+
+	// Single token fast path
+	if len(tokens) == 1 {
+		return quoteFTSToken(tokens[0])
+	}
+
+	result := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		upper := strings.ToUpper(tok)
+		if upper == "OR" || upper == "AND" || upper == "NOT" || upper == "NEAR" {
+			result = append(result, upper)
+			continue
+		}
+		result = append(result, quoteFTSToken(tok))
+	}
+	return strings.Join(result, " ")
+}
+
+func quoteFTSToken(tok string) string {
+	// Already quoted
+	if strings.HasPrefix(tok, `"`) && strings.HasSuffix(tok, `"`) {
+		return tok
+	}
+	// Preserve trailing wildcard: quote the stem, re-attach *
+	hasStar := strings.HasSuffix(tok, "*")
+	stem := strings.TrimSuffix(tok, "*")
+
+	if needsQuoting(stem) {
+		quoted := `"` + strings.ReplaceAll(stem, `"`, `""`) + `"`
+		if hasStar {
+			return quoted + "*"
+		}
+		return quoted
+	}
+	return tok
+}
+
+func needsQuoting(s string) bool {
+	return strings.ContainsAny(s, "-:^")
+}
+
 // Search implements full-text search across notes and sessions
 func (fs *FileStore) Search(query, entryType string, limit int) ([]SearchResult, error) {
 	if fs.db == nil {
@@ -28,7 +91,7 @@ func (fs *FileStore) Search(query, entryType string, limit int) ([]SearchResult,
 		FROM memory_fts f
 		JOIN entries e ON f.id = e.id
 		WHERE memory_fts MATCH ?`
-	args = append(args, query)
+	args = append(args, sanitizeFTSQuery(query))
 
 	if entryType != "" {
 		sqlQuery += " AND e.type = ?"
@@ -132,7 +195,7 @@ func (fs *FileStore) SearchWithOpts(opts SearchOpts) ([]SearchResult, error) {
 		FROM memory_fts f
 		JOIN entries e ON f.id = e.id
 		WHERE memory_fts MATCH ?`
-	args = append(args, opts.Query)
+	args = append(args, sanitizeFTSQuery(opts.Query))
 
 	if opts.Type != "" {
 		sqlQuery += " AND e.type = ?"

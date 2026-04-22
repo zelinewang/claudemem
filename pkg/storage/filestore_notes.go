@@ -381,7 +381,7 @@ func (fs *FileStore) SearchNotes(query string, category string, tags []string) (
 		JOIN entries e ON f.id = e.id
 		WHERE memory_fts MATCH ? AND e.type = 'note'
 	`
-	args = append(args, query)
+	args = append(args, sanitizeFTSQuery(query))
 
 	if category != "" {
 		ftsQuery += ` AND e.category = ?`

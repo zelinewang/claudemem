@@ -310,3 +310,90 @@ func TestSearchNotes_WithTags(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeFTSQuery(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "simple"},
+		{"two words", "two words"},
+		{"dev-orchestrator", `"dev-orchestrator"`},
+		{"auto-amy", `"auto-amy"`},
+		{"claude-code-config", `"claude-code-config"`},
+		{`"already quoted"`, `"already quoted"`},
+		{"dev OR orchestrator", "dev OR orchestrator"},
+		{"dev AND orchestrator", "dev AND orchestrator"},
+		{"dev NOT orchestrator", "dev NOT orchestrator"},
+		{"orchestr*", "orchestr*"},
+		{"dev-orch*", `"dev-orch"*`},
+		{"prefix:value", `"prefix:value"`},
+		{"^initial", `"^initial"`},
+		{"mixed-hyphen normal", `"mixed-hyphen" normal`},
+		{"", ""},
+		{"  spaces  ", "spaces"},
+	}
+
+	for _, tt := range tests {
+		got := sanitizeFTSQuery(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeFTSQuery(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestSearch_HyphenatedQuery(t *testing.T) {
+	store := setupTestStore(t)
+
+	note := models.NewNote("tools", "Dev Orchestrator Setup", "The dev-orchestrator manages workflows end-to-end")
+	_, err := store.AddNote(note)
+	if err != nil {
+		t.Fatalf("AddNote() failed: %v", err)
+	}
+
+	results, err := store.Search("dev-orchestrator", "", 10)
+	if err != nil {
+		t.Fatalf("Search('dev-orchestrator') should not error, got: %v", err)
+	}
+	if len(results) == 0 {
+		t.Errorf("Search('dev-orchestrator') returned 0 results, want >= 1")
+	}
+}
+
+func TestSearchNotes_HyphenatedQuery(t *testing.T) {
+	store := setupTestStore(t)
+
+	note := models.NewNote("config", "Claude Code Config Sync", "claude-code-config manages cross-machine settings")
+	_, err := store.AddNote(note)
+	if err != nil {
+		t.Fatalf("AddNote() failed: %v", err)
+	}
+
+	results, err := store.SearchNotes("claude-code-config", "", nil)
+	if err != nil {
+		t.Fatalf("SearchNotes('claude-code-config') should not error, got: %v", err)
+	}
+	if len(results) == 0 {
+		t.Errorf("SearchNotes('claude-code-config') returned 0 results, want >= 1")
+	}
+}
+
+func TestSearchSessions_HyphenatedQuery(t *testing.T) {
+	store := setupTestStore(t)
+
+	session := models.NewSession("Auto-Amy Session", "feat/auto-amy", "vispie", "sid-hyphen")
+	session.Summary = "Working on auto-amy pipeline improvements"
+	_, err := store.SaveSession(session)
+	if err != nil {
+		t.Fatalf("SaveSession() failed: %v", err)
+	}
+
+	opts := SessionListOpts{}
+	results, err := store.SearchSessions("auto-amy", opts)
+	if err != nil {
+		t.Fatalf("SearchSessions('auto-amy') should not error, got: %v", err)
+	}
+	if len(results) == 0 {
+		t.Errorf("SearchSessions('auto-amy') returned 0 results, want >= 1")
+	}
+}

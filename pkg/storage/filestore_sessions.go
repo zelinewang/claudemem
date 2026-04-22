@@ -311,7 +311,7 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 		JOIN entries e ON f.id = e.id
 		WHERE memory_fts MATCH ? AND e.type = 'session'`
 
-	args := []interface{}{query}
+	args := []interface{}{sanitizeFTSQuery(query)}
 
 	// Add optional filters
 	if opts.Branch != "" {
