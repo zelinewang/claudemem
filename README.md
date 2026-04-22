@@ -177,10 +177,11 @@ Want every session saved automatically? Add this to your `~/.claude/CLAUDE.md`:
 - **Cross-referencing** — notes link to sessions, sessions link to notes. Trace any knowledge back to its source
 - **Custom sections preserved** — architecture diagrams, performance tables, file lists — nothing silently dropped
 - **Smart dedup** — notes merge by topic; sessions stay separate by conversation (session_id-based)
-- **FTS5 search** — full-text search across all notes and sessions in <10ms
-- **Opt-in network** — default is zero-network (TF-IDF or offline). Cloud embedding backends (Gemini / Voyage / OpenAI) are explicit per-machine choices via `claudemem setup`; API keys come from env vars only, never stored in config
+- **FTS5 search** — full-text search across all notes and sessions in <10ms, with automatic query sanitization (hyphens, quotes, special chars handled safely)
+- **Hybrid search** — FTS5 keyword search + semantic vector search (Gemini / Voyage / OpenAI / Ollama / TF-IDF). Score fusion tuned for keyword-heavy memory queries
+- **Opt-in network** — default is zero-network (TF-IDF or offline). Cloud embedding backends are explicit per-machine choices via `claudemem setup`; API keys come from env vars only, never stored in config
 - **Portable** — export/import as tar.gz, move between machines
-- **200+ tests** — unit, integration, E2E, and black-box feature tests
+- **440+ tests** — 331 unit (82% coverage), 23 E2E, 82 black-box feature tests across 7 levels
 
 ## For Developers
 
@@ -196,24 +197,24 @@ make install        # Install to ~/.local/bin/
 ### Run tests
 
 ```bash
-make test           # Quick smoke test
-make e2e-test       # 10 end-to-end CLI tests
+make test           # Quick smoke test (5 operations)
+make e2e-test       # 23 end-to-end CLI tests
 make feature-test   # 82 black-box feature tests (7 levels)
 make test-all       # All tests: unit + smoke + e2e + feature
 
 # Go unit tests directly
-go test ./... -v    # 107 unit tests
+go test ./... -v    # 331 unit tests, 82% coverage
 ```
 
 ### Test coverage
 
 | Layer | Tests | What it covers |
 |-------|-------|---------------|
-| Go unit tests | 107 | Models, validation, slugify, markdown round-trip, storage, dedup, search, cross-ref, integrity |
+| Go unit tests | 331 | Models, validation, markdown, storage, dedup, search, cross-ref, integrity, faceted search, timestamp parsing, FTS5 sanitization, session merge, vector store, migration |
 | Smoke test | 5 | Basic note/session/search/stats |
-| E2E CLI | 10 | Full CLI flag testing, JSON output, metadata |
+| E2E CLI | 23 | Full CLI flag testing, JSON output, metadata, cross-referencing, capture, graph |
 | Feature tests | 82 | 7 levels: CRUD, search, dedup, cross-ref, edge cases, boundaries, data lifecycle |
-| **Total** | **204** | |
+| **Total** | **441** | **82.2% statement coverage** on core storage package |
 
 All tests use temp directories — zero local environment dependencies, fully replicatable.
 
@@ -240,7 +241,7 @@ skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **an
 | Socket | 1 alert | `install.sh` downloads binary via curl | Standard Go distribution |
 | Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) has CVEs | Industry-standard SQLite lib |
 
-**What claudemem actually does**: zero network by default (TF-IDF or offline Ollama); cloud embedding backends are opt-in per-machine via `claudemem setup` with API keys from env vars only. Parameterized SQL queries, path traversal protection, 269+ tests passing. Full source: ~8,500 lines of Go, fully auditable.
+**What claudemem actually does**: zero network by default (TF-IDF or offline Ollama); cloud embedding backends are opt-in per-machine via `claudemem setup` with API keys from env vars only. Parameterized SQL queries, FTS5 query sanitization, path traversal protection, 441 tests passing (82% coverage). Full source: ~11,400 lines of Go, fully auditable.
 
 ## Tell a Friend
 
