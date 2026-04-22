@@ -476,16 +476,13 @@ func parseListItems(content string) []string {
 	lines := strings.Split(content, "\n")
 
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "- ") {
-			item := strings.TrimPrefix(line, "- ")
-			items = append(items, item)
-		} else if strings.HasPrefix(line, "* ") {
-			item := strings.TrimPrefix(line, "* ")
-			items = append(items, item)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			items = append(items, strings.TrimPrefix(trimmed, "- "))
+		} else if strings.HasPrefix(trimmed, "* ") {
+			items = append(items, strings.TrimPrefix(trimmed, "* "))
 		} else if strings.HasPrefix(line, "  ") && len(items) > 0 {
-			// Continuation of previous item
-			items[len(items)-1] += " " + strings.TrimSpace(line)
+			items[len(items)-1] += " " + trimmed
 		}
 	}
 
