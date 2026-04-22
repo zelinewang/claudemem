@@ -12,12 +12,32 @@ thorough work report that captures everything meaningful from this session. Your
 **Superficial wrap-ups are NOT acceptable.** A good session report reads like a detailed work journal
 entry — not a bullet summary.
 
-## Phase 1: Generate Session Reference ID
+## Phase 0: Conversation Review (MANDATORY — DO NOT SKIP)
 
-Create a unique session ID for cross-referencing notes and sessions:
+Before ANY note-saving or session-writing, you MUST review the ENTIRE conversation from start to finish.
+Create a concrete inventory by listing:
+
+1. **Work items**: Every task completed, bug fixed, feature added, investigation done
+2. **Files changed**: Every file you created, modified, or deleted (with paths)
+3. **Decisions made**: Every choice between alternatives, with what was chosen and why
+4. **Problems hit**: Every error, blocker, or unexpected behavior encountered
+5. **Knowledge gained**: Every insight, pattern, or fact learned that wasn't known before
+
+Output this inventory as a numbered checklist BEFORE proceeding to Phase 1.
+You will use this checklist in Phase 2 (notes) and Phase 3 (session) to ensure NOTHING is missed.
+
+If your inventory has fewer than 3 items, you likely missed work — scroll back further in the conversation.
+
+## Phase 1: Resolve Session Reference ID
+
+Resolve a deterministic session ID. If a recent session exists for this project today,
+it will be reused (enabling merge across multiple wrapups). Otherwise, a new one is generated.
 
 ```bash
-SESSION_REF="$(date +%Y%m%d-%H%M%S)-$(head -c 4 /dev/urandom | xxd -p)"
+SESSION_REF=$(claudemem session resolve --project "$(basename "$(pwd)")" 2>/dev/null)
+if [ -z "$SESSION_REF" ]; then
+  SESSION_REF="$(date +%Y%m%d-%H%M%S)-$(head -c 4 /dev/urandom | xxd -p)"
+fi
 echo "Session ref: $SESSION_REF"
 ```
 
@@ -33,7 +53,6 @@ persist beyond this session — things you or a future agent would want to know.
 1. **Search first** — avoid duplicates:
    ```bash
    claudemem note search "<key phrase>" --format json
-   # Hybrid search (FTS5 + semantic) is automatic when feature flag is enabled
    ```
 2. **If related note exists** — append new info:
    ```bash
@@ -62,6 +81,28 @@ persist beyond this session — things you or a future agent would want to know.
 - Generic programming knowledge available in docs
 - Information the user explicitly said was temporary
 - Bare file paths or code without explanatory context
+
+## Phase 2.5: Note Freshness Check
+
+**Skip this phase if this is the first wrapup in this conversation** — there are no previous notes to check.
+
+If you saved notes EARLIER in this conversation (during a previous wrapup or via auto-save),
+review them now for accuracy before saving the session report:
+
+1. Search for notes linked to this session:
+   ```bash
+   claudemem search "$SESSION_REF" --type note --format json
+   ```
+
+2. For each note found, check if the facts are still accurate:
+   - Specific numbers (line counts, file counts, test counts)
+   - Implementation status (partial vs complete, expanded vs merged)
+   - File paths that may have been renamed or deleted
+
+3. If a note contains outdated information, update it:
+   ```bash
+   claudemem note update <id> --content "<corrected full content>"
+   ```
 
 ## Phase 3: Generate & Save Detailed Session Report
 
@@ -143,17 +184,80 @@ This creates bidirectional linking: the note has `session_id` metadata pointing 
 - [ ] [Concrete next action]
 ```
 
-### Save the session:
+### Content Quality Guidance
 
+Before writing, ensure your content meets these standards (the script validates structure,
+but only YOU can ensure content quality):
+
+- Every decision includes **WHY** and at least 1 alternative that was considered
+- Problems describe the **ROOT CAUSE** and investigation path, not just symptoms
+- Insights are specific and actionable (not generic like "always test" or "be careful")
+- Summary includes concrete references (file paths, commit hashes, error messages)
+- Session title is descriptive and specific (not "Session Summary" or "Today's Work")
+
+### Save the session (Write → Validate → Save):
+
+**Step 1.** Generate the full session report as markdown (all sections from above).
+
+**Step 2.** Save it to a temporary file using the **Write tool** (NOT Bash).
+Write the content to `${TMPDIR:-/tmp}/claudemem-session-report.md`.
+Use `$TMPDIR` (set by OS on both macOS and Linux) — falls back to `/tmp` if unset.
+The Write tool handles any characters safely — backticks, quotes, $, newlines.
+No shell escaping needed. Do NOT put markdown content inside Bash commands.
+
+**IMPORTANT — avoid deny-rule false positives**: If the session report content contains
+text that matches deny patterns (e.g., discussing "rm -rf" or "force push" as topics),
+the Write tool won't be affected (it bypasses Bash deny rules). But subsequent Bash
+commands that read the file via `$(cat file)` could trigger deny matching on the content.
+Always use stdin redirection (`< file`) instead of command substitution (`$(cat file)`).
+
+**Step 3.** Run the script-based validator BEFORE saving:
 ```bash
-printf '%s' '<full markdown content with all sections above>' | claudemem session save \
+_REPORT="${TMPDIR:-/tmp}/claudemem-session-report.md"
+claudemem session validate "$_REPORT"
+```
+If validation **FAILS** (exit code 1): read the failure reasons, fix the content
+using the Write tool, and validate again. Repeat until **PASSED**.
+
+**Step 4.** Only after PASSED, import into claudemem:
+```bash
+_REPORT="${TMPDIR:-/tmp}/claudemem-session-report.md"
+claudemem session save \
   --title "<descriptive title summarizing the session>" \
   --branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')" \
   --project "$(basename "$(pwd)")" \
   --session-id "$SESSION_REF" \
   --tags "<comma,separated,relevant,tags>" \
-  --related-notes "<note-id-1:title1:category1>,<note-id-2:title2:category2>"
+  < "$_REPORT"
 ```
+Note: Do NOT clean up the temp file with `rm` — let the OS handle it via TMPDIR auto-cleanup.
+Using `rm` in a Bash command may trigger deny rules on machines with strict `rm` deny patterns.
+
+Note: `--related-notes` is no longer needed — claudemem auto-discovers notes linked via session_id.
+
+## Phase 3.5: Workflow Retrospective (MANDATORY)
+
+Before showing the wrap-up report, include a "## Workflow Retrospective" section in the session report.
+This turns every session into a test session for the dev workflow itself.
+
+Evaluate these 6 dimensions honestly:
+
+**A. Phase compliance** — Did I follow investigate→plan→execute→verify→ship? For bugs: did I check logs FIRST?
+**B. Investigation quality** — Did I search claudemem? Use MCPs (context7, fetch, DB)? Check existing codebase patterns? Counter-hypothesis check?
+**C. User corrections** — Count + root cause of each (shallow investigation, wrong assumption, confirmation bias, missed context)
+**D. Tool utilization** — Which tools/MCPs/skills/agents used vs SHOULD have used but didn't?
+**E. Hook effectiveness** — Table:
+
+| Hook | Triggered? | Correct? | Notes |
+|------|-----------|---------|-------|
+| SessionStart | Y/N | ✅/⚠️/❌ | ... |
+| verify-on-commit | Y/N | ✅/⚠️/❌ | ... |
+| quality-gate | Y/N | ✅/⚠️/❌ | ... |
+| session-end | Y/N | ✅/⚠️/❌ | ... |
+
+**F. Workflow design feedback** — Was any mistake a DESIGN problem (missing rule/hook) or EXECUTION problem (knew the rule, didn't follow)? One specific improvement suggestion.
+
+Save actionable workflow lessons to claudemem with tag "workflow-retro".
 
 ## Phase 4: Show Wrap-Up Report
 
@@ -181,17 +285,22 @@ Display what was captured:
 
 Run `claudemem stats` to get the totals.
 
-## Quality Self-Check
+## Phase 5: Post-Save Verification
 
-Before saving, verify EVERY item. If any check fails, go back and fix it:
+After saving, run the integrity check and display results:
 
-- [ ] Summary has at least 2 full paragraphs with specific details?
-- [ ] "What Happened" has at least 3 numbered phases with file paths or commands?
-- [ ] Every decision includes WHY and what alternatives existed?
-- [ ] Problems describe ROOT CAUSE, not just symptoms?
-- [ ] Insights are genuinely useful for a future session (not generic advice)?
-- [ ] All notes from Phase 2 are listed in Related Notes?
-- [ ] Session title is descriptive (not "Session Summary" or "Today's Work")?
+```bash
+claudemem verify
+claudemem stats
+```
+
+Report to the user:
+```
+Post-save verification:
+  Integrity: in sync
+  Notes: N saved, N linked via session_id
+  Sessions: N total
+```
 
 ## Examples
 
