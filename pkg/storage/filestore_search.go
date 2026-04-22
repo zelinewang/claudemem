@@ -344,14 +344,10 @@ func sortResultsByDate(results []SearchResult) {
 	}
 }
 
-// parseCreatedTimestamp handles both Unix timestamp strings and ISO format strings
+// parseCreatedTimestamp handles both ISO format strings and Unix timestamp strings.
+// ISO formats are tried first because fmt.Sscanf("%d") falsely succeeds on
+// ISO dates — "2026-04-22" parses as int 2026, producing a 1970 timestamp.
 func parseCreatedTimestamp(s string) (time.Time, error) {
-	// Try Unix timestamp first
-	var unix int64
-	if _, err := fmt.Sscanf(s, "%d", &unix); err == nil {
-		return time.Unix(unix, 0), nil
-	}
-	// Try ISO formats
 	for _, format := range []string{
 		"2006-01-02T15:04:05Z",
 		"2006-01-02T15:04:05",
@@ -361,6 +357,10 @@ func parseCreatedTimestamp(s string) (time.Time, error) {
 		if t, err := time.Parse(format, s); err == nil {
 			return t, nil
 		}
+	}
+	var unix int64
+	if _, err := fmt.Sscanf(s, "%d", &unix); err == nil && fmt.Sprintf("%d", unix) == s {
+		return time.Unix(unix, 0), nil
 	}
 	return time.Time{}, fmt.Errorf("unable to parse timestamp: %s", s)
 }

@@ -423,3 +423,38 @@ func TestSearch_EmbeddedQuoteDoesNotCrash(t *testing.T) {
 		t.Fatalf("Search with parens should not error, got: %v", err)
 	}
 }
+
+func TestParseCreatedTimestamp_ISOvsUnix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+		err   bool
+	}{
+		{"2026-04-22T09:12:54Z", "2026-04-22", false},
+		{"2026-04-22T04:26:35Z", "2026-04-22", false},
+		{"2026-04-22 15:30:00", "2026-04-22", false},
+		{"2026-04-22", "2026-04-22", false},
+		{"1745309574", "2025-04-22", false},
+		{"0", "1970-01-01", false},
+		{"", "", true},
+		{"garbage", "", true},
+	}
+
+	for _, tt := range tests {
+		got, err := parseCreatedTimestamp(tt.input)
+		if tt.err {
+			if err == nil {
+				t.Errorf("parseCreatedTimestamp(%q) want error, got %v", tt.input, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseCreatedTimestamp(%q) unexpected error: %v", tt.input, err)
+			continue
+		}
+		dateStr := got.Format("2006-01-02")
+		if dateStr != tt.want {
+			t.Errorf("parseCreatedTimestamp(%q) = %s, want %s", tt.input, dateStr, tt.want)
+		}
+	}
+}

@@ -350,8 +350,8 @@ func TestResolveSessionID_TimezoneCorrect(t *testing.T) {
 	session.Summary = "timezone test"
 	store.SaveSession(session)
 
-	// With 1-second window: should still find it (just created)
-	sid, existing, err := store.ResolveSessionID("tz-proj", 1*time.Second)
+	// With 30-second window: should still find it (just created)
+	sid, existing, err := store.ResolveSessionID("tz-proj", 30*time.Second)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}

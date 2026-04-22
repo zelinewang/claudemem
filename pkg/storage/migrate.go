@@ -288,7 +288,7 @@ func (fs *FileStore) Reindex() (int, error) {
 	// Reindex notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
 		filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
+			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
 			data, readErr := os.ReadFile(path)
@@ -319,7 +319,7 @@ func (fs *FileStore) Reindex() (int, error) {
 	// Reindex sessions
 	if _, err := os.Stat(fs.sessionsDir); err == nil {
 		filepath.Walk(fs.sessionsDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
+			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
 			data, readErr := os.ReadFile(path)

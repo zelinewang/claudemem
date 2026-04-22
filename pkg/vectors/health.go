@@ -185,7 +185,7 @@ func countMarkdownFiles(notesDir, sessionsDir string) (int, error) {
 			if err != nil || info.IsDir() {
 				return nil
 			}
-			if strings.HasSuffix(info.Name(), ".md") {
+			if strings.HasSuffix(info.Name(), ".md") && !strings.HasPrefix(info.Name(), "._") {
 				total++
 			}
 			return nil
