@@ -122,6 +122,11 @@ var syncPullCmd = &cobra.Command{
 		if !quiet {
 			OutputText("✓ pulled memory; reconciled %d FTS entries + %d vectors (backend: %s)",
 				ftsCount, vectorsAdded, store.VectorBackend())
+			if !store.HasVectorStore() {
+				OutputText("")
+				OutputText("⚠ No embedding backend configured. Search uses basic TF-IDF.")
+				OutputText("  Run `claudemem setup` to pick a backend (Gemini, Ollama, etc.)")
+			}
 		}
 		return nil
 	},

@@ -119,3 +119,18 @@ echo ""
 echo "  claudemem note add test --title \"Hello\" --content \"World\""
 echo "  claudemem search \"hello\""
 echo "  claudemem stats"
+
+# Prompt setup if embedding backend not configured
+if [ -f "$HOME/.claudemem/config.json" ]; then
+    if ! grep -q '"embedding.backend"' "$HOME/.claudemem/config.json" 2>/dev/null; then
+        echo ""
+        echo -e "${BLUE}→ Search backend not configured yet. Pick one:${NC}"
+        echo "  claudemem setup"
+        echo ""
+        echo "  Without this, search uses basic TF-IDF (no semantic matching)."
+    fi
+else
+    echo ""
+    echo -e "${BLUE}→ Pick a search backend (Gemini, Ollama, TF-IDF, etc.):${NC}"
+    echo "  claudemem setup"
+fi
