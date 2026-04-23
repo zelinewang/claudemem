@@ -186,7 +186,16 @@ func (g *GitSync) Push(message string) error {
 	}
 
 	if err := g.git("push", "-u", "origin", "HEAD"); err != nil {
-		return fmt.Errorf("git push: %w", err)
+		// Push failed — likely because remote has new commits from another
+		// machine. Try pull --rebase to replay our local commits on top,
+		// then push again. This auto-resolves the most common conflict:
+		// two machines each adding different files.
+		if rebaseErr := g.git("pull", "--rebase", "--quiet", "origin", "HEAD"); rebaseErr != nil {
+			return fmt.Errorf("git push failed and auto-rebase failed: push=%w, rebase=%v — resolve manually in %s", err, rebaseErr, g.Dir)
+		}
+		if err2 := g.git("push", "-u", "origin", "HEAD"); err2 != nil {
+			return fmt.Errorf("git push after rebase: %w", err2)
+		}
 	}
 	return nil
 }
@@ -237,7 +246,12 @@ func (g *GitSync) Pull() error {
 		return fmt.Errorf("not a git repo; run `claudemem sync init <remote>` first")
 	}
 	if err := g.git("pull", "--ff-only", "origin", "HEAD"); err != nil {
-		return fmt.Errorf("git pull: %w (resolve manually in %s, then re-run)", err, g.Dir)
+		// ff-only failed — local has commits that remote doesn't (diverged).
+		// Try rebase to replay local commits on top of remote. This safely
+		// handles the common case of two machines adding different files.
+		if rebaseErr := g.git("pull", "--rebase", "origin", "HEAD"); rebaseErr != nil {
+			return fmt.Errorf("git pull --ff-only and --rebase both failed: %w — resolve manually in %s", rebaseErr, g.Dir)
+		}
 	}
 	return nil
 }
