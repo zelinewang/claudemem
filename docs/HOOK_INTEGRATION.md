@@ -48,8 +48,8 @@ fi
 ## Enabling auto-sync on a machine
 
 ```bash
-# Set up the remote first
-claudemem sync init  # interactive: asks for git remote URL
+# Set up the remote first (HTTPS recommended — no SSH key needed)
+claudemem sync init https://github.com/YOU/claudemem-memory.git
 
 # Enable auto-pull / auto-push
 touch ~/.claudemem/.sync_auto_pull

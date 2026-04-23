@@ -143,14 +143,14 @@ Memory can follow you between machines (web_dev ↔ MacBook, etc.) via a
 private git repo.
 
 ```bash
-# once, per user
-claudemem sync init git@github.com:YOU/claudemem-memory.git
+# once, per user (HTTPS recommended — works with gh auth / keychain)
+claudemem sync init https://github.com/YOU/claudemem-memory.git
 
 # after work
 claudemem sync push
 
-# on another machine, first time
-git clone git@github.com:YOU/claudemem-memory.git ~/.claudemem
+# on another machine, first time (existing notes are auto-committed as baseline)
+claudemem sync init https://github.com/YOU/claudemem-memory.git
 claudemem sync pull
 ```
 

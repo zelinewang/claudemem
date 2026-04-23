@@ -65,6 +65,19 @@ func (g *GitSync) Init(remoteURL string) error {
 			return fmt.Errorf("add remote: %w", err)
 		}
 	}
+
+	// Commit existing files as baseline so the first `sync pull` can merge
+	// instead of failing with "untracked files would be overwritten".
+	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore"} {
+		if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
+			continue
+		}
+		_ = g.git("add", p)
+	}
+	if g.hasStagedChanges() {
+		_ = g.git("commit", "-m", "baseline: existing notes before first sync")
+	}
+
 	return nil
 }
 
