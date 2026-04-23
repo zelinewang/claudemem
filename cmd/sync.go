@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/sync"
@@ -46,6 +47,14 @@ var syncInitCmd = &cobra.Command{
 		OutputText("✓ Initialized %s as git repo", getStoreDir())
 		if remote != "" {
 			OutputText("  Remote: %s", remote)
+			// Check if remote history was adopted (origin/main exists after fetch+reset)
+			refPath := filepath.Join(getStoreDir(), ".git", "refs", "remotes", "origin", "main")
+			if _, err := os.Stat(refPath); err == nil {
+				OutputText("  Adopted remote history (local-only files preserved)")
+				OutputText("\nNext:")
+				OutputText("  claudemem sync pull    # rebuild FTS + vectors from synced markdown")
+				return nil
+			}
 		} else {
 			OutputText("  No remote set; add later with: cd %s && git remote add origin <url>", getStoreDir())
 		}

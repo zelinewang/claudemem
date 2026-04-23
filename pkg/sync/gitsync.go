@@ -34,21 +34,18 @@ func (g *GitSync) IsInitialized() bool {
 	return err == nil
 }
 
-// Init creates .git, writes .gitignore, and sets the remote. Does NOT
-// create an initial commit — the caller should add markdown + commit
-// explicitly so the user sees what is about to be pushed.
+// Init sets up git sync. When a remote URL is provided and the remote
+// already has commits, Init adopts the remote history (fetch + reset)
+// rather than creating unrelated history (git init + commit). Local-only
+// files that don't exist in the remote are preserved untouched.
 func (g *GitSync) Init(remoteURL string) error {
-	// First-run safety: the ~/.claudemem dir may not exist yet on a fresh
-	// install. `git init` refuses to create its parent; fail here with a
-	// useful message rather than the cryptic git error.
 	if err := os.MkdirAll(g.Dir, 0700); err != nil {
 		return fmt.Errorf("create %s: %w", g.Dir, err)
 	}
 	if g.IsInitialized() {
 		return fmt.Errorf("%s is already a git repo; use `sync status` to inspect", g.Dir)
 	}
-	// `-b main` works on git 2.28+; symbolic-ref fallback handles older git
-	// that doesn't recognize -b.
+
 	if err := g.git("init", "-b", "main"); err != nil {
 		if err2 := g.git("init"); err2 != nil {
 			return fmt.Errorf("git init: %w", err2)
@@ -60,23 +57,28 @@ func (g *GitSync) Init(remoteURL string) error {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
 
-	if remoteURL != "" {
-		if err := g.git("remote", "add", "origin", remoteURL); err != nil {
-			return fmt.Errorf("add remote: %w", err)
-		}
+	if remoteURL == "" {
+		return nil
 	}
 
-	// Commit existing files as baseline so the first `sync pull` can merge
-	// instead of failing with "untracked files would be overwritten".
-	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore"} {
-		if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
-			continue
-		}
-		_ = g.git("add", p)
+	if err := g.git("remote", "add", "origin", remoteURL); err != nil {
+		return fmt.Errorf("add remote: %w", err)
 	}
-	if g.hasStagedChanges() {
-		_ = g.git("commit", "-m", "baseline: existing notes before first sync")
+
+	// Try to fetch remote. If the remote has commits, adopt its history
+	// via reset --hard. This avoids "unrelated histories" problems that
+	// make all subsequent pull/rebase operations fail. Local-only files
+	// (not in remote) survive because git reset only touches tracked files.
+	if err := g.git("fetch", "origin", "main"); err != nil {
+		// Fetch failed (offline, empty remote, auth error) — that's fine,
+		// this is a fresh repo with no remote history. First push will
+		// establish the remote branch.
+		return nil
 	}
+
+	// Remote has history — adopt it. This is the common case: another
+	// machine already pushed notes to this remote.
+	_ = g.git("reset", "--hard", "origin/main")
 
 	return nil
 }
