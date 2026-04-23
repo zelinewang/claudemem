@@ -67,8 +67,7 @@ func (g *GitSync) Init(remoteURL string) error {
 
 	// Try to fetch remote. If the remote has commits, adopt its history
 	// via reset --hard. This avoids "unrelated histories" problems that
-	// make all subsequent pull/rebase operations fail. Local-only files
-	// (not in remote) survive because git reset only touches tracked files.
+	// make all subsequent pull/rebase operations fail.
 	if err := g.git("fetch", "origin", "main"); err != nil {
 		// Fetch failed (offline, empty remote, auth error) — that's fine,
 		// this is a fresh repo with no remote history. First push will
@@ -76,11 +75,59 @@ func (g *GitSync) Init(remoteURL string) error {
 		return nil
 	}
 
-	// Remote has history — adopt it. This is the common case: another
-	// machine already pushed notes to this remote.
-	_ = g.git("reset", "--hard", "origin/main")
+	// Remote has history — adopt it. reset --hard overwrites files that
+	// exist in both local and remote (takes remote version). To prevent
+	// silent data loss, back up notes/ and sessions/ first.
+	backupDir := g.Dir + ".pre-sync-backup"
+	if err := g.backupContentDirs(backupDir); err != nil {
+		return fmt.Errorf("backup before sync: %w — aborting init to protect data", err)
+	}
+
+	if err := g.git("reset", "--hard", "origin/main"); err != nil {
+		return fmt.Errorf("reset --hard: %w", err)
+	}
 
 	return nil
+}
+
+// backupContentDirs copies notes/ and sessions/ to a backup directory.
+// Only runs when there are actual markdown files to protect.
+func (g *GitSync) backupContentDirs(dst string) error {
+	hasFiles := false
+	for _, dir := range []string{"notes", "sessions"} {
+		src := filepath.Join(g.Dir, dir)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		hasFiles = true
+		dstDir := filepath.Join(dst, dir)
+		if err := copyDir(src, dstDir); err != nil {
+			return fmt.Errorf("copy %s: %w", dir, err)
+		}
+	}
+	if !hasFiles {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "claudemem: backed up existing notes to %s\n", dst)
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
 
 // writeGitignore installs the canonical ignore rules. Keeps ~/.claudemem
