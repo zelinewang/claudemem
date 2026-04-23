@@ -57,6 +57,10 @@ func (g *GitSync) Init(remoteURL string) error {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
 
+	if err := g.writeGitattributes(); err != nil {
+		return fmt.Errorf("write .gitattributes: %w", err)
+	}
+
 	if remoteURL == "" {
 		return nil
 	}
@@ -174,6 +178,20 @@ config.json
 	return os.WriteFile(filepath.Join(g.Dir, ".gitignore"), []byte(content), 0644)
 }
 
+// writeGitattributes sets merge=union for markdown files. This makes
+// git auto-merge when two machines each append to the same note: both
+// additions are kept, zero conflict markers. This is semantically correct
+// for claudemem's accumulative notes — appends from different machines
+// are independent knowledge fragments, not contradictory edits.
+func (g *GitSync) writeGitattributes() error {
+	content := `# claudemem: union merge for notes — keep both sides on conflict
+# Two machines appending to the same note should preserve both additions.
+# Union merge keeps all lines from both sides without conflict markers.
+*.md merge=union
+`
+	return os.WriteFile(filepath.Join(g.Dir, ".gitattributes"), []byte(content), 0644)
+}
+
 // Status returns the output of `git status --short`.
 func (g *GitSync) Status() (string, error) {
 	return g.gitOutput("status", "--short")
@@ -198,7 +216,7 @@ func (g *GitSync) Push(message string) error {
 	// Stage ONLY the content paths that actually exist. git add with
 	// multiple pathspecs treats a missing one as a hard error which
 	// prevents the OTHER paths from being staged — so iterate per-path.
-	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore"} {
+	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore", ".gitattributes"} {
 		if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
 			continue // not present — skip
 		}
