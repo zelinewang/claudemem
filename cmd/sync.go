@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/sync"
 )
 
@@ -108,7 +109,10 @@ var syncPullCmd = &cobra.Command{
 
 		// Only touch vectors if semantic search is enabled
 		vectorsAdded := 0
-		_ = store.InitVectorStore()
+		cfg, _ := config.Load(getStoreDir())
+		if cfg != nil && cfg.GetBool("features.semantic_search") {
+			_ = store.InitVectorStore()
+		}
 		if store.HasVectorStore() {
 			n, err := store.IndexMissingVectors()
 			if err != nil {
