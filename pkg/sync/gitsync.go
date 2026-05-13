@@ -139,14 +139,16 @@ func copyDir(src, dst string) error {
 // state into unexpected paths.
 //
 // What is gitignored:
-//   .index/              — SQLite DB; per-machine, rebuildable from markdown
-//   config.json          — per-machine embedding backend choice
-//   .sync_auto_pull      — per-machine auto-sync toggle
-//   .sync_auto_push      — per-machine auto-sync toggle
-//   .bak, .tmp, .swp     — editor temp files
+//
+//	.index/              — SQLite DB; per-machine, rebuildable from markdown
+//	config.json          — per-machine embedding backend choice
+//	.sync_auto_pull      — per-machine auto-sync toggle
+//	.sync_auto_push      — per-machine auto-sync toggle
+//	.bak, .tmp, .swp     — editor temp files
 func (g *GitSync) writeGitignore() error {
 	content := `# claudemem memory sync — per-machine files excluded
 .index/
+index.db
 config.json
 .sync_auto_pull
 .sync_auto_push
@@ -154,6 +156,7 @@ config.json
 # defensive: self-referential or stray symlinks inside the memory dir
 # (e.g. legacy .claudemem -> /home/*/.claudemem left by older installs)
 .claudemem
+.git.*-residue-*
 
 # backup archives — per-machine snapshots, never sync
 *.tar

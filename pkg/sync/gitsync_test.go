@@ -138,6 +138,7 @@ func TestGitSync_GitignoreExcludesStateFiles(t *testing.T) {
 	}
 	for _, mustExclude := range []string{
 		".index/",
+		"index.db",
 		"config.json",
 		".sync_auto_pull",
 		".sync_auto_push",
@@ -148,6 +149,7 @@ func TestGitSync_GitignoreExcludesStateFiles(t *testing.T) {
 		"*.tar",
 		// defensive: legacy self-referential symlinks
 		".claudemem",
+		".git.*-residue-*",
 		// macOS cross-filesystem residue
 		"._*",
 		".Spotlight-V100",

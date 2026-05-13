@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/sync"
 )
 
@@ -73,12 +75,7 @@ var syncPushCmd = &cobra.Command{
 		msg, _ := cmd.Flags().GetString("message")
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		if err := g.Push(msg); err != nil {
-			if !quiet {
-				return err
-			}
-			// Quiet mode for hook invocations: log to stderr, exit 0
-			fmt.Fprintf(os.Stderr, "claudemem sync push (quiet): %v\n", err)
-			return nil
+			return syncCommandError("push", quiet, err)
 		}
 		if !quiet {
 			OutputText("✓ pushed memory to %s", g.RemoteURL())
@@ -94,11 +91,7 @@ var syncPullCmd = &cobra.Command{
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		g := sync.NewGitSync(getStoreDir())
 		if err := g.Pull(); err != nil {
-			if !quiet {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "claudemem sync pull (quiet): %v\n", err)
-			return nil
+			return syncCommandError("pull", quiet, err)
 		}
 
 		// Reconcile: rebuild FTS from markdown (cheap), then embed any docs
@@ -116,14 +109,14 @@ var syncPullCmd = &cobra.Command{
 
 		// Only touch vectors if semantic search is enabled
 		vectorsAdded := 0
-		_ = store.InitVectorStore()
+		cfg, _ := config.Load(getStoreDir())
+		if cfg != nil && cfg.GetBool("features.semantic_search") {
+			_ = store.InitVectorStore()
+		}
 		if store.HasVectorStore() {
-			// Full reindex is simpler than diff-based partial embed for v1;
-			// RebuildIndex already scopes the wipe to the active
-			// (backend, model) so cross-machine rows are preserved.
-			n, err := store.ReindexVectors()
+			n, err := store.IndexMissingVectors()
 			if err != nil {
-				return fmt.Errorf("vector reindex post-pull: %w", err)
+				return fmt.Errorf("vector catch-up post-pull: %w", err)
 			}
 			vectorsAdded = n
 		}
@@ -141,32 +134,101 @@ var syncPullCmd = &cobra.Command{
 	},
 }
 
+func syncCommandError(action string, quiet bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	if quiet {
+		return fmt.Errorf("claudemem sync %s (quiet): %w", action, err)
+	}
+	return err
+}
+
 var syncStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show git status + health of the local memory store",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		g := sync.NewGitSync(getStoreDir())
-		if !g.IsInitialized() {
-			OutputText("not initialized — run `claudemem sync init <remote-url>` to start")
-			return nil
-		}
-		out, err := g.Status()
+		status, err := newSyncStatusPayload(g, getStoreDir())
 		if err != nil {
 			return err
 		}
-		remote := g.RemoteURL()
-		if remote == "" {
-			remote = "(none)"
+
+		if outputFormat == "json" {
+			return OutputJSON(status)
 		}
-		OutputText("Remote:  %s", remote)
-		OutputText("Storage: %s", getStoreDir())
-		if out == "" {
+
+		if !status.Initialized {
+			OutputText("not initialized — run `claudemem sync init <remote-url>` to start")
+			return nil
+		}
+		OutputText("Remote:  %s", status.Remote)
+		OutputText("Storage: %s", status.Storage)
+		if status.Clean {
 			OutputText("Status:  clean (no uncommitted changes)")
 		} else {
-			OutputText("Status:\n%s", out)
+			OutputText("Status:\n%s", status.Status)
 		}
 		return nil
 	},
+}
+
+type syncStatusPayload struct {
+	Initialized bool     `json:"initialized"`
+	Remote      string   `json:"remote"`
+	Storage     string   `json:"storage"`
+	Clean       bool     `json:"clean"`
+	Status      string   `json:"status"`
+	StatusLines []string `json:"status_lines"`
+}
+
+type syncStatusProvider interface {
+	IsInitialized() bool
+	RemoteURL() string
+	Status() (string, error)
+}
+
+func newSyncStatusPayload(g syncStatusProvider, storage string) (syncStatusPayload, error) {
+	status := syncStatusPayload{
+		Initialized: g.IsInitialized(),
+		Storage:     storage,
+	}
+	if !status.Initialized {
+		status.Remote = ""
+		status.Clean = false
+		status.Status = "not initialized"
+		status.StatusLines = []string{}
+		return status, nil
+	}
+
+	remote := g.RemoteURL()
+	if remote == "" {
+		remote = "(none)"
+	}
+	out, err := g.Status()
+	if err != nil {
+		return status, err
+	}
+	status.Remote = remote
+	status.Status = strings.TrimSpace(out)
+	status.StatusLines = splitGitStatusLines(status.Status)
+	status.Clean = len(status.StatusLines) == 0
+	return status, nil
+}
+
+func splitGitStatusLines(status string) []string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return []string{}
+	}
+	lines := strings.Split(status, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func init() {

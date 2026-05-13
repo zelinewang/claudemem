@@ -28,7 +28,7 @@ func (fs *FileStore) LogAccess(entryID, accessType string) {
 		`INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (?, ?, ?)`,
 		entryID, now, accessType,
 	)
-	if err != nil {
+	if err != nil && os.Getenv("CLAUDEMEM_DEBUG_ACCESS_LOG") == "1" {
 		fmt.Fprintf(os.Stderr, "Warning: failed to log access for %s: %v\n", entryID, err)
 	}
 }

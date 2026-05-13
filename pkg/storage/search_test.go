@@ -329,6 +329,9 @@ func TestSanitizeFTSQuery(t *testing.T) {
 		{"dev-orch*", `"dev-orch"*`},
 		{"prefix:value", `"prefix:value"`},
 		{"^initial", `"^initial"`},
+		{"v3.0.10", `"v3.0.10"`},
+		{"PR#3", `"PR#3"`},
+		{"path/to/file", `"path/to/file"`},
 		{"mixed-hyphen normal", `"mixed-hyphen" normal`},
 		{"", ""},
 		{"  spaces  ", "spaces"},
@@ -421,6 +424,11 @@ func TestSearch_EmbeddedQuoteDoesNotCrash(t *testing.T) {
 	_, err = store.Search("(test)", "", 10)
 	if err != nil {
 		t.Fatalf("Search with parens should not error, got: %v", err)
+	}
+
+	_, err = store.Search("v3.0.10", "", 10)
+	if err != nil {
+		t.Fatalf("Search with dotted version should not error, got: %v", err)
 	}
 }
 

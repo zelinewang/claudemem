@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/zelinewang/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
 // setupTestStore creates a temporary FileStore for testing
@@ -19,6 +20,93 @@ func setupTestStore(t *testing.T) *FileStore {
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
+}
+
+type storageCountingEmbedder struct {
+	name, model string
+	dim         int
+	embedded    int
+}
+
+func (e *storageCountingEmbedder) Available() error { return nil }
+func (e *storageCountingEmbedder) Name() string     { return e.name }
+func (e *storageCountingEmbedder) Model() string    { return e.model }
+func (e *storageCountingEmbedder) Dimensions() int  { return e.dim }
+func (e *storageCountingEmbedder) Embed(text string, _ vectors.InputType) ([]float32, error) {
+	e.embedded++
+	return countedVector(text, e.dim), nil
+}
+func (e *storageCountingEmbedder) EmbedBatch(texts []string, _ vectors.InputType) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		e.embedded++
+		out[i] = countedVector(text, e.dim)
+	}
+	return out, nil
+}
+
+func countedVector(text string, dim int) []float32 {
+	vec := make([]float32, dim)
+	for i := 0; i < dim; i++ {
+		vec[i] = float32((len(text)+i)%97) / 97.0
+	}
+	return vec
+}
+
+func writeNoteMarkdown(t *testing.T, store *FileStore, filename, category, title, content string) {
+	t.Helper()
+	note := models.NewNote(category, title, content)
+	path := filepath.Join(store.notesDir, filename)
+	if err := os.WriteFile(path, []byte(FormatNoteMarkdown(note)), 0600); err != nil {
+		t.Fatalf("write note markdown: %v", err)
+	}
+}
+
+func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
+	store := setupTestStore(t)
+	embedder := &storageCountingEmbedder{name: "fake-cloud", model: "test-v1", dim: 4}
+	vs, err := vectors.NewVectorStore(store.db, embedder)
+	if err != nil {
+		t.Fatalf("NewVectorStore failed: %v", err)
+	}
+	store.vectorStore = vs
+
+	writeNoteMarkdown(t, store, "one.md", "sync", "First", "first remote note")
+	writeNoteMarkdown(t, store, "two.md", "sync", "Second", "second remote note")
+
+	indexed, err := store.IndexMissingVectors()
+	if err != nil {
+		t.Fatalf("IndexMissingVectors failed: %v", err)
+	}
+	if indexed != 2 {
+		t.Fatalf("first IndexMissingVectors indexed %d docs, want 2", indexed)
+	}
+	if embedder.embedded != 2 {
+		t.Fatalf("embed calls after first pass = %d, want 2", embedder.embedded)
+	}
+
+	indexed, err = store.IndexMissingVectors()
+	if err != nil {
+		t.Fatalf("second IndexMissingVectors failed: %v", err)
+	}
+	if indexed != 0 {
+		t.Fatalf("second IndexMissingVectors indexed %d docs, want 0", indexed)
+	}
+	if embedder.embedded != 2 {
+		t.Fatalf("embed calls after no-op pass = %d, want 2", embedder.embedded)
+	}
+
+	writeNoteMarkdown(t, store, "three.md", "sync", "Third", "third remote note")
+	indexed, err = store.IndexMissingVectors()
+	if err != nil {
+		t.Fatalf("third IndexMissingVectors failed: %v", err)
+	}
+	if indexed != 1 {
+		t.Fatalf("third IndexMissingVectors indexed %d docs, want 1", indexed)
+	}
+	if embedder.embedded != 3 {
+		t.Fatalf("embed calls after missing pass = %d, want 3", embedder.embedded)
+	}
 }
 
 func TestFileStore_NoteWithSessionID(t *testing.T) {
@@ -486,4 +574,3 @@ func TestFileStore_DeleteNote(t *testing.T) {
 		t.Errorf("Note should not exist after deletion")
 	}
 }
-
