@@ -15,22 +15,26 @@ import (
 
 var captureCmd = &cobra.Command{
 	Use:   "capture",
-	Short: "Auto-capture observations from tool output",
-	Long: `Processes tool output from Claude Code PostToolUse hooks and
-automatically extracts noteworthy observations as notes.
+	Short: "Legacy opt-in auto-capture for bounded tool observations",
+	Long: `Legacy opt-in capture command for bounded tool observations.
 
-Designed to be called from a Claude Code PostToolUse hook.
-Reads JSON from stdin with tool name and output, extracts
-key observations, and saves them as notes.
+This command predates the universal hook-event design. It is intentionally
+feature-flagged and should not be used as the default integration path for
+new agents. Future hook support should normalize native Claude Code, Codex,
+or other agent payloads through claudemem hook event and create
+capture candidates before anything is saved.
+
+Reads JSON from stdin with tool name and output, extracts bounded observations,
+and saves them as notes only when explicitly enabled.
 
 Feature-flagged: requires features.auto_capture = true in config.`,
 	RunE: runCapture,
 }
 
 type hookInput struct {
-	ToolName string `json:"tool_name"`
+	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
-	Output   string `json:"output"`
+	Output    string          `json:"output"`
 }
 
 func init() {
