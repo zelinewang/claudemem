@@ -58,12 +58,13 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	applyEmbeddingConfigHealth(report, cfg)
 	if report.Healthy() {
 		OutputText("✓ healthy, nothing to repair")
 		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, "⚠ drift detected:")
+	fmt.Fprintln(os.Stderr, "⚠ health issues detected:")
 	for _, issue := range report.Issues {
 		fmt.Fprintf(os.Stderr, "   %s\n", issue)
 	}
@@ -134,6 +135,7 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	applyEmbeddingConfigHealth(report2, cfg)
 	if report2.Healthy() {
 		OutputText("✓ healthy now")
 	} else {
