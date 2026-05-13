@@ -279,15 +279,24 @@ type OrphanEntry struct {
 // Reindex rebuilds the SQLite index from markdown files on disk.
 // Used after import to populate the search index.
 func (fs *FileStore) Reindex() (int, error) {
-	// Clear existing index
-	fs.db.Exec("DELETE FROM entries")
-	fs.db.Exec("DELETE FROM memory_fts")
+	tx, err := fs.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM entries"); err != nil {
+		return 0, fmt.Errorf("clear entries: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM memory_fts"); err != nil {
+		return 0, fmt.Errorf("clear FTS: %w", err)
+	}
 
 	count := 0
 
 	// Reindex notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
-		filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
+		if err := filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
@@ -305,20 +314,26 @@ func (fs *FileStore) Reindex() (int, error) {
 			if note.Metadata != nil {
 				sessionID = note.Metadata["session_id"]
 			}
-			fs.db.Exec(`INSERT OR IGNORE INTO entries (id, type, title, category, session_id, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			if _, err := tx.Exec(`INSERT INTO entries (id, type, title, category, session_id, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				note.ID, "note", note.Title, note.Category, sessionID,
 				strings.Join(note.Tags, " "), rel,
-				note.Created.Unix(), note.Updated.Unix())
-			fs.db.Exec(`INSERT OR IGNORE INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
-				note.ID, note.Title, note.Content, strings.Join(note.Tags, " "))
+				note.Created.Unix(), note.Updated.Unix()); err != nil {
+				return fmt.Errorf("index note entry %s: %w", note.ID, err)
+			}
+			if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+				note.ID, note.Title, note.Content, strings.Join(note.Tags, " ")); err != nil {
+				return fmt.Errorf("index note FTS %s: %w", note.ID, err)
+			}
 			count++
 			return nil
-		})
+		}); err != nil {
+			return 0, err
+		}
 	}
 
 	// Reindex sessions
 	if _, err := os.Stat(fs.sessionsDir); err == nil {
-		filepath.Walk(fs.sessionsDir, func(path string, info os.FileInfo, err error) error {
+		if err := filepath.Walk(fs.sessionsDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
@@ -332,19 +347,28 @@ func (fs *FileStore) Reindex() (int, error) {
 			}
 
 			rel, _ := filepath.Rel(fs.baseDir, path)
-			fs.db.Exec(`INSERT OR IGNORE INTO entries (id, type, title, branch, project, session_id, date_str, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			if _, err := tx.Exec(`INSERT INTO entries (id, type, title, branch, project, session_id, date_str, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				session.ID, "session", session.Title, session.Branch, session.Project,
 				session.SessionID, session.Date, strings.Join(session.Tags, " "),
 				rel, session.Created.Format("2006-01-02T15:04:05Z"),
-				session.Created.Format("2006-01-02T15:04:05Z"))
-			fs.db.Exec(`INSERT OR IGNORE INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+				session.Created.Format("2006-01-02T15:04:05Z")); err != nil {
+				return fmt.Errorf("index session entry %s: %w", session.ID, err)
+			}
+			if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
 				session.ID, session.Title, session.GetSearchableContent(),
-				strings.Join(session.Tags, " "))
+				strings.Join(session.Tags, " ")); err != nil {
+				return fmt.Errorf("index session FTS %s: %w", session.ID, err)
+			}
 			count++
 			return nil
-		})
+		}); err != nil {
+			return 0, err
+		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
 	return count, nil
 }
 

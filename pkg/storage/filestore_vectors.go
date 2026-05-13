@@ -357,13 +357,7 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	return err == nil
 }
 
-// ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.
-// Returns the number of documents indexed.
-func (fs *FileStore) ReindexVectors() (int, error) {
-	if fs.vectorStore == nil {
-		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
-	}
-
+func (fs *FileStore) collectVectorDocuments() []vectors.Document {
 	var docs []vectors.Document
 
 	// Collect notes
@@ -414,7 +408,50 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 		})
 	}
 
-	// Rebuild the index
+	return docs
+}
+
+// IndexMissingVectors embeds only documents that do not yet have a vector row
+// for the active backend. TF-IDF still needs a full corpus rebuild because its
+// vocabulary is corpus-wide.
+func (fs *FileStore) IndexMissingVectors() (int, error) {
+	if fs.vectorStore == nil {
+		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
+	}
+
+	docs := fs.collectVectorDocuments()
+	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
+		if err := fs.vectorStore.RebuildIndex(docs); err != nil {
+			return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
+		}
+		return len(docs), nil
+	}
+
+	ids := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		ids = append(ids, doc.ID)
+	}
+	missing, err := fs.vectorStore.MissingDocumentIDs(ids)
+	if err != nil {
+		return 0, err
+	}
+	missingDocs := make([]vectors.Document, 0, len(missing))
+	for _, doc := range docs {
+		if missing[doc.ID] {
+			missingDocs = append(missingDocs, doc)
+		}
+	}
+	return fs.vectorStore.UpsertDocuments(missingDocs)
+}
+
+// ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.
+// Returns the number of documents indexed.
+func (fs *FileStore) ReindexVectors() (int, error) {
+	if fs.vectorStore == nil {
+		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
+	}
+
+	docs := fs.collectVectorDocuments()
 	if err := fs.vectorStore.RebuildIndex(docs); err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}

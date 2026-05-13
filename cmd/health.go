@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/config"
@@ -12,7 +13,10 @@ import (
 
 // healthDeep is the only runtime flag — "--quick" is the default and
 // doesn't need a separate bool since `health` without flags IS quick.
-var healthDeep bool
+var (
+	healthDeep         bool
+	healthTrafficLight bool
+)
 
 var healthCmd = &cobra.Command{
 	Use:   "health",
@@ -48,6 +52,10 @@ func runHealth(cmd *cobra.Command, args []string) error {
 
 	fileStore, err := getFileStore()
 	if err != nil {
+		if healthTrafficLight {
+			printHealthTrafficLight(nil, err)
+			return nil
+		}
 		return err
 	}
 	defer fileStore.Close()
@@ -78,7 +86,16 @@ func runHealth(cmd *cobra.Command, args []string) error {
 		report, err = vectors.CheckHealth(in)
 	}
 	if err != nil {
+		if healthTrafficLight {
+			printHealthTrafficLight(nil, err)
+			return nil
+		}
 		return fmt.Errorf("health check failed: %w", err)
+	}
+
+	if healthTrafficLight {
+		printHealthTrafficLight(report, nil)
+		return nil
 	}
 
 	printHealthReport(report, fileStore)
@@ -124,10 +141,46 @@ func printHealthReport(r *vectors.HealthReport, fs *storage.FileStore) {
 	}
 }
 
+func printHealthTrafficLight(r *vectors.HealthReport, err error) {
+	if err != nil {
+		fmt.Printf("claudemem health: RED check failed (%s)\n", err)
+		return
+	}
+	if r == nil {
+		fmt.Println("claudemem health: RED check failed")
+		return
+	}
+
+	vectorLine := "no active vector backend"
+	if r.ActiveBackend != "" {
+		key := r.ActiveBackend + ":" + r.ActiveModel
+		vectorLine = fmt.Sprintf("%d vectors for %s", r.VectorTotals[key], key)
+	}
+
+	if r.Healthy() {
+		fmt.Printf("claudemem health: GREEN healthy (%d markdown, %d entries, %d FTS, %s)\n",
+			r.MarkdownFiles, r.EntriesTotal, r.FTSTotal, vectorLine)
+		return
+	}
+
+	codes := make([]string, 0, len(r.Issues))
+	for _, issue := range r.Issues {
+		if len(issue) >= 2 && issue[0] == 'I' {
+			codes = append(codes, issue[:2])
+		}
+	}
+	if len(codes) == 0 {
+		codes = append(codes, "drift")
+	}
+	fmt.Printf("claudemem health: YELLOW drift (%s) - run `claudemem repair` or `claudemem reindex --vectors`\n",
+		strings.Join(codes, ","))
+}
+
 func init() {
 	// --quick is the default; we keep it as a no-op flag for docs/explicit
 	// scripts that want to signal intent. --deep adds I4/I5 invariants.
 	healthCmd.Flags().Bool("quick", false, "Quick mode (default; <100ms SessionStart-safe)")
 	healthCmd.Flags().BoolVar(&healthDeep, "deep", false, "Deep mode: also check for orphans + config match (I4/I5)")
+	healthCmd.Flags().BoolVar(&healthTrafficLight, "traffic-light", false, "Hook-safe one-line GREEN/YELLOW/RED health status; always exits 0")
 	rootCmd.AddCommand(healthCmd)
 }

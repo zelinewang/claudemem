@@ -44,7 +44,13 @@ func NewFileStore(baseDir string) (*FileStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	fs.db = db
+
+	if err := fs.configureSQLite(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to configure database: %w", err)
+	}
 
 	// Initialize schema
 	if err := fs.initSchema(); err != nil {
@@ -53,6 +59,21 @@ func NewFileStore(baseDir string) (*FileStore, error) {
 	}
 
 	return fs, nil
+}
+
+// configureSQLite keeps CLI invocations friendly under hook/search concurrency.
+func (fs *FileStore) configureSQLite() error {
+	pragmas := []string{
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+	}
+	for _, pragma := range pragmas {
+		if _, err := fs.db.Exec(pragma); err != nil {
+			return fmt.Errorf("%s: %w", pragma, err)
+		}
+	}
+	return nil
 }
 
 // initSchema creates the database tables

@@ -360,7 +360,7 @@ func parseCreatedTimestamp(s string) (time.Time, error) {
 	}
 	var unix int64
 	if _, err := fmt.Sscanf(s, "%d", &unix); err == nil && fmt.Sprintf("%d", unix) == s {
-		return time.Unix(unix, 0), nil
+		return time.Unix(unix, 0).UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("unable to parse timestamp: %s", s)
 }

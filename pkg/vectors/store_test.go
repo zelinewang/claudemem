@@ -65,6 +65,55 @@ func TestVectorStore_RebuildIndex(t *testing.T) {
 	}
 }
 
+func TestVectorStore_RebuildIndexFailsBeforeClearingRows(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	healthy, err := NewVectorStore(db, &fakeEmbedder{name: "gemini", model: "test-v1", dim: 4})
+	if err != nil {
+		t.Fatalf("NewVectorStore healthy failed: %v", err)
+	}
+	if err := healthy.RebuildIndex([]Document{{ID: "existing", Text: "keep me"}}); err != nil {
+		t.Fatalf("initial RebuildIndex failed: %v", err)
+	}
+
+	failing, err := NewVectorStore(db, newFailingEmbedder("gemini", "test-v1", "set API key"))
+	if err != nil {
+		t.Fatalf("NewVectorStore failing failed: %v", err)
+	}
+	if err := failing.RebuildIndex([]Document{{ID: "replacement", Text: "do not write"}}); err == nil {
+		t.Fatal("RebuildIndex with unavailable backend should fail")
+	}
+
+	count, err := healthy.Count()
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("active rows after failed rebuild = %d, want 1", count)
+	}
+}
+
+func TestVectorStore_UpsertDocumentsFailsBeforeWriting(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	failing, err := NewVectorStore(db, newFailingEmbedder("gemini", "test-v1", "set API key"))
+	if err != nil {
+		t.Fatalf("NewVectorStore failed: %v", err)
+	}
+	if n, err := failing.UpsertDocuments([]Document{{ID: "new", Text: "do not write"}}); err == nil || n != 0 {
+		t.Fatalf("UpsertDocuments = (%d, %v), want 0 + error", n, err)
+	}
+	count, err := failing.Count()
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("active rows after failed upsert = %d, want 0", count)
+	}
+}
+
 func TestVectorStore_Search(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

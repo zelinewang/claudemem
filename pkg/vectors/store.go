@@ -358,6 +358,10 @@ type Document struct {
 //
 // For TF-IDF embedders, this also rebuilds the vocabulary from the corpus.
 func (vs *VectorStore) RebuildIndex(documents []Document) error {
+	if err := vs.embedder.Available(); err != nil {
+		return err
+	}
+
 	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
 		corpus := make([]string, len(documents))
 		for i, d := range documents {
@@ -442,6 +446,109 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	}
 	vs.saveIndexBackend()
 	return nil
+}
+
+// MissingDocumentIDs reports which IDs do not yet have a vector row for the
+// active backend+model. It intentionally ignores rows from other backends so
+// cross-machine sync can preserve each machine's embedding choice.
+func (vs *VectorStore) MissingDocumentIDs(ids []string) (map[string]bool, error) {
+	missing := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return missing, nil
+	}
+	for _, id := range ids {
+		missing[id] = true
+	}
+
+	rows, err := vs.db.Query(`
+		SELECT doc_id FROM vectors WHERE backend = ? AND model = ?`,
+		vs.embedder.Name(), vs.embedder.Model())
+	if err != nil {
+		return nil, fmt.Errorf("query active vector ids: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		delete(missing, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return missing, nil
+}
+
+// UpsertDocuments embeds and stores the given documents under the active
+// backend+model without deleting existing rows. It is used by sync pull to
+// fill gaps cheaply after remote markdown changes.
+func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
+	if len(documents) == 0 {
+		return 0, nil
+	}
+	if err := vs.embedder.Available(); err != nil {
+		return 0, err
+	}
+
+	stmt, err := vs.db.Prepare(`
+		INSERT OR REPLACE INTO vectors (doc_id, backend, model, dim, vector, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	const batchSize = 50
+	now := time.Now().UTC().Format(time.RFC3339)
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
+	indexed := 0
+
+	for i := 0; i < len(documents); i += batchSize {
+		end := i + batchSize
+		if end > len(documents) {
+			end = len(documents)
+		}
+		batch := documents[i:end]
+
+		texts := make([]string, len(batch))
+		for j, d := range batch {
+			texts[j] = TruncateForEmbed(d.Text)
+		}
+		embeddings, err := vs.embedder.EmbedBatch(texts, InputTypeDocument)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"embed batch failed at offset %d (%s:%s): %v — retrying per-doc\n",
+				i, backend, model, err)
+			for _, d := range batch {
+				vec, singleErr := vs.embedder.Embed(TruncateForEmbed(d.Text), InputTypeDocument)
+				if singleErr != nil || vec == nil {
+					fmt.Fprintf(os.Stderr, "  skip %s: %v\n", shortID(d.ID), singleErr)
+					continue
+				}
+				if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+					return indexed, fmt.Errorf("insert vector for %s: %w", d.ID, err)
+				}
+				indexed++
+			}
+			continue
+		}
+
+		for j, d := range batch {
+			vec := embeddings[j]
+			if vec == nil {
+				continue
+			}
+			if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+				return indexed, fmt.Errorf("insert vector for %s: %w", d.ID, err)
+			}
+			indexed++
+		}
+	}
+
+	vs.saveIndexBackend()
+	return indexed, nil
 }
 
 // Count returns the number of vector rows under the active (backend, model).
