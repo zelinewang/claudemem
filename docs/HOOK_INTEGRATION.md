@@ -1,4 +1,21 @@
-# Claude Code Hook Integration
+# Hook Integration
+
+claudemem hook support must be universal. Claude Code and Codex are the
+first-class adapters today, but the core design should remain agent-neutral.
+See [Universal Agent Integration](UNIVERSAL_AGENT_INTEGRATION.md) for the
+normalized event protocol and capture rules.
+
+The short version:
+
+- Hooks are control-plane only: context injection, health, sync, candidate
+  capture, and wrapup reminders.
+- Hooks must not save every tool output or dump transcripts.
+- Automatic capture must be candidate-based:
+  `detect -> classify -> redact -> dedupe/merge -> save/skip`.
+- High-quality session reports still require `/wrapup` or an equivalent
+  model-active workflow.
+
+## Claude Code Hook Integration
 
 claudemem ships with suggested additions to Claude Code's session hooks
 so memory health is checked at session start and memory sync happens at
@@ -62,3 +79,21 @@ ls -la ~/.claudemem/.sync_auto_*
 The two flag files live OUTSIDE config.json so they can be toggled
 per-machine without affecting the shared config. A CI server can run
 with auto-pull on + auto-push off, for example.
+
+## Codex Hook Integration
+
+Codex should use the same claudemem semantics through its own hook config and
+`AGENTS.md` rules:
+
+- `SessionStart`: run context inject, health traffic light, optional sync pull.
+- `PostToolUse`: future candidate capture only, dry-run by default.
+- `Stop`: remind about missing wrapup; do not auto-save a low-quality session.
+
+Current Codex memory discipline should be expressed directly in `AGENTS.md`:
+
+1. Search memory at task start.
+2. Save durable discoveries silently during work.
+3. Save a claudemem session report before ending substantial sessions.
+
+This keeps Codex and Claude Code behavior aligned without making the core
+claudemem store depend on either agent's hook payload shape.

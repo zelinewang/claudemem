@@ -1,5 +1,12 @@
 # claudemem vs claude-mem: Deep Comparison & Roadmap
 
+> Historical note: this comparison predates the v3.x work that added compact
+> search, context injection, semantic/vector indexing, health checks, sync JSON,
+> and free PR CI. The architectural direction still stands: borrow lifecycle and
+> progressive-disclosure ideas, but keep claudemem a universal, agent-neutral,
+> single-binary memory tool. For the current integration contract, see
+> [Universal Agent Integration](UNIVERSAL_AGENT_INTEGRATION.md).
+
 ## Executive Summary
 
 Two projects solving the same problem — persistent memory for AI coding assistants — with fundamentally different philosophies.
