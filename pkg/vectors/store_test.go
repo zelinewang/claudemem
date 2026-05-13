@@ -2,6 +2,7 @@ package vectors
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -94,6 +95,37 @@ func TestVectorStore_RebuildIndexFailsBeforeClearingRows(t *testing.T) {
 	}
 }
 
+func TestVectorStore_RebuildIndexFailsBeforeClearingRowsOnBatchError(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	healthy, err := NewVectorStore(db, &fakeEmbedder{name: "gemini", model: "test-v1", dim: 4})
+	if err != nil {
+		t.Fatalf("NewVectorStore healthy failed: %v", err)
+	}
+	if err := healthy.RebuildIndex([]Document{{ID: "existing", Text: "keep me"}}); err != nil {
+		t.Fatalf("initial RebuildIndex failed: %v", err)
+	}
+
+	failing, err := NewVectorStore(db, &batchFailingEmbedder{
+		fakeEmbedder: &fakeEmbedder{name: "gemini", model: "test-v1", dim: 4},
+	})
+	if err != nil {
+		t.Fatalf("NewVectorStore failing failed: %v", err)
+	}
+	if err := failing.RebuildIndex([]Document{{ID: "replacement", Text: "do not write"}}); err == nil {
+		t.Fatal("RebuildIndex with batch failure should fail")
+	}
+
+	count, err := healthy.Count()
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("active rows after failed batch rebuild = %d, want 1", count)
+	}
+}
+
 func TestVectorStore_UpsertDocumentsFailsBeforeWriting(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -112,6 +144,14 @@ func TestVectorStore_UpsertDocumentsFailsBeforeWriting(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("active rows after failed upsert = %d, want 0", count)
 	}
+}
+
+type batchFailingEmbedder struct {
+	*fakeEmbedder
+}
+
+func (f *batchFailingEmbedder) EmbedBatch(texts []string, _ InputType) ([][]float32, error) {
+	return nil, errors.New("simulated batch failure")
 }
 
 func TestVectorStore_Search(t *testing.T) {

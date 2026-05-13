@@ -90,3 +90,22 @@ func TestNewSyncStatusPayload_StatusError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestSyncCommandErrorQuietStillFails(t *testing.T) {
+	baseErr := errors.New("git failed")
+	err := syncCommandError("pull", true, baseErr)
+	if err == nil {
+		t.Fatal("quiet sync error should still fail")
+	}
+	if !errors.Is(err, baseErr) {
+		t.Fatalf("quiet sync error should wrap original error, got %v", err)
+	}
+}
+
+func TestSyncCommandErrorNonQuietReturnsOriginal(t *testing.T) {
+	baseErr := errors.New("git failed")
+	err := syncCommandError("push", false, baseErr)
+	if !errors.Is(err, baseErr) {
+		t.Fatalf("non-quiet sync error should return original error, got %v", err)
+	}
+}

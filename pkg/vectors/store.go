@@ -351,12 +351,19 @@ type Document struct {
 	Text string
 }
 
+type indexedDocumentVector struct {
+	docID  string
+	vector []float32
+}
+
 // RebuildIndex embeds every document with the ACTIVE backend+model, tagging
 // each row accordingly. Existing rows under OTHER (backend, model) tuples
 // are preserved (cross-machine / switch-back use cases). Only rows under
 // the CURRENT backend+model are wiped and rebuilt.
 //
 // For TF-IDF embedders, this also rebuilds the vocabulary from the corpus.
+// It prepares all embeddings before mutating SQLite so a provider failure
+// cannot leave the active backend with a partial or empty index.
 func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	if err := vs.embedder.Available(); err != nil {
 		return err
@@ -370,6 +377,11 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 		tf.BuildVocab(corpus)
 	}
 
+	indexed, err := vs.embedDocumentsForRebuild(documents)
+	if err != nil {
+		return err
+	}
+
 	tx, err := vs.db.Begin()
 	if err != nil {
 		return err
@@ -381,21 +393,43 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 		return fmt.Errorf("clear active backend rows: %w", err)
 	}
 
-	if len(documents) == 0 {
-		return tx.Commit()
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
+	if len(indexed) > 0 {
+		stmt, err := tx.Prepare(`
+			INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare insert: %w", err)
+		}
+		defer stmt.Close()
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, doc := range indexed {
+			if _, err := stmt.Exec(doc.docID, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
+				return fmt.Errorf("insert vector for %s: %w", doc.docID, err)
+			}
+		}
 	}
 
-	stmt, err := tx.Prepare(`
-		INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare insert: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
 	}
-	defer stmt.Close()
+
+	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
+		vs.saveTFIDFState(tf)
+	}
+	vs.saveIndexBackend()
+	return nil
+}
+
+func (vs *VectorStore) embedDocumentsForRebuild(documents []Document) ([]indexedDocumentVector, error) {
+	if len(documents) == 0 {
+		return nil, nil
+	}
 
 	const batchSize = 50
-	now := time.Now().UTC().Format(time.RFC3339)
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
+	indexed := make([]indexedDocumentVector, 0, len(documents))
 
 	for i := 0; i < len(documents); i += batchSize {
 		end := i + batchSize
@@ -410,42 +444,24 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 		}
 		embeddings, err := vs.embedder.EmbedBatch(texts, InputTypeDocument)
 		if err != nil {
-			fmt.Fprintf(os.Stderr,
-				"embed batch failed at offset %d (%s:%s): %v — retrying per-doc\n",
-				i, backend, model, err)
-			for _, d := range batch {
-				vec, singleErr := vs.embedder.Embed(TruncateForEmbed(d.Text), InputTypeDocument)
-				if singleErr != nil || vec == nil {
-					fmt.Fprintf(os.Stderr, "  skip %s: %v\n", shortID(d.ID), singleErr)
-					continue
-				}
-				if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
-					return fmt.Errorf("insert vector for %s: %w", d.ID, err)
-				}
-			}
-			continue
+			return nil, fmt.Errorf("embed batch at offset %d (%s:%s): %w", i, backend, model, err)
+		}
+		if len(embeddings) != len(batch) {
+			return nil, fmt.Errorf("embed batch at offset %d (%s:%s): got %d vectors for %d documents",
+				i, backend, model, len(embeddings), len(batch))
 		}
 
 		for j, d := range batch {
 			vec := embeddings[j]
 			if vec == nil {
-				continue
+				return nil, fmt.Errorf("embed batch at offset %d (%s:%s): nil vector for %s",
+					i+j, backend, model, shortID(d.ID))
 			}
-			if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
-				return fmt.Errorf("insert vector for %s: %w", d.ID, err)
-			}
+			indexed = append(indexed, indexedDocumentVector{docID: d.ID, vector: vec})
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
-		vs.saveTFIDFState(tf)
-	}
-	vs.saveIndexBackend()
-	return nil
+	return indexed, nil
 }
 
 // MissingDocumentIDs reports which IDs do not yet have a vector row for the

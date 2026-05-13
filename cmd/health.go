@@ -29,6 +29,7 @@ Invariants (quick mode, <100ms, runs on SessionStart):
   I1  Every markdown file has a row in entries
   I2  Every entry has a row in memory_fts
   I3  Every entry has a vector row for the CURRENTLY CONFIGURED (backend, model)
+  I6  Cloud embedding backends have their configured API key env var present
 
 Deep mode (--deep, slower) additionally validates:
   I4  No orphan FTS / vector rows (parent entry deleted)
@@ -92,6 +93,7 @@ func runHealth(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("health check failed: %w", err)
 	}
+	applyEmbeddingConfigHealth(report, cfg)
 
 	if healthTrafficLight {
 		printHealthTrafficLight(report, nil)
@@ -124,7 +126,7 @@ func printHealthReport(r *vectors.HealthReport, fs *storage.FileStore) {
 		return
 	}
 
-	fmt.Fprintln(os.Stderr, "⚠ drift detected")
+	fmt.Fprintln(os.Stderr, "⚠ health issues detected")
 	for _, issue := range r.Issues {
 		fmt.Fprintf(os.Stderr, "   %s\n", issue)
 	}
@@ -163,17 +165,76 @@ func printHealthTrafficLight(r *vectors.HealthReport, err error) {
 		return
 	}
 
-	codes := make([]string, 0, len(r.Issues))
-	for _, issue := range r.Issues {
+	codes := healthIssueCodes(r.Issues)
+	if len(codes) == 0 {
+		codes = append(codes, "drift")
+	}
+	if containsString(codes, "I6") {
+		fmt.Printf("claudemem health: RED backend unavailable (%s) - export API key or run `claudemem setup`\n",
+			strings.Join(codes, ","))
+		return
+	}
+	fmt.Printf("claudemem health: YELLOW drift (%s) - run `claudemem repair` or `claudemem reindex --vectors`\n",
+		strings.Join(codes, ","))
+}
+
+func applyEmbeddingConfigHealth(r *vectors.HealthReport, cfg *config.Config) {
+	if r == nil || cfg == nil || !cfg.GetBool("features.semantic_search") {
+		return
+	}
+
+	backend := strings.ToLower(cfg.GetString("embedding.backend"))
+	if backend == "" {
+		backend = "tfidf"
+	}
+	defaultKeyEnv := defaultEmbeddingAPIKeyEnv(backend)
+	if defaultKeyEnv == "" {
+		return
+	}
+	keyEnv := cfg.GetString("embedding.api_key_env")
+	if keyEnv == "" {
+		keyEnv = defaultKeyEnv
+	}
+	if os.Getenv(keyEnv) != "" {
+		return
+	}
+
+	r.I6ActiveBackendConfigured = false
+	r.Issues = append(r.Issues, fmt.Sprintf(
+		"I6: active backend %s expects env var %s, but it is not set. Export it or run `claudemem setup`.",
+		backend, keyEnv))
+}
+
+func defaultEmbeddingAPIKeyEnv(backend string) string {
+	switch backend {
+	case "gemini":
+		return "GEMINI_API_KEY"
+	case "voyage":
+		return "VOYAGE_API_KEY"
+	case "openai":
+		return "OPENAI_API_KEY"
+	default:
+		return ""
+	}
+}
+
+func healthIssueCodes(issues []string) []string {
+	codes := make([]string, 0, len(issues))
+	for _, issue := range issues {
 		if len(issue) >= 2 && issue[0] == 'I' {
 			codes = append(codes, issue[:2])
 		}
 	}
-	if len(codes) == 0 {
-		codes = append(codes, "drift")
+	return codes
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
 	}
-	fmt.Printf("claudemem health: YELLOW drift (%s) - run `claudemem repair` or `claudemem reindex --vectors`\n",
-		strings.Join(codes, ","))
+	return false
 }
 
 func init() {

@@ -8,9 +8,10 @@ import (
 	"strings"
 )
 
-// HealthReport is the result of a parity check. Each invariant (I1–I5) has
+// HealthReport is the result of a parity check. Each invariant (I1-I6) has
 // a boolean pass/fail + a human-readable message. Quick health check
-// populates I1–I3; Deep also fills I4 + I5 (orphans + config match).
+// populates I1-I3; the CLI may add I6 for embedding backend config; Deep
+// also fills I4 + I5 (orphans + config match).
 type HealthReport struct {
 	// Counts
 	MarkdownFiles int            // I1 lhs
@@ -23,11 +24,12 @@ type HealthReport struct {
 	ActiveModel   string
 
 	// Per-invariant status. False = drift detected.
-	I1MarkdownMatchesEntries bool
-	I2EntriesMatchesFTS      bool
+	I1MarkdownMatchesEntries    bool
+	I2EntriesMatchesFTS         bool
 	I3VectorsMatchActiveBackend bool
-	I4NoOrphanRows               bool // deep only
-	I5VectorMetaMatchesActive    bool // deep only
+	I4NoOrphanRows              bool // deep only
+	I5VectorMetaMatchesActive   bool // deep only
+	I6ActiveBackendConfigured   bool // CLI config check only
 
 	// Human-readable drift descriptions (empty when all pass)
 	Issues []string
@@ -40,7 +42,8 @@ type HealthReport struct {
 func (h *HealthReport) Healthy() bool {
 	base := h.I1MarkdownMatchesEntries &&
 		h.I2EntriesMatchesFTS &&
-		h.I3VectorsMatchActiveBackend
+		h.I3VectorsMatchActiveBackend &&
+		h.I6ActiveBackendConfigured
 	if !h.DidDeepCheck {
 		return base
 	}
@@ -59,7 +62,10 @@ type HealthInputs struct {
 // CheckHealth runs the quick parity check (I1–I3). Targets sub-100ms so
 // it can run on every SessionStart hook without blocking the shell.
 func CheckHealth(in HealthInputs) (*HealthReport, error) {
-	r := &HealthReport{VectorTotals: map[string]int{}}
+	r := &HealthReport{
+		VectorTotals:              map[string]int{},
+		I6ActiveBackendConfigured: true,
+	}
 
 	// I1 — markdown files vs entries table
 	mdCount, err := countMarkdownFiles(in.NotesDir, in.SessionsDir)

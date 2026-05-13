@@ -74,12 +74,7 @@ var syncPushCmd = &cobra.Command{
 		msg, _ := cmd.Flags().GetString("message")
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		if err := g.Push(msg); err != nil {
-			if !quiet {
-				return err
-			}
-			// Quiet mode for hook invocations: log to stderr, exit 0
-			fmt.Fprintf(os.Stderr, "claudemem sync push (quiet): %v\n", err)
-			return nil
+			return syncCommandError("push", quiet, err)
 		}
 		if !quiet {
 			OutputText("✓ pushed memory to %s", g.RemoteURL())
@@ -95,11 +90,7 @@ var syncPullCmd = &cobra.Command{
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		g := sync.NewGitSync(getStoreDir())
 		if err := g.Pull(); err != nil {
-			if !quiet {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "claudemem sync pull (quiet): %v\n", err)
-			return nil
+			return syncCommandError("pull", quiet, err)
 		}
 
 		// Reconcile: rebuild FTS from markdown (cheap), then embed any docs
@@ -137,6 +128,16 @@ var syncPullCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func syncCommandError(action string, quiet bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	if quiet {
+		return fmt.Errorf("claudemem sync %s (quiet): %w", action, err)
+	}
+	return err
 }
 
 var syncStatusCmd = &cobra.Command{
