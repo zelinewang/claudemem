@@ -174,6 +174,30 @@ func TestGemini_Embed_ErrorBody(t *testing.T) {
 	}
 }
 
+func TestGemini_Embed_AuthRejectedIsBackendUnavailable(t *testing.T) {
+	srv, emb := newGeminiMockServer(t, func(path string, body []byte) (int, string) {
+		return 403, `{"error":{"message":"invalid key"}}`
+	})
+	defer srv.Close()
+
+	_, err := emb.Embed("hello", InputTypeQuery)
+	if !IsBackendUnavailable(err) {
+		t.Fatalf("expected ErrBackendUnavailable, got %T: %v", err, err)
+	}
+}
+
+func TestGemini_EmbedBatch_AuthRejectedIsBackendUnavailable(t *testing.T) {
+	srv, emb := newGeminiMockServer(t, func(path string, body []byte) (int, string) {
+		return 403, `{"error":{"message":"invalid key"}}`
+	})
+	defer srv.Close()
+
+	_, err := emb.EmbedBatch([]string{"hello"}, InputTypeDocument)
+	if !IsBackendUnavailable(err) {
+		t.Fatalf("expected ErrBackendUnavailable, got %T: %v", err, err)
+	}
+}
+
 func TestGemini_Name_Model_Dimensions(t *testing.T) {
 	emb := NewGeminiEmbedder("gemini-embedding-001", "k", 1024)
 	if emb.Name() != "gemini" {

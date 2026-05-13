@@ -122,8 +122,8 @@ func (g *GeminiEmbedder) Available() error {
 // Embed calls the :embedContent endpoint for a single text.
 func (g *GeminiEmbedder) Embed(text string, t InputType) ([]float32, error) {
 	body := geminiEmbedRequest{
-		Content:             geminiContent{Parts: []geminiPart{{Text: text}}},
-		TaskType:            geminiTaskType(t),
+		Content:              geminiContent{Parts: []geminiPart{{Text: text}}},
+		TaskType:             geminiTaskType(t),
 		OutputDimensionality: g.dim, // omitempty — 0 keeps native
 	}
 	raw, err := json.Marshal(body)
@@ -136,6 +136,14 @@ func (g *GeminiEmbedder) Embed(text string, t InputType) ([]float32, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, &ErrBackendUnavailable{
+			Backend: g.Name() + ":" + g.model,
+			Cause:   fmt.Errorf("auth rejected (HTTP %d): %s", resp.StatusCode, string(b)),
+			Hint:    "verify GEMINI_API_KEY is valid; rotate at https://aistudio.google.com/app/apikey",
+		}
+	}
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("gemini embedContent HTTP %d: %s", resp.StatusCode, string(b))
@@ -182,6 +190,15 @@ func (g *GeminiEmbedder) EmbedBatch(texts []string, t InputType) ([][]float32, e
 		resp, err := g.post("/models/"+g.model+":batchEmbedContents", raw)
 		if err != nil {
 			return nil, err
+		}
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, &ErrBackendUnavailable{
+				Backend: g.Name() + ":" + g.model,
+				Cause:   fmt.Errorf("auth rejected (HTTP %d): %s", resp.StatusCode, string(b)),
+				Hint:    "verify GEMINI_API_KEY is valid; rotate at https://aistudio.google.com/app/apikey",
+			}
 		}
 		if resp.StatusCode != 200 {
 			b, _ := io.ReadAll(resp.Body)
