@@ -1,0 +1,27 @@
+{
+  "name": "verified release fact",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "desktop"
+    },
+    "event": {
+      "type": "post_tool_use",
+      "native_type": "PostToolUse"
+    },
+    "session": {
+      "project": "claudemem"
+    },
+    "tool": {
+      "name": "gh",
+      "output_summary": "Release v3.0.11 published successfully and PR checks passed."
+    }
+  },
+  "expected": {
+    "should_save": true,
+    "signal": "high",
+    "category": "project"
+  }
+}

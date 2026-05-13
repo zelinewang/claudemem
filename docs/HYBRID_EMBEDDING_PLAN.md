@@ -3,7 +3,7 @@
 **Status**: APPROVED DESIGN (2026-04-14) — supersedes v1 (see git history at `cfe05bd`)
 **Owner**: Zane
 **Effort**: 1.5–2 days focused work (all phases)
-**Branch**: `feat/embedder-interface` (worktree at `/tmp/claudemem-refactor`)
+**Branch**: `feat/embedder-interface` (worktree at a temporary checkout path)
 
 ## Why this version supersedes v1
 

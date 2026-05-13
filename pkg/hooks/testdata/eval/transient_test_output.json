@@ -1,0 +1,23 @@
+{
+  "name": "transient test output",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "cli"
+    },
+    "event": {
+      "type": "post_tool_use",
+      "native_type": "PostToolUse"
+    },
+    "tool": {
+      "name": "Bash",
+      "output_summary": "ok github.com/zelinewang/claudemem/pkg/hooks 0.012s\nPASS"
+    }
+  },
+  "expected": {
+    "should_save": false,
+    "signal": "low"
+  }
+}
