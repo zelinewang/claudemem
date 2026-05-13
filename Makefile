@@ -12,7 +12,10 @@ build:
 # Install to ~/.local/bin/
 install: build
 	mkdir -p $(HOME)/.local/bin
-	cp $(BINARY) $(HOME)/.local/bin/$(BINARY)
+	tmp="$(HOME)/.local/bin/$(BINARY).tmp.$$$$" && \
+		cp $(BINARY) "$$tmp" && \
+		chmod 755 "$$tmp" && \
+		mv "$$tmp" $(HOME)/.local/bin/$(BINARY)
 	@echo "Installed to $(HOME)/.local/bin/$(BINARY)"
 
 # Quick smoke test
