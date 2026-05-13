@@ -1,0 +1,22 @@
+{
+  "name": "root cause review candidate",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "cli"
+    },
+    "event": {
+      "type": "post_tool_use",
+      "native_type": "PostToolUse"
+    },
+    "text": {
+      "assistant_summary": "Root cause: cmd/sync.go:88 returned text even when --format json. Fixed by routing status through OutputJSON. Verified with go test ./cmd."
+    }
+  },
+  "expected": {
+    "should_save": false,
+    "signal": "medium"
+  }
+}

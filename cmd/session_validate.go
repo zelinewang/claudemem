@@ -21,7 +21,7 @@ The file can be provided as an argument or piped via stdin.
 
 Examples:
   # Validate a file
-  claudemem session validate /tmp/claudemem-session-report.md
+  claudemem session validate ./claudemem-session-report.md
 
   # Validate from stdin
   cat report.md | claudemem session validate

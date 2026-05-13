@@ -1,0 +1,22 @@
+{
+  "name": "root cause template noise",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "cli"
+    },
+    "event": {
+      "type": "post_tool_use",
+      "native_type": "PostToolUse"
+    },
+    "text": {
+      "assistant_summary": "Root Cause: TBD\nFix: TBD\nEvidence: TBD"
+    }
+  },
+  "expected": {
+    "should_save": false,
+    "signal": "low"
+  }
+}

@@ -25,7 +25,7 @@ var (
 	sessionProblems     []string
 	sessionInsights     []string
 	sessionQuestions    []string
-	sessionNextSteps   []string
+	sessionNextSteps    []string
 	sessionRelatedNotes []string
 )
 
@@ -41,12 +41,12 @@ The session content can be provided in multiple ways:
 
 Example with full markdown:
   claudemem session save --title "Fix auth bug" --branch "main" \
-    --project "/home/user/myapp" --session-id "abc123" \
+    --project "/path/to/myapp" --session-id "abc123" \
     --content "## Summary\nFixed authentication issue..."
 
 Example with structured input:
   claudemem session save --title "Fix auth bug" --branch "main" \
-    --project "/home/user/myapp" --session-id "abc123" \
+    --project "/path/to/myapp" --session-id "abc123" \
     --summary "Fixed the JWT token refresh logic" \
     --decisions "Use Redis for token storage" \
     --decisions "Add 5-minute grace period"
@@ -54,7 +54,7 @@ Example with structured input:
 Example with stdin:
   echo "## Summary\nFixed auth..." | claudemem session save \
     --title "Fix auth bug" --branch "main" \
-    --project "/home/user/myapp" --session-id "abc123"`,
+    --project "/path/to/myapp" --session-id "abc123"`,
 	RunE: runSessionSave,
 }
 

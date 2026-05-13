@@ -1,0 +1,23 @@
+{
+  "name": "explicit memory request",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "cli"
+    },
+    "event": {
+      "type": "user_prompt_submit",
+      "native_type": "UserPromptSubmit"
+    },
+    "text": {
+      "user_prompt": "Please remember this: Claude Code and Codex are P0 adapters for claudemem."
+    }
+  },
+  "expected": {
+    "should_save": true,
+    "signal": "high",
+    "category": "user-requirement"
+  }
+}

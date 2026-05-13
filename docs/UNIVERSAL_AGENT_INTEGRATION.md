@@ -204,14 +204,37 @@ Do not borrow:
 ## Implementation Roadmap
 
 1. Add `claudemem hook event --dry-run --payload -`.
-2. Add a deterministic classifier that produces save/skip decisions without
-   network calls.
-3. Add `candidates list/get/accept/reject/stats`.
-4. Add Claude Code and Codex adapter snippets that call the same hook command.
-5. Add actionable summaries to new notes and sessions.
-6. Only after reviewing candidate quality, enable narrow opt-in autosave for
+2. Add a deterministic classifier and eval harness that produces save/skip
+   decisions without network calls.
+3. Add backtests against existing notes and session reports before widening
+   classifier rules.
+4. Add a dry-run dedupe threshold experiment before creating any queue write
+   path.
+5. Add `candidates list/get/accept/reject/stats/expire/digest` with bounded
+   queue depth and review backpressure.
+6. Add Claude Code and Codex adapter snippets that call the same hook command.
+7. Add template-based actionable summaries to new notes and sessions. Optional
+   LLM enrichment should be a later, explicit command.
+8. Only after reviewing candidate quality, enable narrow opt-in autosave for
    explicit user memory requests and verified release/merge/deploy facts.
 
 The first successful version is not the one that saves the most. It is the one
 that makes high-quality memory capture easier without polluting the long-term
 store.
+
+## Quality Gates
+
+- **Classifier evals before autosave**: deterministic rules must be tested on a
+  fixture set with reported precision, recall, and F1. Autosave stays disabled
+  until the high-signal class has a reviewed precision target.
+- **Backtests before broad triggers**: broad phrases such as "root cause" or
+  "config gotcha" must be validated against existing notes/session reports
+  before they can become save-eligible.
+- **Dedupe before queue writes**: vector or text similarity thresholds must be
+  tested in dry-run mode against existing memories before candidates can be
+  persisted automatically.
+- **Bounded queues only**: candidate queues need stats, expiry, digest, and
+  backpressure. An unbounded review queue is another log sink.
+- **Template summaries first**: deterministic capture may write structured,
+  template-based actionable summaries. LLM-written summaries are optional
+  enrichment, not a first-version requirement.

@@ -1,0 +1,22 @@
+{
+  "name": "negative memory request",
+  "event": {
+    "schema_version": "claudemem.hook_event.v1",
+    "agent": {
+      "name": "codex",
+      "version": "test",
+      "surface": "cli"
+    },
+    "event": {
+      "type": "user_prompt_submit",
+      "native_type": "UserPromptSubmit"
+    },
+    "text": {
+      "user_prompt": "Do not remember this temporary workaround."
+    }
+  },
+  "expected": {
+    "should_save": false,
+    "signal": "low"
+  }
+}
