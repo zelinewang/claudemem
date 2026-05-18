@@ -18,6 +18,8 @@ import (
 //	embedding.dimensions    (matryoshka truncation; 0 = native)
 //	embedding.endpoint      (optional URL override, e.g., Ollama on a remote host)
 //	embedding.api_key_env   (name of the env var holding the API key for cloud)
+//	embedding.project       (Vertex AI project ID; falls back to GOOGLE_CLOUD_PROJECT)
+//	embedding.location      (Vertex AI region; falls back to GOOGLE_CLOUD_LOCATION)
 //
 // For P1 this only supports Ollama and TF-IDF; Gemini/Voyage/OpenAI land in
 // later phases. The backend is constructed but NOT pinged here — availability
@@ -62,11 +64,22 @@ func loadBackendConfig(storeDir string) (vectors.BackendConfig, error) {
 		Model:    cfg.GetString("embedding.model"),
 		Endpoint: cfg.GetString("embedding.endpoint"),
 		Dim:      cfg.GetInt("embedding.dimensions"),
+		Project:  firstNonEmpty(cfg.GetString("embedding.project"), os.Getenv("GOOGLE_CLOUD_PROJECT"), os.Getenv("GEMINI_VERTEX_PROJECT")),
+		Location: firstNonEmpty(cfg.GetString("embedding.location"), os.Getenv("GOOGLE_CLOUD_LOCATION"), os.Getenv("GEMINI_VERTEX_LOCATION")),
 	}
 	if keyEnv := cfg.GetString("embedding.api_key_env"); keyEnv != "" {
 		bc.APIKey = os.Getenv(keyEnv)
 	}
 	return bc, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // HasVectorStore returns true if semantic search is initialized.

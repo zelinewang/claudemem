@@ -9,11 +9,13 @@ import (
 // for building an Embedder. Populated by the setup wizard (P3) or by
 // reading flat config keys (embedding.backend, embedding.model, ...).
 type BackendConfig struct {
-	Backend  string // "ollama" | "gemini" | "voyage" | "openai" | "tfidf"
+	Backend  string // "ollama" | "gemini" | "vertex" | "voyage" | "openai" | "tfidf"
 	Model    string
 	Endpoint string // optional URL override
 	APIKey   string // plaintext; obtained by the caller from os.Getenv
 	Dim      int    // optional matryoshka truncation target (0 = native)
+	Project  string // Vertex AI project ID
+	Location string // Vertex AI region, e.g. "us-central1"
 }
 
 // BuildEmbedder materialises an Embedder from a BackendConfig.
@@ -45,6 +47,17 @@ func BuildEmbedder(cfg BackendConfig) (Embedder, error) {
 			emb.WithBaseURL(cfg.Endpoint)
 		}
 		return emb, nil
+
+	case "vertex", "vertexai", "vertex-ai":
+		model := cfg.Model
+		if model == "" {
+			model = "gemini-embedding-001"
+		}
+		emb := NewVertexEmbedder(cfg.Project, cfg.Location, model, cfg.Dim)
+		if cfg.Endpoint != "" {
+			emb.WithBaseURL(cfg.Endpoint)
+		}
+		return emb, nil
 	case "voyage":
 		model := cfg.Model
 		if model == "" {
@@ -68,6 +81,6 @@ func BuildEmbedder(cfg BackendConfig) (Embedder, error) {
 		return emb, nil
 
 	default:
-		return nil, fmt.Errorf("unknown embedding backend %q (known: tfidf, ollama, gemini, voyage, openai)", cfg.Backend)
+		return nil, fmt.Errorf("unknown embedding backend %q (known: tfidf, ollama, gemini, vertex, voyage, openai)", cfg.Backend)
 	}
 }
