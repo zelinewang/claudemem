@@ -1,39 +1,75 @@
 # claudemem
 
-Persistent memory for AI coding agents. Notes and session summaries that survive across conversations — with bidirectional cross-referencing.
+Persistent memory for AI coding agents — notes and session reports that survive across conversations, searchable by FTS5 keyword **and** semantic vectors, in a single zero-network Go binary.
+
+[![CI](https://img.shields.io/github/actions/workflow/status/zelinewang/claudemem/ci.yml?label=CI)](https://github.com/zelinewang/claudemem/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/zelinewang/claudemem)](https://github.com/zelinewang/claudemem/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/zelinewang/claudemem)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Your agent forgets everything between sessions. claudemem gives it a durable,
+inspectable memory: knowledge notes and work-session reports, stored as plain
+Markdown, indexed for fast search, and cross-linked so any fact traces back to
+the session that produced it.
+
+```console
+$ claudemem note add architecture --title "FTS5 sanitization" \
+    --content "Hyphens and quotes in queries are escaped before the MATCH clause." \
+    --tags "sqlite,search"
+✓ Added note to architecture: "FTS5 sanitization" (id: fee13be2)
+
+$ claudemem session save --title "Ship v3 release pipeline" --branch feat/goreleaser \
+    --project claudemem --session-id s1 --summary "Wired goreleaser + CI; cut v3.0.12."
+✓ Saved session: "Ship v3 release pipeline" (2026-07-12, feat/goreleaser) [id: 2ec8c555]
+
+$ claudemem search "FTS5"
+Found 1 results for "FTS5":
+1. 📝 [note] FTS5 sanitization
+   category: architecture | tags: sqlite, search
+   Hyphens and quotes in queries are escaped before the MATCH clause.
+
+$ claudemem stats
+ClaudeMem Statistics
+====================
+Notes:    1
+Sessions: 1
+Storage:  100.6 KB
+```
+
+## Highlights
+
+- **Markdown is the source of truth** — every note and session is a human-readable `.md` file with YAML frontmatter. The SQLite index is a regenerable cache, not the record.
+- **Hybrid search** — FTS5 keyword search fused with semantic vectors, score-weighted for the keyword-heavy queries agents actually make.
+- **Zero network by default** — no telemetry, no daemon. Cloud embedding backends are an explicit per-machine opt-in; API keys come from env vars only, never written to disk.
+- **Bidirectional cross-referencing** — notes link to the session that produced them; sessions list their related notes. Nothing is a dead end.
 
 ## Install
 
 ```bash
-npx skills add zelinewang/claudemem
+npx skills add zelinewang/claudemem --skill claudemem --global
 ```
 
-That's it. Next time you start Claude Code (or Cursor, Gemini CLI, etc.), it just works.
+This installs only the `claudemem` skill at user level. Next time you start
+Claude Code (or Cursor, Gemini CLI, etc.), it just works. Your saved data lives
+in `~/.claudemem/` and is never touched by upgrades. To upgrade later, run
+`npx skills update claudemem --global`.
 
-### Upgrade
+Prefer to build it yourself? See [Build from source](#build-from-source).
 
-```bash
-npx skills add zelinewang/claudemem -y -g
-```
+## Talk to It Naturally
 
-Same command as install. Overwrites with the latest version. Your saved data (`~/.claudemem/`) is never touched.
-
-## How It Works
-
-**claudemem remembers things for you across conversations.**
-
-During your work, it silently saves important context — API specs, decisions, quirks, resolved bugs. When you start a new task, it searches past knowledge automatically.
-
-You can also talk to it naturally:
+During your work claudemem silently saves important context — API specs,
+decisions, quirks, resolved bugs. When you start a new task it searches past
+knowledge automatically. You can also drive it in plain language:
 
 | Say this | What happens |
 |----------|-------------|
 | "remember this" | Saves the current info as a note |
 | "what do you remember about TikTok" | Searches past notes |
-| "wrap up" | Saves detailed session report + extracts notes |
+| "wrap up" | Saves a detailed session report + extracts notes |
 | "what did we do last time" | Shows recent sessions |
 
-Or use slash commands: `/wrapup`, `/recall [topic]`
+Or use slash commands directly: `/wrapup`, `/recall [topic]`.
 
 ## What Gets Saved
 
@@ -44,9 +80,45 @@ Or use slash commands: `/wrapup`, `/recall [topic]`
 └── .index/         ← search index (auto-rebuilt)
 ```
 
-Everything is plain Markdown with YAML frontmatter. Human-readable, git-friendly, portable.
+Everything is plain Markdown with YAML frontmatter — human-readable,
+git-friendly, portable.
 
-## CLI Quick Reference
+## Architecture
+
+Every write goes to **both** the Markdown files and the SQLite index. The
+Markdown is authoritative; the index (FTS5 rows + embedding vectors) is a cache
+that can be dropped and rebuilt from the Markdown at any time.
+
+```
+        claudemem note add / session save
+                       │
+            ┌──────────┴───────────┐
+            ▼                      ▼
+   ~/.claudemem/*.md         SQLite  .index/
+   Markdown + YAML           FTS5 rows + vectors
+   = source of truth         = regenerable cache
+            │                      │
+            └──────────┬───────────┘
+                       ▼
+      search  =  FTS5 keyword  ⊕  semantic vectors
+                (keyword-weighted score fusion)
+```
+
+Notes and sessions look similar but dedupe on opposite keys, because they mean
+different things:
+
+| | Notes | Sessions |
+|---|---|---|
+| **Purpose** | Knowledge fragments | Work reports |
+| **Dedup key** | Same title + category | Same `session_id` |
+| **Merge behavior** | Append content | Append all sections |
+| **Cross-link** | `metadata.session_id` | `## Related Notes` |
+
+Knowledge accumulates by topic (same note grows), while distinct conversations
+stay separate (each session is its own record). Schema migrations preserve
+existing data across upgrades.
+
+## CLI Reference
 
 ```bash
 # Notes (knowledge fragments)
@@ -85,7 +157,6 @@ claudemem sync status                        # git status + index health
 # Utilities
 claudemem stats
 claudemem verify
-claudemem repair
 claudemem config set/get/list/delete <key> [value]
 claudemem export backup.tar.gz
 claudemem import backup.tar.gz
@@ -93,169 +164,120 @@ claudemem import backup.tar.gz
 
 Add `--format json` to any command for structured output.
 
-## Setup — Pick Your Search Backend
+## Search Backends
 
-Semantic search uses an embedding model. Pick it explicitly — claudemem never
-falls back silently to a worse backend behind your back.
+Semantic search needs an embedding model. You pick it explicitly — claudemem
+never falls back to a worse backend behind your back.
 
 ```bash
 claudemem setup
 ```
 
-The wizard walks through:
-
-| Option | Where it runs | Cost | Chinese | When to pick |
+| Option | Where it runs | Cost | Multilingual | When to pick |
 |---|---|---|---|---|
-| **Local — Ollama** | Your machine | Free | qwen3 ✅ / nomic weaker | Daily use, offline, airgapped |
-| **Cloud — Gemini** | Google | $0.15/M tokens (≈$0.50/mo for 3K notes) | ✅ 100+ langs | Best quality, you already have a key |
-| **Cloud — Voyage** | Voyage AI | $0.02/M, 200M free tokens | ✅ | Budget pick, effectively free |
-| **Cloud — OpenAI** | OpenAI | $0.02/M (3-small) | ⚠️ English-heavy | You already pay OpenAI for other things |
+| **Local — Ollama** | Your machine | Free | qwen3 strong / nomic weaker | Daily use, offline, airgapped |
+| **Cloud — Gemini** | Google | ~$0.15/M tokens | 100+ langs | Best quality, you already have a key |
+| **Cloud — Voyage** | Voyage AI | ~$0.02/M, 200M free | Yes | Budget pick, effectively free |
+| **Cloud — OpenAI** | OpenAI | ~$0.02/M (3-small) | English-heavy | You already pay OpenAI |
 | **TF-IDF** | Your machine | Free | OK | No daemon, no keys, keyword-ish similarity |
 
-API keys are always read from environment variables (`GEMINI_API_KEY`,
+API keys are read from environment variables (`GEMINI_API_KEY`,
 `VOYAGE_API_KEY`, `OPENAI_API_KEY`) — claudemem refuses to store them in
-`config.json`. Only the env var **name** is recorded, so configs are safe
-to commit + sync across machines.
+`config.json`. Only the env var **name** is recorded, so configs are safe to
+commit and sync across machines.
 
-Manual equivalent (for scripts):
+**When the backend is down**, claudemem never degrades silently:
 
-```bash
-claudemem config set embedding.backend gemini
-claudemem config set embedding.model gemini-embedding-001
-claudemem config set embedding.dimensions 768
-claudemem config set embedding.api_key_env GEMINI_API_KEY
-claudemem reindex --vectors
-```
+- Non-interactive shells / CI → error with recovery instructions + exit 1.
+- Interactive terminals → prompt offering retry / FTS-only-this-query / run setup.
 
-### When the backend is down
-
-claudemem never degrades silently. If the configured backend is unreachable:
-
-- **Non-interactive shells / CI**: error with recovery instructions + exit 1.
-- **Interactive terminals**: prompt offering retry / FTS-only-this-query / run setup.
-
-Use `claudemem search "..." --fts-only` to skip semantic for one query
-when you know the backend is down.
+Use `claudemem search "..." --fts-only` to skip semantic for one query.
 
 ## Cross-Machine Memory
 
-Memory can follow you between machines (web_dev ↔ MacBook, etc.) via a
-private git repo.
+Memory can follow you between machines via a private git repo. Only Markdown
+travels over the wire — the SQLite index and config stay per-machine, so a
+cloud-Gemini laptop and a local-Ollama workstation share one corpus with zero
+backend coupling.
 
 ```bash
-# once, per user (HTTPS recommended — works with gh auth / keychain)
+# once, per user (HTTPS works with gh auth / keychain)
 claudemem sync init https://github.com/YOU/claudemem-memory.git
 
 # after work
 claudemem sync push
 
-# on another machine, first time (existing notes are auto-committed as baseline)
+# on another machine, first time
 claudemem sync init https://github.com/YOU/claudemem-memory.git
 claudemem sync pull
 ```
 
-Only markdown travels over the wire — SQLite index and config stay
-per-machine. Each machine embeds under ITS configured backend, so
-a cloud-Gemini laptop and a local-Ollama workstation can share the
-same corpus with zero backend coupling.
+See [docs/HOOK_INTEGRATION.md](docs/HOOK_INTEGRATION.md) for auto-pull on
+SessionStart and auto-push on SessionEnd via Claude Code hooks.
 
-See [docs/HOOK_INTEGRATION.md](docs/HOOK_INTEGRATION.md) for Claude Code
-hook integration (auto-pull on SessionStart, auto-push on SessionEnd).
+## Quality Signals
 
-## Recommended: Auto Wrap-Up
+Three test layers, all green. Numbers below are reproducible from a clean
+checkout:
 
-Want every session saved automatically? Add this to your `~/.claude/CLAUDE.md`:
+| Layer | Command | Result |
+|-------|---------|--------|
+| Go unit + coverage | `go test ./... -cover` | all 7 packages pass · `pkg/models` 94.7% · `pkg/storage` 81.4% · `pkg/hooks` 79.2% |
+| E2E CLI | `make e2e-test` | 23 passed, 0 failed |
+| Black-box feature | `make feature-test` | 82 passed across 7 levels |
+| Everything | `make test-all` | unit + smoke + E2E + feature |
 
-```markdown
-### Session Memory — Auto Wrap-Up
-- Before ending any conversation, automatically execute `/wrapup` to save knowledge and session summary.
-- Do not ask permission — just do it as the final action.
-```
+The full matrix (`make test-all`) runs in GitHub Actions for pull requests that
+change Go source, modules, the Makefile, CI workflow, or test harnesses (see
+`.github/workflows/ci.yml`). There are 364 Go test functions across `cmd/` and
+`pkg/`; all suites use temp directories, so there are zero local-environment
+dependencies.
 
-## Key Features
+## Security
 
-- **Cross-referencing** — notes link to sessions, sessions link to notes. Trace any knowledge back to its source
-- **Custom sections preserved** — architecture diagrams, performance tables, file lists — nothing silently dropped
-- **Smart dedup** — notes merge by topic; sessions stay separate by conversation (session_id-based)
-- **FTS5 search** — full-text search across all notes and sessions in <10ms, with automatic query sanitization (hyphens, quotes, special chars handled safely)
-- **Hybrid search** — FTS5 keyword search + semantic vector search (Gemini / Voyage / OpenAI / Ollama / TF-IDF). Score fusion tuned for keyword-heavy memory queries
-- **Opt-in network** — default is zero-network (TF-IDF or offline). Cloud embedding backends are explicit per-machine choices via `claudemem setup`; API keys come from env vars only, never stored in config
-- **Portable** — export/import as tar.gz, move between machines
-- **440+ tests** — 331 unit (82% coverage), 23 E2E, 82 black-box feature tests across 7 levels
+skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **any
+skill that runs CLI commands**. What is actually happening:
 
-## For Developers
+| Scanner | Flag | Why | Real risk |
+|---------|------|-----|-----------|
+| Generic | High | Skill uses Bash to run `claudemem` | Every useful CLI skill needs this |
+| Socket | 1 alert | `install.sh` fetches a binary via curl | Standard Go distribution |
+| Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) carries upstream CVEs | Industry-standard pure-Go SQLite |
 
-### Build from source
+What claudemem actually does: zero network by default (TF-IDF or offline
+Ollama); cloud embedding backends are opt-in per machine via `claudemem setup`,
+with API keys from env vars only. Parameterized SQL, FTS5 query sanitization,
+path-traversal protection, `0600`/`0700` storage permissions. About 13,000 lines
+of Go source (plus ~9,000 lines of tests), fully auditable. Running
+`govulncheck ./...` before a release is currently a recommended manual check,
+not an automated release gate. See [SECURITY.md](SECURITY.md).
+
+## Build from Source
 
 ```bash
 git clone https://github.com/zelinewang/claudemem.git
 cd claudemem
-make build          # Build binary
-make install        # Install to ~/.local/bin/
+make build          # single static binary (CGO_ENABLED=0, pure Go)
+make install        # install to ~/.local/bin/
+./claudemem --version
 ```
 
-### Run tests
+Requires Go 1.25+. The build is a single pure-Go binary with no runtime
+dependencies; goreleaser (`.goreleaser.yml`) cross-compiles linux/darwin/windows
+on amd64/arm64 for releases.
 
-```bash
-make test           # Quick smoke test (5 operations)
-make e2e-test       # 23 end-to-end CLI tests
-make feature-test   # 82 black-box feature tests (7 levels)
-make test-all       # All tests: unit + smoke + e2e + feature
+## Status
 
-# Go unit tests directly
-go test ./... -v    # 331 unit tests, 82% coverage
-```
-
-### Test coverage
-
-| Layer | Tests | What it covers |
-|-------|-------|---------------|
-| Go unit tests | 331 | Models, validation, markdown, storage, dedup, search, cross-ref, integrity, faceted search, timestamp parsing, FTS5 sanitization, session merge, vector store, migration |
-| Smoke test | 5 | Basic note/session/search/stats |
-| E2E CLI | 23 | Full CLI flag testing, JSON output, metadata, cross-referencing, capture, graph |
-| Feature tests | 82 | 7 levels: CRUD, search, dedup, cross-ref, edge cases, boundaries, data lifecycle |
-| **Total** | **441** | **82.2% statement coverage** on core storage package |
-
-All tests use temp directories — zero local environment dependencies, fully replicatable.
-
-## Architecture
-
-Notes and sessions have fundamentally different dedup strategies:
-
-| | Notes | Sessions |
-|---|---|---|
-| **Purpose** | Knowledge fragments | Work reports |
-| **Dedup key** | Same title + category | Same session_id |
-| **Merge behavior** | Append content | Append all sections |
-| **Cross-link** | `metadata.session_id` | `## Related Notes` |
-
-This ensures knowledge accumulates naturally while different conversations stay separate.
-
-## Security
-
-skills.sh shows "High Risk" / "Critical Risk" badges — this is normal for **any skill that runs CLI commands**. Here's what's actually going on:
-
-| Scanner | Flag | Why | Real risk |
-|---------|------|-----|-----------|
-| Gen | High | Skill uses Bash to run `claudemem` | All useful skills need this |
-| Socket | 1 alert | `install.sh` downloads binary via curl | Standard Go distribution |
-| Snyk | Critical | `modernc.org/sqlite` (C-to-Go transpile) has CVEs | Industry-standard SQLite lib |
-
-**What claudemem actually does**: zero network by default (TF-IDF or offline Ollama); cloud embedding backends are opt-in per-machine via `claudemem setup` with API keys from env vars only. Parameterized SQL queries, FTS5 query sanitization, path traversal protection, 441 tests passing (82% coverage). Full source: ~11,400 lines of Go, fully auditable.
-
-## Tell a Friend
-
-> Install persistent memory for Claude Code in 10 seconds:
-> ```
-> npx skills add zelinewang/claudemem
-> ```
-> Now say "remember this" or "wrap up" — it just works.
+Stable and in daily use; latest release
+[v3.0.12](https://github.com/zelinewang/claudemem/releases). The storage format
+is backward-compatible across upgrades — schema migrations preserve existing
+notes and sessions. Issues and PRs welcome.
 
 ## License
 
-MIT
+[MIT](LICENSE) © Zane Wang
 
 ## References
 
 - [braindump](https://github.com/MohGanji/braindump) — Go-based persistent notes for AI agents
-- [claude-done](https://github.com/Genuifx/claude-done) — Session summary saving for Claude Code
+- [claude-done](https://github.com/Genuifx/claude-done) — session-summary saving for Claude Code

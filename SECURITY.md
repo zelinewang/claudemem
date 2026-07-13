@@ -21,8 +21,8 @@ If you discover a security vulnerability, please report it via [GitHub Issues](h
   ships only markdown via a user-provided private git remote.
 - **Input validation**: Path traversal protection, SQL parameterized queries,
   input length limits.
-- **Dependency scanning**: `govulncheck` reports no code-level vulnerabilities in
-  project packages. Stdlib CVEs follow the Go toolchain version in use.
+- **Dependency scanning**: Run `govulncheck ./...` manually before a release.
+  Stdlib CVEs follow the Go toolchain version in use.
 - **Open source**: ~8,500 lines of Go, fully auditable.
 
 ## Supported Versions
@@ -33,4 +33,6 @@ If you discover a security vulnerability, please report it via [GitHub Issues](h
 
 ## Vulnerability Scanning
 
-We run `govulncheck` before each release. Dependencies are kept up to date.
+`govulncheck ./...` is a recommended manual pre-release check; the tracked
+release workflow does not currently automate it. Dependencies are kept up to
+date.
