@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible problem in claudemem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. claudemem stores Markdown as the source of
+        truth, so if a specific note or session file is involved, attaching the
+        relevant `.md` (with secrets removed) usually makes the issue
+        reproducible in seconds.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: What you expected versus what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact `claudemem ...` command(s). A failing command plus its output is ideal.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `claudemem --version`.
+      placeholder: "claudemem vX.Y.Z"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Embedding backend
+      description: Search behaves differently per backend. The default is local (zero network).
+      options:
+        - local (default)
+        - gemini
+        - voyage
+        - openai
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: "macOS 15 arm64 / Ubuntu 24.04 amd64"
+    validations:
+      required: true

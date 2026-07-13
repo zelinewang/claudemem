@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest an improvement to claudemem
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that claudemem makes hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like it to do. If it touches storage, note how it stays Markdown-first and zero-network by default.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools or workflows you tried, and why they fell short.
+    validations:
+      required: false
