@@ -46,10 +46,13 @@ Storage:  100.6 KB
 ## Install
 
 ```bash
-npx skills add zelinewang/claudemem
+npx skills add zelinewang/claudemem --skill claudemem --global
 ```
 
-That's it. Next time you start Claude Code (or Cursor, Gemini CLI, etc.), it just works. Your saved data lives in `~/.claudemem/` and is never touched by upgrades. To upgrade, run the same command with `-y -g`.
+This installs only the `claudemem` skill at user level. Next time you start
+Claude Code (or Cursor, Gemini CLI, etc.), it just works. Your saved data lives
+in `~/.claudemem/` and is never touched by upgrades. To upgrade later, run
+`npx skills update claudemem --global`.
 
 Prefer to build it yourself? See [Build from source](#build-from-source).
 
@@ -224,8 +227,9 @@ checkout:
 | Black-box feature | `make feature-test` | 82 passed across 7 levels |
 | Everything | `make test-all` | unit + smoke + E2E + feature |
 
-The full matrix (`make test-all`) runs in GitHub Actions on every pull request
-(`.github/workflows/ci.yml`). There are 364 Go test functions across `cmd/` and
+The full matrix (`make test-all`) runs in GitHub Actions for pull requests that
+change Go source, modules, the Makefile, CI workflow, or test harnesses (see
+`.github/workflows/ci.yml`). There are 364 Go test functions across `cmd/` and
 `pkg/`; all suites use temp directories, so there are zero local-environment
 dependencies.
 
@@ -244,8 +248,9 @@ What claudemem actually does: zero network by default (TF-IDF or offline
 Ollama); cloud embedding backends are opt-in per machine via `claudemem setup`,
 with API keys from env vars only. Parameterized SQL, FTS5 query sanitization,
 path-traversal protection, `0600`/`0700` storage permissions. About 13,000 lines
-of Go source (plus ~9,000 lines of tests), fully auditable. `govulncheck` runs
-before each release. See [SECURITY.md](SECURITY.md).
+of Go source (plus ~9,000 lines of tests), fully auditable. Running
+`govulncheck ./...` before a release is currently a recommended manual check,
+not an automated release gate. See [SECURITY.md](SECURITY.md).
 
 ## Build from Source
 
