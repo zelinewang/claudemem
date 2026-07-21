@@ -7,7 +7,7 @@ import (
 
 // SessionValidationResult holds the result of validating a session markdown file
 type SessionValidationResult struct {
-	Valid  bool                    `json:"valid"`
+	Valid  bool                     `json:"valid"`
 	Checks []SessionValidationCheck `json:"checks"`
 }
 
@@ -247,12 +247,12 @@ func findSection(sections map[string]string, name string) (string, bool) {
 	}
 	// Check aliases
 	aliases := map[string][]string{
-		"learning insights": {"insights"},
-		"next steps":        {"next steps", "follow-up", "follow up"},
-		"what happened":     {"what happened"},
+		"learning insights":    {"insights"},
+		"next steps":           {"next steps", "follow-up", "follow up"},
+		"what happened":        {"what happened"},
 		"problems & solutions": {"problems and solutions", "problems"},
-		"key decisions":     {"decisions"},
-		"what changed":      {"changes", "files changed"},
+		"key decisions":        {"decisions"},
+		"what changed":         {"changes", "files changed"},
 	}
 	for _, alias := range aliases[lower] {
 		for k, v := range sections {

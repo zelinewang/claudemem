@@ -8,7 +8,7 @@ import (
 
 // AddNoteResult describes what happened when adding a note
 type AddNoteResult struct {
-	Action   string `json:"action"`   // "created", "merged"
+	Action   string `json:"action"` // "created", "merged"
 	NoteID   string `json:"note_id"`
 	Title    string `json:"title"`
 	Category string `json:"category"`

@@ -252,14 +252,14 @@ func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 
 	// Create session from frontmatter
 	session := &models.Session{
-		Type:         "session",
-		Tags:         []string{},
-		Decisions:    []string{},
-		Changes:      []models.FileChange{},
-		Problems:     []models.ProblemSolution{},
-		Insights:     []string{},
-		Questions:    []string{},
-		NextSteps:    []string{},
+		Type:          "session",
+		Tags:          []string{},
+		Decisions:     []string{},
+		Changes:       []models.FileChange{},
+		Problems:      []models.ProblemSolution{},
+		Insights:      []string{},
+		Questions:     []string{},
+		NextSteps:     []string{},
 		RelatedNotes:  []models.RelatedNote{},
 		ExtraSections: []models.ExtraSection{},
 	}

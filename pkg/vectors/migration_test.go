@@ -224,10 +224,10 @@ type fakeEmbedder struct {
 	dim         int
 }
 
-func (f *fakeEmbedder) Available() error        { return nil }
-func (f *fakeEmbedder) Name() string            { return f.name }
-func (f *fakeEmbedder) Model() string           { return f.model }
-func (f *fakeEmbedder) Dimensions() int         { return f.dim }
+func (f *fakeEmbedder) Available() error { return nil }
+func (f *fakeEmbedder) Name() string     { return f.name }
+func (f *fakeEmbedder) Model() string    { return f.model }
+func (f *fakeEmbedder) Dimensions() int  { return f.dim }
 func (f *fakeEmbedder) Embed(text string, _ InputType) ([]float32, error) {
 	vec := make([]float32, f.dim)
 	for i := 0; i < f.dim; i++ {

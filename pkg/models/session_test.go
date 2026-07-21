@@ -106,20 +106,20 @@ func TestSession_GetSearchableContent_AllFields(t *testing.T) {
 
 	// Check that all important text appears in searchable content
 	expectedPhrases := []string{
-		"Test Session",                    // title
-		"This is a summary",               // summary
-		"investigated bug",                // what happened
-		"learned about JWT",               // insight 1
-		"discovered rate limiting",        // insight 2
-		"My Note",                         // related note 1 title
-		"Auth Guide",                      // related note 2 title
-		"Use RSA keys",                    // decision
-		"Added JWT validation",            // change description
-		"Token expired",                   // problem
-		"Refresh mechanism",               // solution
-		"How to handle refresh",           // question
-		"Write tests",                     // next step
-		"auth security",                   // tags (joined)
+		"Test Session",             // title
+		"This is a summary",        // summary
+		"investigated bug",         // what happened
+		"learned about JWT",        // insight 1
+		"discovered rate limiting", // insight 2
+		"My Note",                  // related note 1 title
+		"Auth Guide",               // related note 2 title
+		"Use RSA keys",             // decision
+		"Added JWT validation",     // change description
+		"Token expired",            // problem
+		"Refresh mechanism",        // solution
+		"How to handle refresh",    // question
+		"Write tests",              // next step
+		"auth security",            // tags (joined)
 	}
 
 	for _, phrase := range expectedPhrases {

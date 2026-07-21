@@ -95,11 +95,11 @@ func TestSanitizePath_DotPrefix(t *testing.T) {
 
 func TestSanitizePath_ControlChars(t *testing.T) {
 	testCases := []string{
-		"foo\x00bar",  // null byte
-		"foo\x01bar",  // control char
-		"foo\x1fbar",  // control char
-		"foo\x7fbar",  // DEL char
-		"tab\there",   // tab is control char < 32
+		"foo\x00bar",   // null byte
+		"foo\x01bar",   // control char
+		"foo\x1fbar",   // control char
+		"foo\x7fbar",   // DEL char
+		"tab\there",    // tab is control char < 32
 		"newline\nbar", // newline is control char
 	}
 

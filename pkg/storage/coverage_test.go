@@ -1590,8 +1590,8 @@ func TestMergeExtraSections_NewSections(t *testing.T) {
 		{Name: "Notes", Content: "original notes"},
 	}
 	newSections := []models.ExtraSection{
-		{Name: "Notes", Content: "updated notes"},       // same name → content appended
-		{Name: "References", Content: "link to RFC 9"},  // new section
+		{Name: "Notes", Content: "updated notes"},      // same name → content appended
+		{Name: "References", Content: "link to RFC 9"}, // new section
 	}
 
 	result := mergeExtraSections(existing, newSections)

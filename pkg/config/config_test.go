@@ -19,10 +19,10 @@ func TestGetInt_HandlesStringValue(t *testing.T) {
 	cfg := &Config{
 		path: filepath.Join(dir, "config.json"),
 		data: map[string]interface{}{
-			"from_json_number": float64(768), // how JSON decodes numbers
-			"from_cli_set":     "768",        // how `config set` stores values
-			"empty":            "",
-			"not_a_number":     "abc",
+			"from_json_number":            float64(768), // how JSON decodes numbers
+			"from_cli_set":                "768",        // how `config set` stores values
+			"empty":                       "",
+			"not_a_number":                "abc",
 			"missing_key_absent_from_map": nil, // sanity: nil value
 		},
 	}
