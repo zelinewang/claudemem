@@ -5,7 +5,7 @@ import "time"
 // Entry is the common interface for all memory entries
 type Entry interface {
 	GetID() string
-	GetType() string      // "note" or "session"
+	GetType() string // "note" or "session"
 	GetTitle() string
 	GetContent() string
 	GetTags() []string

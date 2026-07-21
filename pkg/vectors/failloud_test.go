@@ -46,9 +46,9 @@ func (f *failingEmbedder) Embed(text string, _ InputType) ([]float32, error) {
 func (f *failingEmbedder) EmbedBatch(texts []string, _ InputType) ([][]float32, error) {
 	return nil, f.Available()
 }
-func (f *failingEmbedder) Name() string     { return f.name }
-func (f *failingEmbedder) Model() string    { return f.model }
-func (f *failingEmbedder) Dimensions() int  { return 768 }
+func (f *failingEmbedder) Name() string    { return f.name }
+func (f *failingEmbedder) Model() string   { return f.model }
+func (f *failingEmbedder) Dimensions() int { return 768 }
 
 // TestIndexDocument_ForgivingOnEmbedFailure verifies the write-path
 // contract: if the backend is down at index time, IndexDocument logs

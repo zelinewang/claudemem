@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	listLast       int
-	listDate       string
-	listDateRange  string
-	listBranch     string
-	listProject    string
+	listLast      int
+	listDate      string
+	listDateRange string
+	listBranch    string
+	listProject   string
 )
 
 var sessionListCmd = &cobra.Command{

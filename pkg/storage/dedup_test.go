@@ -241,7 +241,7 @@ func TestNoteDedupMetadataPreserved(t *testing.T) {
 	note2 := models.NewNote("config", "Database Settings", "Updated pool settings")
 	note2.Metadata = map[string]string{
 		"key1": "updated", // Override
-		"key3": "val3",     // New
+		"key3": "val3",    // New
 	}
 	_, err = store.AddNote(note2)
 	if err != nil {

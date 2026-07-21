@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/models"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var (
@@ -208,33 +209,9 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 						}
 					}
 				case "problems & solutions", "problems and solutions":
-					lines := strings.Split(trimmed, "\n")
-					for i := 0; i < len(lines); i++ {
-						line := strings.TrimSpace(lines[i])
-						if !strings.HasPrefix(line, "- ") {
-							continue
-						}
-						item := strings.TrimPrefix(line, "- ")
-						problem := strings.TrimPrefix(item, "**Problem**: ")
-						problem = strings.TrimPrefix(problem, "Problem: ")
-						solution := ""
-						if i+1 < len(lines) {
-							next := strings.TrimSpace(lines[i+1])
-							if strings.Contains(next, "Solution:") {
-								solution = strings.TrimPrefix(next, "  **Solution**: ")
-								solution = strings.TrimPrefix(solution, "  Solution: ")
-								solution = strings.TrimPrefix(solution, "**Solution**: ")
-								solution = strings.TrimPrefix(solution, "Solution: ")
-								i++
-							}
-						}
-						if problem != "" {
-							session.Problems = append(session.Problems, models.ProblemSolution{
-								Problem:  problem,
-								Solution: solution,
-							})
-						}
-					}
+					// Single shared parser (pkg/storage) — the earlier inline
+					// parser here dropped canonical "**Solution**:" bodies.
+					session.Problems = append(session.Problems, storage.ParseProblemsSolutions(trimmed)...)
 				case "learning insights", "insights":
 					for _, line := range strings.Split(trimmed, "\n") {
 						line = strings.TrimSpace(line)

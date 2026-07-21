@@ -13,7 +13,7 @@ type Session struct {
 	ID        string    `yaml:"id" json:"id"`
 	Type      string    `yaml:"type" json:"type"`
 	Title     string    `yaml:"title" json:"title"`
-	Date      string    `yaml:"date" json:"date"`       // YYYY-MM-DD
+	Date      string    `yaml:"date" json:"date"` // YYYY-MM-DD
 	Branch    string    `yaml:"branch" json:"branch"`
 	Project   string    `yaml:"project" json:"project"`
 	SessionID string    `yaml:"session_id" json:"session_id"`
@@ -25,7 +25,7 @@ type Session struct {
 	WhatHappened string            `yaml:"-" json:"what_happened"`
 	Decisions    []string          `yaml:"-" json:"decisions"`
 	Changes      []FileChange      `yaml:"-" json:"changes"`
-	Problems     []ProblemSolution  `yaml:"-" json:"problems"`
+	Problems     []ProblemSolution `yaml:"-" json:"problems"`
 	Insights     []string          `yaml:"-" json:"insights"`
 	Questions    []string          `yaml:"-" json:"questions"`
 	NextSteps    []string          `yaml:"-" json:"next_steps"`
@@ -34,7 +34,7 @@ type Session struct {
 	// Custom sections not in the predefined set.
 	// Preserves any ## Section that doesn't match a known header,
 	// such as "Current System Architecture", "Index Performance Map", etc.
-	ExtraSections []ExtraSection   `yaml:"-" json:"extra_sections"`
+	ExtraSections []ExtraSection `yaml:"-" json:"extra_sections"`
 }
 
 // ExtraSection represents a custom session section not in the predefined set
@@ -66,21 +66,21 @@ type RelatedNote struct {
 func NewSession(title, branch, project, sessionID string) *Session {
 	now := time.Now()
 	return &Session{
-		ID:        uuid.New().String(),
-		Type:      "session",
-		Title:     title,
-		Date:      now.Format("2006-01-02"),
-		Branch:    branch,
-		Project:   project,
-		SessionID: sessionID,
-		Tags:      []string{},
-		Created:   now,
-		Decisions:    []string{},
-		Changes:      []FileChange{},
-		Problems:     []ProblemSolution{},
-		Insights:     []string{},
-		Questions:    []string{},
-		NextSteps:    []string{},
+		ID:            uuid.New().String(),
+		Type:          "session",
+		Title:         title,
+		Date:          now.Format("2006-01-02"),
+		Branch:        branch,
+		Project:       project,
+		SessionID:     sessionID,
+		Tags:          []string{},
+		Created:       now,
+		Decisions:     []string{},
+		Changes:       []FileChange{},
+		Problems:      []ProblemSolution{},
+		Insights:      []string{},
+		Questions:     []string{},
+		NextSteps:     []string{},
 		RelatedNotes:  []RelatedNote{},
 		ExtraSections: []ExtraSection{},
 	}

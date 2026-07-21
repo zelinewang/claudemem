@@ -172,8 +172,8 @@ func FormatSessionMarkdown(session *models.Session) string {
 	if len(session.Problems) > 0 {
 		buf.WriteString("## Problems & Solutions\n")
 		for _, ps := range session.Problems {
-			buf.WriteString(fmt.Sprintf("- **Problem**: %s\n", ps.Problem))
-			buf.WriteString(fmt.Sprintf("  **Solution**: %s\n", ps.Solution))
+			writeMarkerBody(&buf, "- **Problem**: ", ps.Problem)
+			writeMarkerBody(&buf, "  **Solution**: ", ps.Solution)
 		}
 		buf.WriteString("\n")
 	}
@@ -252,14 +252,14 @@ func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 
 	// Create session from frontmatter
 	session := &models.Session{
-		Type:         "session",
-		Tags:         []string{},
-		Decisions:    []string{},
-		Changes:      []models.FileChange{},
-		Problems:     []models.ProblemSolution{},
-		Insights:     []string{},
-		Questions:    []string{},
-		NextSteps:    []string{},
+		Type:          "session",
+		Tags:          []string{},
+		Decisions:     []string{},
+		Changes:       []models.FileChange{},
+		Problems:      []models.ProblemSolution{},
+		Insights:      []string{},
+		Questions:     []string{},
+		NextSteps:     []string{},
 		RelatedNotes:  []models.RelatedNote{},
 		ExtraSections: []models.ExtraSection{},
 	}
@@ -333,28 +333,7 @@ func parseSessionBody(session *models.Session, body string) {
 			}
 
 		case "problems & solutions", "problems and solutions":
-			lines := parseListItems(sectionContent)
-			for i := 0; i < len(lines); i++ {
-				problem := strings.TrimPrefix(lines[i], "**Problem**: ")
-				problem = strings.TrimPrefix(problem, "Problem: ")
-
-				solution := ""
-				if i+1 < len(lines) {
-					next := lines[i+1]
-					if strings.Contains(next, "Solution:") {
-						solution = strings.TrimPrefix(next, "**Solution**: ")
-						solution = strings.TrimPrefix(solution, "Solution: ")
-						i++ // Skip the solution line
-					}
-				}
-
-				if problem != "" {
-					session.Problems = append(session.Problems, models.ProblemSolution{
-						Problem:  problem,
-						Solution: solution,
-					})
-				}
-			}
+			session.Problems = append(session.Problems, ParseProblemsSolutions(sectionContent)...)
 
 		case "what happened":
 			session.WhatHappened = strings.TrimSpace(sectionContent)
@@ -399,6 +378,132 @@ func parseSessionBody(session *models.Session, body string) {
 			}
 		}
 	}
+}
+
+// writeMarkerBody writes one "marker + body" line pair for the Problems &
+// Solutions section. Continuation lines of a multi-line body are indented by
+// two spaces so ParseProblemsSolutions re-attaches them to the same field,
+// keeping the round-trip Parse(Format(s)) exact.
+func writeMarkerBody(buf *bytes.Buffer, marker, body string) {
+	lines := strings.Split(body, "\n")
+	buf.WriteString(marker)
+	buf.WriteString(lines[0])
+	buf.WriteString("\n")
+	for _, cont := range lines[1:] {
+		buf.WriteString("  ")
+		buf.WriteString(cont)
+		buf.WriteString("\n")
+	}
+}
+
+// problemBodyMarkers are the accepted Problem field openers, longest first.
+// Both the canonical template (colon outside the bold) and the common
+// bold-colon variant are recognized, plus the plain "Problem:" form.
+var problemBodyMarkers = []string{"**Problem**: ", "**Problem:** ", "**Problem**:", "**Problem:**", "Problem: ", "Problem:"}
+
+// solutionBodyMarkers mirrors problemBodyMarkers for the Solution field.
+var solutionBodyMarkers = []string{"**Solution**: ", "**Solution:** ", "**Solution**:", "**Solution:**", "Solution: ", "Solution:"}
+
+// stripMarker returns the body after the first matching marker prefix.
+func stripMarker(text string, markers []string) (string, bool) {
+	for _, m := range markers {
+		if strings.HasPrefix(text, m) {
+			return strings.TrimSpace(text[len(m):]), true
+		}
+	}
+	return "", false
+}
+
+// joinBody appends a continuation line to a multi-line body.
+func joinBody(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	if add == "" {
+		return existing
+	}
+	return existing + "\n" + add
+}
+
+// ParseProblemsSolutions parses the body of a "Problems & Solutions" section
+// into structured entries. It is the single parser used by both the CLI save
+// path (cmd/session_save.go) and the stored-file path (ParseSessionMarkdown),
+// replacing two earlier ad-hoc parsers that dropped canonical "**Solution**:"
+// bodies and fused them into problem text.
+//
+// Grammar (state machine over lines):
+//   - a bullet ("- " or "* ") opens a new entry; a Problem marker is stripped,
+//     any other bullet text is kept verbatim as the problem body (backward
+//     compatible with free-form entries);
+//   - a Solution marker line (bulleted or indented continuation) switches the
+//     current entry into its solution body;
+//   - any other non-empty line continues the current body (problem or
+//     solution), preserving multi-line bodies with "\n" joins.
+//
+// Fused historical lines ("- **Problem**: P **Solution**: S" on one physical
+// line, produced by earlier corrupted versions) are deliberately NOT split:
+// their full text is preserved in the Problem field so no information is
+// destroyed on load.
+func ParseProblemsSolutions(content string) []models.ProblemSolution {
+	var result []models.ProblemSolution
+	var cur *models.ProblemSolution
+	inSolution := false
+
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		cur.Problem = strings.TrimSpace(cur.Problem)
+		cur.Solution = strings.TrimSpace(cur.Solution)
+		if cur.Problem != "" {
+			result = append(result, *cur)
+		}
+		cur = nil
+	}
+
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+
+		// Bullet line: new entry, bulleted solution, or free-form item.
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			text := strings.TrimSpace(line[2:])
+			if body, ok := stripMarker(text, problemBodyMarkers); ok {
+				flush()
+				cur = &models.ProblemSolution{Problem: body}
+				inSolution = false
+				continue
+			}
+			if body, ok := stripMarker(text, solutionBodyMarkers); ok && cur != nil {
+				cur.Solution = joinBody(cur.Solution, body)
+				inSolution = true
+				continue
+			}
+			flush()
+			cur = &models.ProblemSolution{Problem: text}
+			inSolution = false
+			continue
+		}
+
+		// Continuation line: solution marker switch or body continuation.
+		if body, ok := stripMarker(line, solutionBodyMarkers); ok && cur != nil {
+			cur.Solution = joinBody(cur.Solution, body)
+			inSolution = true
+			continue
+		}
+		if cur == nil {
+			continue // content before the first bullet is not a problem entry
+		}
+		if inSolution {
+			cur.Solution = joinBody(cur.Solution, line)
+		} else {
+			cur.Problem = joinBody(cur.Problem, line)
+		}
+	}
+	flush()
+	return result
 }
 
 // parseRelatedNoteLine parses a line like: `id-prefix` — "Title" (category)

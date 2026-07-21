@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	Version     = "dev"
-	storeDir    string
+	Version      = "dev"
+	storeDir     string
 	outputFormat string
 )
 

@@ -14,16 +14,16 @@ import (
 )
 
 var (
-	searchType           string
-	searchLimit          int
-	searchCompact        bool
-	searchFilterCategory string
-	searchFilterTags     string
-	searchAfter          string
-	searchBefore         string
-	searchSort           string
-	searchSemantic       bool
-	searchFTSOnly        bool // P4: explicit opt-in to skip semantic search for this query
+	searchType            string
+	searchLimit           int
+	searchCompact         bool
+	searchFilterCategory  string
+	searchFilterTags      string
+	searchAfter           string
+	searchBefore          string
+	searchSort            string
+	searchSemantic        bool
+	searchFTSOnly         bool // P4: explicit opt-in to skip semantic search for this query
 	searchAutoFallbackFTS bool // Non-TTY opt-in: fall back to FTS (warn on stderr) instead of exit 1 when backend is unreachable
 )
 
@@ -263,11 +263,11 @@ func init() {
 type recoveryChoice int
 
 const (
-	recoveryFail     recoveryChoice = iota // default: error out
-	recoveryRetry                          // user asked to retry the backend call
-	recoveryFTSOnly                        // fall back to FTS5 just for this query
-	recoverySetup                          // user wants to run `claudemem setup`
-	recoveryExit                           // user cancelled
+	recoveryFail    recoveryChoice = iota // default: error out
+	recoveryRetry                         // user asked to retry the backend call
+	recoveryFTSOnly                       // fall back to FTS5 just for this query
+	recoverySetup                         // user wants to run `claudemem setup`
+	recoveryExit                          // user cancelled
 )
 
 // handleBackendFailure produces either a recovery action (TTY interactive)

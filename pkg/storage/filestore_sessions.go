@@ -15,7 +15,7 @@ import (
 
 // SaveSessionResult describes what happened when saving a session
 type SaveSessionResult struct {
-	Action    string `json:"action"`     // "created" or "updated"
+	Action    string `json:"action"` // "created" or "updated"
 	SessionID string `json:"session_id"`
 	Title     string `json:"title"`
 	Date      string `json:"date"`
