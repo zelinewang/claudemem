@@ -528,7 +528,7 @@ echo "$TAGS" | grep -q "tiktok\|jwt\|api" && pass "7.6 note tags" || fail "7.6 t
 if [ -d "$HOME/.claudemem" ]; then
     claudemem session list --last 1 > /dev/null 2>&1 && pass "7.7 backward compat: live sessions" || fail "7.7 compat" "error"
     claudemem stats > /dev/null 2>&1 && pass "7.8 backward compat: live stats" || fail "7.8 compat" "error"
-    claudemem search "vio" > /dev/null 2>&1 && pass "7.9 backward compat: live search" || fail "7.9 compat" "error"
+    claudemem search "vio" --auto-fallback-fts > /dev/null 2>&1 && pass "7.9 backward compat: live search" || fail "7.9 compat" "error"
 else
     skip "7.7 backward compat" "no ~/.claudemem"
     skip "7.8 backward compat" "no ~/.claudemem"
