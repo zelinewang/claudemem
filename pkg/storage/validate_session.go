@@ -133,6 +133,24 @@ func validateWhatHappenedPhases(sections map[string]string, minPhases int) Sessi
 	}
 }
 
+// solutionFieldMarkers are the recognized solution field closers: the
+// canonical template form ("**Solution**:", colon outside the bold) and the
+// bold-colon variant ("**Solution:**", colon inside the bold). Neither is a
+// substring of the other, so the earliest match is unambiguous.
+var solutionFieldMarkers = []string{"**Solution**:", "**Solution:**"}
+
+// indexSolutionMarker returns the byte offset and length of the first
+// solution field marker in line, or (-1, 0) if none is present.
+func indexSolutionMarker(line string) (int, int) {
+	best, bestLen := -1, 0
+	for _, m := range solutionFieldMarkers {
+		if idx := strings.Index(line, m); idx >= 0 && (best < 0 || idx < best) {
+			best, bestLen = idx, len(m)
+		}
+	}
+	return best, bestLen
+}
+
 // validateProblemsHaveSolutions checks that every Problem has a non-empty Solution
 func validateProblemsHaveSolutions(sections map[string]string) SessionValidationCheck {
 	content, exists := findSection(sections, "Problems & Solutions")
@@ -163,29 +181,30 @@ func validateProblemsHaveSolutions(sections map[string]string) SessionValidation
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
 
-		// Only check lines that explicitly use **Solution**: pattern
-		if strings.Contains(line, "**Solution**:") || strings.Contains(line, "**Solution**:") {
-			// Extract text after "**Solution**:"
-			idx := strings.Index(line, "Solution**:")
-			if idx >= 0 {
-				after := strings.TrimSpace(line[idx+len("Solution**:"):])
-				if after == "" {
-					// Empty solution — find the problem it belongs to
-					problemText := ""
-					for j := i - 1; j >= 0 && j >= i-3; j-- {
-						pLine := strings.TrimSpace(lines[j])
-						if strings.Contains(pLine, "**Problem**:") || strings.Contains(pLine, "Problem:") {
-							problemText = pLine
-							break
-						}
-					}
-					if len(problemText) > 60 {
-						problemText = problemText[:60] + "..."
-					}
-					emptyCount++
-					emptyProblems = append(emptyProblems, problemText)
+		// Only check lines containing a solution field marker — either the
+		// canonical template form ("**Solution**:", colon outside the bold)
+		// or the bold-colon variant ("**Solution:**", colon inside the bold).
+		idx, markerLen := indexSolutionMarker(line)
+		if idx < 0 {
+			continue
+		}
+		// Extract text after the marker
+		after := strings.TrimSpace(line[idx+markerLen:])
+		if after == "" {
+			// Empty solution — find the problem it belongs to
+			problemText := ""
+			for j := i - 1; j >= 0 && j >= i-3; j-- {
+				pLine := strings.TrimSpace(lines[j])
+				if strings.Contains(pLine, "**Problem**:") || strings.Contains(pLine, "Problem:") {
+					problemText = pLine
+					break
 				}
 			}
+			if len(problemText) > 60 {
+				problemText = problemText[:60] + "..."
+			}
+			emptyCount++
+			emptyProblems = append(emptyProblems, problemText)
 		}
 	}
 
