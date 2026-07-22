@@ -35,3 +35,10 @@ openspec/changes/archive/
 
 # Worktrees
 .worktrees/
+# runtime artifacts (created when running claudemem from the repo dir)
+claudemem.db
+memory.db
+index.db
+*.db-wal
+*.db-shm
+.claude/dev-progress/
