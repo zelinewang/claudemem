@@ -147,6 +147,7 @@ claudemem setup                              # interactive wizard: Local / Gemin
 claudemem health                             # I1-I3 parity check (markdown ↔ FTS ↔ vectors, <100ms)
 claudemem health --deep                      # also I4/I5 (orphans, config match)
 claudemem repair                             # fix drift detected by health (interactive)
+claudemem repair --prune-stale               # also delete vectors left by previously-used backends
 
 # Cross-machine sync (markdown-only via git)
 claudemem sync init <remote-url>             # git init ~/.claudemem with remote

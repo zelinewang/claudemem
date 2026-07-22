@@ -123,6 +123,13 @@ func printHealthReport(r *vectors.HealthReport, fs *storage.FileStore) {
 		}
 		fmt.Printf("✓ healthy (%d notes · %d entries · %d FTS · %s)\n",
 			r.MarkdownFiles, r.EntriesTotal, r.FTSTotal, vectorLine)
+		// Deep mode only: keep the default (SessionStart) one-liner terse.
+		if r.DidDeepCheck {
+			if total, backends := staleVectorSummary(r); total > 0 {
+				fmt.Printf("  note: %d stale vectors from %d inactive backend(s) — reclaim with `claudemem repair --prune-stale`\n",
+					total, backends)
+			}
+		}
 		return
 	}
 
@@ -140,7 +147,30 @@ func printHealthReport(r *vectors.HealthReport, fs *storage.FileStore) {
 			}
 			fmt.Fprintf(os.Stderr, "  %s %s: %d\n", marker, bm, n)
 		}
+		if total, backends := staleVectorSummary(r); total > 0 {
+			fmt.Fprintf(os.Stderr, "  (%d rows across %d inactive backend(s) — `claudemem repair --prune-stale` reclaims them)\n",
+				total, backends)
+		}
 	}
+}
+
+// staleVectorSummary returns how many vector rows sit under (backend, model)
+// tuples other than the active one, and how many such tuples exist. When no
+// active backend is configured it reports zero — with an empty active tuple
+// EVERY row would count as stale, and pruning on that basis would wipe the
+// whole vector index.
+func staleVectorSummary(r *vectors.HealthReport) (total int, backends int) {
+	if r.ActiveBackend == "" {
+		return 0, 0
+	}
+	active := r.ActiveBackend + ":" + r.ActiveModel
+	for bm, n := range r.VectorTotals {
+		if bm != active {
+			total += n
+			backends++
+		}
+	}
+	return total, backends
 }
 
 func printHealthTrafficLight(r *vectors.HealthReport, err error) {
