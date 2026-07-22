@@ -235,7 +235,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	os.Stdout = r
+	os.Stdout = w
 	done := make(chan string, 1)
 	go func() {
 		buf := make([]byte, 0, 4096)
