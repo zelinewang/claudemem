@@ -190,6 +190,15 @@ func (fs *FileStore) SemanticSearch(query string, limit int) ([]SearchResult, er
 	return results, nil
 }
 
+// PruneStaleVectors deletes vector rows produced by embedding backends other
+// than the active one. See VectorStore.PruneInactiveBackends for semantics.
+func (fs *FileStore) PruneStaleVectors() (map[string]int, error) {
+	if fs.vectorStore == nil {
+		return nil, fmt.Errorf("no active embedding backend (vector store not initialized)")
+	}
+	return fs.vectorStore.PruneInactiveBackends()
+}
+
 // HybridSearch combines FTS5 and semantic search using min-max normalized score fusion.
 //
 // Algorithm (industry standard, used by Weaviate relativeScoreFusion and OpenSearch):

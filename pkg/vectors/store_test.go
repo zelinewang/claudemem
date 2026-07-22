@@ -306,3 +306,77 @@ func TestVectorToBlob_Roundtrip(t *testing.T) {
 		}
 	}
 }
+
+func TestVectorStore_PruneInactiveBackends(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	vs, err := NewVectorStore(db, NewTFIDFEmbedder())
+	if err != nil {
+		t.Fatalf("NewVectorStore failed: %v", err)
+	}
+
+	docs := []Document{
+		{ID: "1", Text: "authentication via OAuth tokens and JWT"},
+		{ID: "2", Text: "database migration with Alembic and SQLAlchemy"},
+	}
+	if err := vs.RebuildIndex(docs); err != nil {
+		t.Fatalf("RebuildIndex failed: %v", err)
+	}
+
+	// Seed rows under two INACTIVE (backend, model) tuples, as if this
+	// machine had previously embedded with other backends.
+	for _, row := range []struct{ backend, model, doc string }{
+		{"vertex", "gemini-embedding-001", "1"},
+		{"vertex", "gemini-embedding-001", "2"},
+		{"ollama", "nomic-embed-text", "1"},
+	} {
+		if _, err := db.Exec(`INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
+			VALUES (?, ?, ?, 2, X'0000803F0000803F', '2026-01-01T00:00:00Z')`,
+			row.doc, row.backend, row.model); err != nil {
+			t.Fatalf("seed stale row: %v", err)
+		}
+	}
+
+	activeBefore, err := vs.Count()
+	if err != nil {
+		t.Fatalf("Count failed: %v", err)
+	}
+	if all, _ := vs.CountAll(); all != activeBefore+3 {
+		t.Fatalf("expected %d total rows before prune, got %d", activeBefore+3, all)
+	}
+
+	deleted, err := vs.PruneInactiveBackends()
+	if err != nil {
+		t.Fatalf("PruneInactiveBackends failed: %v", err)
+	}
+	if deleted["vertex:gemini-embedding-001"] != 2 {
+		t.Errorf("expected 2 pruned vertex rows, got %d", deleted["vertex:gemini-embedding-001"])
+	}
+	if deleted["ollama:nomic-embed-text"] != 1 {
+		t.Errorf("expected 1 pruned ollama row, got %d", deleted["ollama:nomic-embed-text"])
+	}
+	if len(deleted) != 2 {
+		t.Errorf("expected exactly 2 pruned tuples, got %#v", deleted)
+	}
+
+	activeAfter, err := vs.Count()
+	if err != nil {
+		t.Fatalf("Count after prune failed: %v", err)
+	}
+	if activeAfter != activeBefore {
+		t.Errorf("active backend rows must be untouched: before=%d after=%d", activeBefore, activeAfter)
+	}
+	if allAfter, _ := vs.CountAll(); allAfter != activeAfter {
+		t.Errorf("stale rows remain after prune: all=%d active=%d", allAfter, activeAfter)
+	}
+
+	// Idempotent: a second prune finds nothing to delete.
+	deleted2, err := vs.PruneInactiveBackends()
+	if err != nil {
+		t.Fatalf("second PruneInactiveBackends failed: %v", err)
+	}
+	if len(deleted2) != 0 {
+		t.Errorf("second prune should be a no-op, got %#v", deleted2)
+	}
+}

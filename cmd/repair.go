@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,7 +13,8 @@ import (
 )
 
 var (
-	repairYes bool // auto-accept all fixes (for CI / scripting)
+	repairYes        bool // auto-accept all fixes (for CI / scripting)
+	repairPruneStale bool // opt-in: delete vectors from inactive backends
 )
 
 var repairCmd = &cobra.Command{
@@ -22,10 +24,15 @@ var repairCmd = &cobra.Command{
   - FTS5 out of sync → run reindex --fts
   - Vectors missing for active backend → run reindex --vectors
   - Orphan rows → delete
+  - Stale vectors from inactive embedding backends → delete (only with --prune-stale)
 
 Interactive by default. Use --yes to accept all fixes non-interactively
 (safe in CI where healthy state is expected but drift from e.g.
-SIGKILL during reindex needs automatic recovery).`,
+SIGKILL during reindex needs automatic recovery).
+
+Vectors from previously-used backends are kept by default so switching
+back never requires a full re-embed; --prune-stale deletes them to
+reclaim space. --yes alone never touches them.`,
 	RunE: runRepair,
 }
 
@@ -59,16 +66,18 @@ func runRepair(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	applyEmbeddingConfigHealth(report, cfg)
-	if report.Healthy() {
+	if report.Healthy() && !repairPruneStale {
 		OutputText("✓ healthy, nothing to repair")
 		return nil
 	}
 
-	fmt.Fprintln(os.Stderr, "⚠ health issues detected:")
-	for _, issue := range report.Issues {
-		fmt.Fprintf(os.Stderr, "   %s\n", issue)
+	if !report.Healthy() {
+		fmt.Fprintln(os.Stderr, "⚠ health issues detected:")
+		for _, issue := range report.Issues {
+			fmt.Fprintf(os.Stderr, "   %s\n", issue)
+		}
+		fmt.Fprintln(os.Stderr, "")
 	}
-	fmt.Fprintln(os.Stderr, "")
 
 	reader := bufio.NewReader(os.Stdin)
 	repairs := 0
@@ -126,6 +135,36 @@ func runRepair(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Fix 4 (opt-in): vectors from INACTIVE backends → delete. Not a health
+	// invariant — rows under other (backend, model) tuples are valid state
+	// (cross-machine / switch-back, see VectorStore.RebuildIndex). Deleting
+	// them is a space reclaim the user must request explicitly: --yes alone
+	// never touches them, so `repair --yes` in CI stays purely additive.
+	if repairPruneStale {
+		if !fileStore.HasVectorStore() {
+			fmt.Fprintln(os.Stderr, "⚠ --prune-stale skipped: no active embedding backend configured")
+		} else if total, backends := staleVectorSummary(report); total == 0 {
+			OutputText("  ✓ No stale backend vectors to prune")
+		} else {
+			prompt := fmt.Sprintf("Delete %d stale vectors from %d inactive backend(s)?", total, backends)
+			if confirmRepair(reader, prompt) {
+				deleted, err := fileStore.PruneStaleVectors()
+				if err != nil {
+					return fmt.Errorf("prune stale vectors: %w", err)
+				}
+				tuples := make([]string, 0, len(deleted))
+				for bm := range deleted {
+					tuples = append(tuples, bm)
+				}
+				sort.Strings(tuples)
+				for _, bm := range tuples {
+					OutputText("  ✓ Removed %d vectors (%s)", deleted[bm], bm)
+				}
+				repairs++
+			}
+		}
+	}
+
 	if repairs == 0 {
 		OutputText("No repairs performed.")
 		return nil
@@ -156,5 +195,7 @@ func confirmRepair(reader *bufio.Reader, prompt string) bool {
 
 func init() {
 	repairCmd.Flags().BoolVar(&repairYes, "yes", false, "Accept all fixes non-interactively")
+	repairCmd.Flags().BoolVar(&repairPruneStale, "prune-stale", false,
+		"Also delete vectors stored by inactive embedding backends (reclaims space; switching back later requires a re-embed)")
 	rootCmd.AddCommand(repairCmd)
 }

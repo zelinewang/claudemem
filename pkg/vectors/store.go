@@ -583,6 +583,59 @@ func (vs *VectorStore) CountAll() (int, error) {
 	return n, err
 }
 
+// PruneInactiveBackends deletes vector rows stored under (backend, model)
+// tuples other than the active embedder's, returning per-"backend:model"
+// deleted counts. Rows under other tuples are normally PRESERVED (see
+// RebuildIndex) so a machine can switch back to a previous backend without
+// a full re-embed; this is the explicit opt-in reclaim path behind
+// `claudemem repair --prune-stale`. Count + delete run in one transaction
+// so the returned counts always match what was actually removed.
+func (vs *VectorStore) PruneInactiveBackends() (map[string]int, error) {
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
+
+	tx, err := vs.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`
+		SELECT backend, model, COUNT(*) FROM vectors
+		WHERE NOT (backend = ? AND model = ?)
+		GROUP BY backend, model`, backend, model)
+	if err != nil {
+		return nil, fmt.Errorf("count stale vectors: %w", err)
+	}
+	deleted := make(map[string]int)
+	for rows.Next() {
+		var b, m string
+		var n int
+		if err := rows.Scan(&b, &m, &n); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan stale vector count: %w", err)
+		}
+		deleted[b+":"+m] = n
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	if len(deleted) == 0 {
+		return deleted, nil
+	}
+
+	if _, err := tx.Exec(`DELETE FROM vectors WHERE NOT (backend = ? AND model = ?)`,
+		backend, model); err != nil {
+		return nil, fmt.Errorf("delete stale vectors: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
 // saveTFIDFState persists the TF-IDF vocabulary to vector_meta.
 func (vs *VectorStore) saveTFIDFState(tf *TFIDFEmbedder) error {
 	state := tf.Vectorizer().ExportState()

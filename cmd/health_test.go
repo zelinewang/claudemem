@@ -72,3 +72,36 @@ func healthyHealthReport() *vectors.HealthReport {
 		I6ActiveBackendConfigured:   true,
 	}
 }
+
+func TestStaleVectorSummary(t *testing.T) {
+	r := healthyHealthReport()
+	r.ActiveBackend = "vertex"
+	r.ActiveModel = "gemini-embedding-001"
+	r.VectorTotals = map[string]int{
+		"vertex:gemini-embedding-001": 4100,
+		"tfidf:tfidf":                 3082,
+		"ollama:nomic-embed-text":     469,
+	}
+
+	total, backends := staleVectorSummary(r)
+	if total != 3551 || backends != 2 {
+		t.Fatalf("expected total=3551 backends=2, got total=%d backends=%d", total, backends)
+	}
+
+	// No active backend configured -> nothing counts as stale (pruning
+	// against an empty active tuple would delete everything).
+	r2 := healthyHealthReport()
+	r2.VectorTotals = map[string]int{"tfidf:tfidf": 10}
+	if total, backends := staleVectorSummary(r2); total != 0 || backends != 0 {
+		t.Fatalf("no-active-backend must report zero, got total=%d backends=%d", total, backends)
+	}
+
+	// Only the active backend present -> zero stale.
+	r3 := healthyHealthReport()
+	r3.ActiveBackend = "tfidf"
+	r3.ActiveModel = "tfidf"
+	r3.VectorTotals = map[string]int{"tfidf:tfidf": 10}
+	if total, backends := staleVectorSummary(r3); total != 0 || backends != 0 {
+		t.Fatalf("active-only must report zero, got total=%d backends=%d", total, backends)
+	}
+}
