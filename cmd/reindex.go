@@ -17,7 +17,7 @@ var reindexCmd = &cobra.Command{
 	Short: "Rebuild search indexes from markdown files",
 	Long: `Rebuild the SQLite search index from the source-of-truth markdown files.
 
-Use --vectors to rebuild the TF-IDF vector index for semantic search.
+Use --vectors to rebuild the vector index for the configured embedding backend.
 Use --all to rebuild both FTS5 and vector indexes.
 
 Examples:

@@ -126,7 +126,7 @@ var syncPullCmd = &cobra.Command{
 				ftsCount, vectorsAdded, store.VectorBackend())
 			if !store.HasVectorStore() {
 				OutputText("")
-				OutputText("⚠ No embedding backend configured. Search uses basic TF-IDF.")
+				OutputText("⚠ No embedding backend configured. Search is keyword-only (FTS5).")
 				OutputText("  Run `claudemem setup` to pick a backend (Gemini, Ollama, etc.)")
 			}
 		}
