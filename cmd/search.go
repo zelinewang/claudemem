@@ -35,7 +35,7 @@ var searchCmd = &cobra.Command{
 Supports faceted filtering by category, tags, and date range.
 Results are ranked by relevance with a recency boost (recent entries score higher).
 Use --compact for token-efficient output (IDs + titles only).
-Use --semantic for TF-IDF vector similarity search (requires feature flag).
+Use --semantic to require semantic (vector) search via the configured embedding backend.
 
 Examples:
   claudemem search "api rate limits"
@@ -252,7 +252,7 @@ func init() {
 	searchCmd.Flags().StringVar(&searchAfter, "after", "", "Filter entries after date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchBefore, "before", "", "Filter entries before date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")
-	searchCmd.Flags().BoolVar(&searchSemantic, "semantic", false, "Use semantic search (TF-IDF vectors, requires features.semantic_search=true)")
+	searchCmd.Flags().BoolVar(&searchSemantic, "semantic", false, "Require semantic search via the configured embedding backend (fails if features.semantic_search=false)")
 	searchCmd.Flags().BoolVar(&searchFTSOnly, "fts-only", false, "Skip semantic search for this query (FTS5 keyword only). Useful when the embedding backend is down and you want to search anyway.")
 	searchCmd.Flags().BoolVar(&searchAutoFallbackFTS, "auto-fallback-fts", false, "In non-TTY mode, if the embedding backend is unreachable, fall back to FTS keyword search (with a stderr warning) instead of exiting 1. Useful for cron / hooks / CI. Interactive mode is unaffected.")
 	rootCmd.AddCommand(searchCmd)
