@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/zelinewang/claudemem/pkg/models"
@@ -314,6 +315,22 @@ func (fs *FileStore) Reindex() (int, error) {
 			if note.Metadata != nil {
 				sessionID = note.Metadata["session_id"]
 			}
+			// Two files can claim the same uuid: a title rename writes a new
+			// slug file and deletes the old one locally, but add-only
+			// cross-machine sync resurrects the old-slug file from peers.
+			// Keep the newest `updated`; warn with both paths so the stale
+			// file can be pruned.
+			keep, replaced, dupErr := resolveDuplicateEntry(tx, note.ID, rel,
+				strconv.FormatInt(note.Updated.Unix(), 10))
+			if dupErr != nil {
+				return fmt.Errorf("resolve duplicate note %s: %w", note.ID, dupErr)
+			}
+			if !keep {
+				return nil
+			}
+			if replaced {
+				count--
+			}
 			if _, err := tx.Exec(`INSERT INTO entries (id, type, title, category, session_id, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				note.ID, "note", note.Title, note.Category, sessionID,
 				strings.Join(note.Tags, " "), rel,
@@ -347,6 +364,20 @@ func (fs *FileStore) Reindex() (int, error) {
 			}
 
 			rel, _ := filepath.Rel(fs.baseDir, path)
+			// Same duplicate-uuid guard as notes (stale slug resurrected by
+			// add-only sync). Session `updated` is stored as an ISO string;
+			// resolveDuplicateEntry compares consistently either way.
+			keep, replaced, dupErr := resolveDuplicateEntry(tx, session.ID, rel,
+				session.Created.Format("2006-01-02T15:04:05Z"))
+			if dupErr != nil {
+				return fmt.Errorf("resolve duplicate session %s: %w", session.ID, dupErr)
+			}
+			if !keep {
+				return nil
+			}
+			if replaced {
+				count--
+			}
 			if _, err := tx.Exec(`INSERT INTO entries (id, type, title, branch, project, session_id, date_str, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				session.ID, "session", session.Title, session.Branch, session.Project,
 				session.SessionID, session.Date, strings.Join(session.Tags, " "),
@@ -370,6 +401,63 @@ func (fs *FileStore) Reindex() (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// resolveDuplicateEntry handles two files claiming the same uuid during a
+// Reindex walk (a stale old-slug file resurrected by add-only cross-machine
+// sync after a title rename). It compares the already-indexed row's `updated`
+// with the current file's and keeps whichever is newest:
+//
+//	keep=true,  replaced=false — no duplicate; caller inserts normally
+//	keep=false                 — current file is stale; caller skips it
+//	keep=true,  replaced=true  — current file is newer; existing row was
+//	                             deleted, caller inserts and corrects count
+//
+// Timestamps are compared numerically when both sides parse as integers
+// (notes store unix seconds), else as strings (sessions store ISO-8601,
+// where lexicographic order equals time order). A warning naming both file
+// paths goes to stderr so the stale file can be pruned.
+func resolveDuplicateEntry(tx *sql.Tx, id, rel, updated string) (keep, replaced bool, err error) {
+	var oldRel, oldUpdated string
+	scanErr := tx.QueryRow(`SELECT filepath, updated FROM entries WHERE id = ?`, id).
+		Scan(&oldRel, &oldUpdated)
+	if scanErr == sql.ErrNoRows {
+		return true, false, nil
+	}
+	if scanErr != nil {
+		return false, false, scanErr
+	}
+
+	currentIsNewer := timestampLess(oldUpdated, updated)
+	if !currentIsNewer {
+		fmt.Fprintf(os.Stderr,
+			"warning: duplicate id %s: keeping %s, ignoring stale %s (prune the stale file to silence this)\n",
+			id, oldRel, rel)
+		return false, false, nil
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"warning: duplicate id %s: keeping %s, ignoring stale %s (prune the stale file to silence this)\n",
+		id, rel, oldRel)
+	if _, err := tx.Exec(`DELETE FROM entries WHERE id = ?`, id); err != nil {
+		return false, false, fmt.Errorf("drop stale entry: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM memory_fts WHERE id = ?`, id); err != nil {
+		return false, false, fmt.Errorf("drop stale FTS row: %w", err)
+	}
+	return true, true, nil
+}
+
+// timestampLess reports whether a < b, comparing numerically when both
+// values parse as integers (unix seconds), else lexicographically
+// (ISO-8601 strings sort in time order).
+func timestampLess(a, b string) bool {
+	ai, aErr := strconv.ParseInt(a, 10, 64)
+	bi, bErr := strconv.ParseInt(b, 10, 64)
+	if aErr == nil && bErr == nil {
+		return ai < bi
+	}
+	return a < b
 }
 
 // Ensure sql import is used
