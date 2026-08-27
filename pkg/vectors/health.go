@@ -94,8 +94,10 @@ func CheckHealth(in HealthInputs) (*HealthReport, error) {
 			r.EntriesTotal, r.FTSTotal))
 	}
 
-	// I3 — per-(backend, model) vector counts (compared to entries)
-	rows, err := in.DB.Query(`SELECT backend, model, COUNT(*) FROM vectors GROUP BY backend, model`)
+	// I3 — per-(backend, model) vector counts (compared to entries).
+	// v23: a long document owns one row per chunk, so parity is measured on
+	// DISTINCT doc_id (every entry covered by ≥1 chunk), not on row count.
+	rows, err := in.DB.Query(`SELECT backend, model, COUNT(DISTINCT doc_id) FROM vectors GROUP BY backend, model`)
 	if err != nil {
 		return nil, fmt.Errorf("group vectors: %w", err)
 	}

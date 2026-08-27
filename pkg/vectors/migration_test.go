@@ -56,13 +56,22 @@ func TestMigrateV21ToV22_PreservesVectors(t *testing.T) {
 		t.Fatalf("NewVectorStore (migration): %v", err)
 	}
 
-	// --- Verify: the vectors table should now have 2 v22-shaped rows ---
+	// --- Verify: the vectors table should now be v23-shaped (v21→v22→v23 chain) ---
 	kind, err := detectVectorsSchema(db)
 	if err != nil {
 		t.Fatalf("detect schema: %v", err)
 	}
-	if kind != schemaV22 {
-		t.Fatalf("expected v22 schema after migration, got %d", kind)
+	if kind != schemaV23 {
+		t.Fatalf("expected v23 schema after migration, got %d", kind)
+	}
+
+	// Preserved rows must carry chunk=0 (they were single-vector docs).
+	var nonZeroChunks int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM vectors WHERE chunk != 0`).Scan(&nonZeroChunks); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if nonZeroChunks != 0 {
+		t.Fatalf("expected all preserved rows at chunk=0, got %d non-zero", nonZeroChunks)
 	}
 
 	var count int
