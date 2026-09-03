@@ -89,8 +89,16 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 	// concurrent adds of one slug could both land on slug.md (review of PR #21 round 2, N1). O_EXCL
 	// makes the loser see EEXIST; it asks for the next free name (freeFilename now sees the winner's
 	// file) and retries.
+	ours := false // set when freeFilename hands back the name we just failed to create: the file already carries this note's id
 	for attempt := 1; ; attempt++ {
-		f, oerr := os.OpenFile(notePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+		if ours {
+			// our own file is already on disk without an index row (an import that died between the file
+			// write and the DB insert, a file the add-only sync brought back): adopt it instead of erroring
+			// (review round 3, R3-1) — truncate and rewrite, no exclusivity needed
+			flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		}
+		f, oerr := os.OpenFile(notePath, flags, 0600)
 		if oerr == nil {
 			_, werr := f.Write([]byte(content))
 			cerr := f.Close()
@@ -110,6 +118,7 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 		if ferr != nil {
 			return nil, fmt.Errorf("choose a filename: %w", ferr)
 		}
+		ours = fn == filename // same answer as the name that just existed → it is ours (freeFilename only re-offers a file carrying ownerID)
 		filename = fn
 		notePath = filepath.Join(categoryDir, filename)
 		if err := validateFilepathWithinBase(fs.baseDir, notePath); err != nil {

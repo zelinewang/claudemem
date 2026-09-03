@@ -20,6 +20,7 @@ func TestAddNote_ConcurrentSameSlugNeverShareAFile(t *testing.T) {
 		store := setupTestStore(t)
 		var wg sync.WaitGroup
 		ids := make([]string, 2)
+		errs := make([]error, 2)
 		for w := 0; w < 2; w++ {
 			wg.Add(1)
 			go func(w int) {
@@ -28,19 +29,28 @@ func TestAddNote_ConcurrentSameSlugNeverShareAFile(t *testing.T) {
 				if err == nil {
 					ids[w] = r.NoteID
 				}
+				errs[w] = err
 			}(w)
 		}
 		wg.Wait()
-		seen := map[string]bool{}
+		for w, err := range errs {
+			if err != nil {
+				t.Fatalf("iter %d: worker %d's add failed — the retry loop must make both adds succeed (review round 3, R3-2): %v", i, w, err)
+			}
+		}
+		// Both ids equal = the slower worker's dedup check saw the faster one's committed row and MERGED into it
+		// (one note, one file) — legitimate, and what serialized adds would do; CI's slower runner reaches it
+		// where the Mac rarely does. Two DISTINCT ids on one path is the loss this test exists to catch.
+		seen := map[string]string{}
 		for w, id := range ids {
 			if id == "" {
-				continue // a merge or an error is not a loss; a shared file would be
+				t.Fatalf("iter %d: worker %d has no note id", i, w)
 			}
 			p := entryPath(t, store, id)
-			if seen[p] {
-				t.Fatalf("iter %d: two entries share one file %s", i, p)
+			if other, dup := seen[p]; dup && other != id {
+				t.Fatalf("iter %d: two entries share one file %s (%s and %s)", i, p, other[:8], id[:8])
 			}
-			seen[p] = true
+			seen[p] = id
 			body, err := os.ReadFile(filepath.Join(store.baseDir, p))
 			if err != nil || !strings.Contains(string(body), id) {
 				t.Fatalf("iter %d: worker %d's file does not carry its own id (%v)", i, w, err)
@@ -51,6 +61,41 @@ func TestAddNote_ConcurrentSameSlugNeverShareAFile(t *testing.T) {
 			t.Fatalf("iter %d: verify: err=%v shared=%v", i, err, res.SharedFiles)
 		}
 		store.Close()
+	}
+}
+
+// Review round 3, R3-1: a note whose OWN file is already on disk without an index row (an import that
+// died between the file write and the DB insert; a file the add-only sync brought back) is adopted,
+// not refused — freeFilename re-offers a file carrying the note's id, and the create must not insist on
+// exclusivity for it.
+func TestAddNote_AdoptsItsOwnFileAlreadyOnDisk(t *testing.T) {
+	store := setupTestStore(t)
+	dir := filepath.Join(store.notesDir, "infrastructure")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	note := models.NewNote("infrastructure", "Reimported Note Title", "CONTENT-FROM-THE-EARLIER-ATTEMPT")
+	if err := os.WriteFile(filepath.Join(dir, "reimported-note-title.md"), []byte(FormatNoteMarkdown(note)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	note.Content = "CONTENT-FROM-THIS-ATTEMPT"
+	r, err := store.AddNote(note)
+	if err != nil {
+		t.Fatalf("AddNote must adopt its own file, got: %v", err)
+	}
+	if r.Action != "created" || r.NoteID != note.ID {
+		t.Fatalf("unexpected result: %+v", r)
+	}
+	p := entryPath(t, store, note.ID)
+	if filepath.Base(p) != "reimported-note-title.md" {
+		t.Fatalf("adopted the wrong name: %s", p)
+	}
+	body, _ := os.ReadFile(filepath.Join(store.baseDir, p))
+	if !strings.Contains(string(body), "CONTENT-FROM-THIS-ATTEMPT") {
+		t.Fatalf("file not rewritten with this attempt's content:\n%s", string(body))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "reimported-note-title-2.md")); err == nil {
+		t.Fatalf("a -2 file was created for the note's own name")
 	}
 }
 
