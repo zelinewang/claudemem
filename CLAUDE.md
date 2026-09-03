@@ -51,3 +51,8 @@ make install            # Install to ~/.local/bin/
 ## Storage Pattern
 Dual-write: every note/session writes to both filesystem (Markdown) AND SQLite index.
 SQLite is a regenerable cache — Markdown files are the source of truth.
+**Filenames are stable ids** (since PR #21, 2026-09-03): a note keeps the file it was created with
+across title changes (the title lives in the frontmatter); only a category change moves it, and every
+write or move lands only on a path no other note owns (`freeFilename` → `slug-2.md` on a collision).
+Why: the two-machine sync is add-only, so a rename-and-delete resurrects the old file from the peer
+and two files claim one uuid. A file named after a dead title is expected, not a bug.

@@ -199,6 +199,37 @@ func TestUpdateNote_SameCategoryTitleCollisionTouchesNothing(t *testing.T) {
 	}
 }
 
+// Review P2-2: verify must report two entries claiming one file instead of "all in sync".
+func TestVerifyIntegrity_ReportsSharedFilepath(t *testing.T) {
+	store := setupTestStore(t)
+	// titles with no word overlap: similar titles would be merged by the dedup layer and leave one entry
+	a, err := store.AddNote(models.NewNote("infrastructure", "Gateway Rollout Plan", "A"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.AddNote(models.NewNote("infrastructure", "Quarterly Budget Memo", "B"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Action != "created" || b.Action != "created" {
+		t.Fatalf("fixture notes were not both created: %s / %s", a.Action, b.Action)
+	}
+	res, err := store.VerifyIntegrity()
+	if err != nil || !res.InSync || len(res.SharedFiles) != 0 {
+		t.Fatalf("clean store should verify in sync: err=%v res=%+v", err, res)
+	}
+	if _, err := store.db.Exec(`UPDATE entries SET filepath = ? WHERE id = ?`, entryPath(t, store, a.NoteID), b.NoteID); err != nil {
+		t.Fatal(err)
+	}
+	res, err = store.VerifyIntegrity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InSync || len(res.SharedFiles) != 1 || res.SharedFiles[0].Entries != 2 {
+		t.Fatalf("shared filepath not reported: %+v", res)
+	}
+}
+
 // An un-indexed file already on disk under the wanted name (resurrected by add-only sync, or a hand
 // copy) counts as taken unless its frontmatter carries the owner's id.
 func TestFreeFilename_RespectsUnindexedFileOnDisk(t *testing.T) {

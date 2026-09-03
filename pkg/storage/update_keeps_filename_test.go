@@ -90,11 +90,22 @@ func TestUpdateNote_CategoryChangeMovesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddNote: %v", err)
 	}
-	pathBefore := entryPath(t, store, result.NoteID)
+	// rename first so the kept filename (moving-note.md) and the current slug differ: the category move
+	// must re-slugify from the CURRENT title, and a test whose slug equals the kept name cannot tell
+	// "kept the basename" from "re-slugified" (review P2-3, mutation M1)
 	n, err := store.GetNote(result.NoteID)
 	if err != nil {
 		t.Fatalf("GetNote: %v", err)
 	}
+	n.Title = "Moving note renamed"
+	if err := store.UpdateNote(n); err != nil {
+		t.Fatalf("UpdateNote (rename): %v", err)
+	}
+	pathBefore := entryPath(t, store, result.NoteID)
+	if filepath.Base(pathBefore) != "moving-note.md" {
+		t.Fatalf("rename changed the filename: %s", pathBefore)
+	}
+	n, _ = store.GetNote(result.NoteID)
 	n.Category = "decisions"
 	if err := store.UpdateNote(n); err != nil {
 		t.Fatalf("UpdateNote: %v", err)
@@ -102,6 +113,9 @@ func TestUpdateNote_CategoryChangeMovesFile(t *testing.T) {
 	pathAfter := entryPath(t, store, result.NoteID)
 	if pathAfter == pathBefore || !strings.Contains(pathAfter, string(filepath.Separator)+"decisions"+string(filepath.Separator)) {
 		t.Fatalf("category change did not move the file: %s -> %s", pathBefore, pathAfter)
+	}
+	if filepath.Base(pathAfter) != "moving-note-renamed.md" {
+		t.Fatalf("category move must re-slugify from the current title: got %s", pathAfter)
 	}
 	if _, err := os.Stat(filepath.Join(store.baseDir, pathBefore)); err == nil {
 		t.Fatalf("old file still present after a category change")

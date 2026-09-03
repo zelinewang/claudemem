@@ -223,6 +223,21 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 		}
 	}
 
+	// Two entries claiming one file (review of PR #21, P2-2): the collisions that destroyed a note were
+	// invisible here because only counts were compared. Reported, never repaired automatically.
+	shared, err := fs.db.Query(`SELECT filepath, COUNT(*) FROM entries GROUP BY filepath HAVING COUNT(*) > 1`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query shared filepaths: %w", err)
+	}
+	for shared.Next() {
+		var fp string
+		var n int
+		if err := shared.Scan(&fp, &n); err == nil {
+			result.SharedFiles = append(result.SharedFiles, SharedFile{Path: fp, Entries: n})
+		}
+	}
+	shared.Close()
+
 	// Check FTS count matches entries count
 	var entryCount, ftsCount int
 	fs.db.QueryRow("SELECT COUNT(*) FROM entries").Scan(&entryCount)
@@ -230,7 +245,7 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 
 	result.EntryCount = entryCount
 	result.FTSCount = ftsCount
-	result.InSync = entryCount == ftsCount && len(result.OrphanedEntries) == 0
+	result.InSync = entryCount == ftsCount && len(result.OrphanedEntries) == 0 && len(result.SharedFiles) == 0
 
 	return result, nil
 }
@@ -268,6 +283,13 @@ type VerifyResult struct {
 	FTSCount        int           `json:"fts_count"`
 	InSync          bool          `json:"in_sync"`
 	OrphanedEntries []OrphanEntry `json:"orphaned_entries,omitempty"`
+	SharedFiles     []SharedFile  `json:"shared_files,omitempty"` // one file claimed by several entries — a note was overwritten or two rows drifted onto one path
+}
+
+// SharedFile is one filepath that more than one entries row points at
+type SharedFile struct {
+	Path    string `json:"path"`
+	Entries int    `json:"entries"`
 }
 
 // OrphanEntry represents a DB entry without a corresponding file

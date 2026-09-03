@@ -172,12 +172,16 @@ func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error
 	if _, err := sanitizePath(category); err != nil {
 		return nil, fmt.Errorf("invalid category: %w", err)
 	}
-	// Try direct path first
+	// Try the direct path first — but a filename is a stable id, not a slug of the CURRENT title, so the
+	// file there may belong to a note that has since been renamed: it counts only if its title matches
+	// (review P2-1: an exact lookup for a dead title used to return the renamed note).
 	filename := Slugify(title)
 	directPath := filepath.Join(fs.notesDir, category, filename)
 
 	if _, err := os.Stat(directPath); err == nil {
-		return fs.readNoteFile(directPath)
+		if n, rerr := fs.readNoteFile(directPath); rerr == nil && n.Title == title {
+			return n, nil
+		}
 	}
 
 	// Fallback to database query
@@ -235,7 +239,6 @@ func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
 	return notes, nil
 }
 
-// UpdateNote updates an existing note
 // freeFilename returns slug, or slug-2.md, slug-3.md …: the first name under notes/<category>/ that
 // is not claimed by another entries row and not on disk with another note's id (a file already owned
 // by ownerID is fine). Filenames are stable ids under add-only cross-machine sync — a title change
@@ -273,6 +276,8 @@ func (fs *FileStore) freeFilename(category, slug, ownerID string) (string, error
 	return "", fmt.Errorf("no free filename for %s in %s", slug, category)
 }
 
+// UpdateNote updates an existing note in place: the file keeps its name across title changes and
+// moves only on a category change (see freeFilename)
 func (fs *FileStore) UpdateNote(note *models.Note) error {
 	// Validate inputs
 	if _, err := sanitizePath(note.Category); err != nil {
@@ -318,11 +323,27 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 	}
 	newPath := filepath.Join(categoryDir, filename)
 	newRelPath := filepath.Join("notes", note.Category, filename)
+	if err := validateFilepathWithinBase(fs.baseDir, newPath); err != nil { // defense in depth, as in AddNote (review P2-4)
+		return fmt.Errorf("path validation failed: %w", err)
+	}
 	content := FormatNoteMarkdown(note)
 
-	// Write new file to temp location first
-	tmpPath := newPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0600); err != nil {
+	// Write the new content to a UNIQUE temp file first. The name used to be newPath+".tmp", and once
+	// the filename stopped changing with the title every concurrent update of one note shared that
+	// temp file: the loser's rename found it gone and the recovery branch wrote an empty note (review
+	// P1-1). Reindex only walks *.md, so a stray temp file is never indexed.
+	tmpFile, err := os.CreateTemp(categoryDir, "."+strings.TrimSuffix(filename, ".md")+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write([]byte(content)); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
@@ -363,15 +384,20 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 
 	// Transaction committed successfully. Now do filesystem operations.
 	oldFullPath := filepath.Join(fs.baseDir, oldFpath)
-	if oldFullPath != newPath {
-		os.Remove(oldFullPath) // category changed — best effort: if this fails, we have a stale file but DB is correct
+	if oldFullPath != newPath && validateFilepathWithinBase(fs.baseDir, oldFullPath) == nil {
+		os.Remove(oldFullPath) // path changed (category move, or a legacy name) — best effort: a failure leaves a stale file, the DB is correct; never a path outside the store
 	}
 
-	// Rename temp file to final path
+	// Rename the temp file over the final path (atomic replace)
 	if err := os.Rename(tmpPath, newPath); err != nil {
-		// Critical: DB is committed but file rename failed. Try to copy.
-		data, _ := os.ReadFile(tmpPath)
-		os.WriteFile(newPath, data, 0600)
+		// DB is committed but the rename failed: copy the temp content — and never an empty read (review P1-1)
+		data, readErr := os.ReadFile(tmpPath)
+		if readErr != nil {
+			return fmt.Errorf("note %s: index updated but the file could not be placed at %s (rename: %v; temp: %w)", note.ID, newRelPath, err, readErr)
+		}
+		if werr := os.WriteFile(newPath, data, 0600); werr != nil {
+			return fmt.Errorf("note %s: index updated but the file could not be placed at %s: %w (temp file kept at %s)", note.ID, newRelPath, werr, tmpPath)
+		}
 		os.Remove(tmpPath)
 	}
 

@@ -135,6 +135,9 @@ var verifyCmd = &cobra.Command{
 			for _, o := range result.OrphanedEntries {
 				OutputText("  • Orphaned [%s] %s → %s", o.Type, o.ID[:8], o.Path)
 			}
+			for _, s := range result.SharedFiles {
+				OutputText("  • %d entries claim one file: %s (a note was overwritten, or two rows drifted onto one path — inspect the file's frontmatter id; repair does not touch this)", s.Entries, s.Path)
+			}
 			OutputText("\nRun 'claudemem repair' to fix issues.")
 		}
 		return nil
