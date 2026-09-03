@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var migrateCmd = &cobra.Command{
@@ -135,10 +137,29 @@ var verifyCmd = &cobra.Command{
 			for _, o := range result.OrphanedEntries {
 				OutputText("  • Orphaned [%s] %s → %s", o.Type, o.ID[:8], o.Path)
 			}
-			OutputText("\nRun 'claudemem repair' to fix issues.")
+			for _, s := range result.SharedFiles {
+				OutputText("  • %d entries claim one file: %s (a note was overwritten, or two rows drifted onto one path — inspect the file's frontmatter id; repair does not touch this)", s.Entries, s.Path)
+			}
+			for _, line := range verifyAdvice(result) {
+				OutputText("\n%s", line)
+			}
 		}
 		return nil
 	},
+}
+
+// verifyAdvice is the closing guidance of `claudemem verify`: `repair` only fixes index issues (orphaned
+// rows, FTS drift); two entries claiming one file need a human, and sending the reader to `repair` for
+// that was contradictory (review of PR #21, N3).
+func verifyAdvice(r *storage.VerifyResult) []string {
+	var out []string
+	if r.EntryCount != r.FTSCount || len(r.OrphanedEntries) > 0 {
+		out = append(out, "Run 'claudemem repair' to fix the index issues above.")
+	}
+	if len(r.SharedFiles) > 0 {
+		out = append(out, "Shared files need a human: open each file, keep the row whose id its frontmatter carries, and move the other row's file aside (e.g. under .sync-preserved/) before a reindex.")
+	}
+	return out
 }
 
 // Legacy repairCmd replaced by cmd/repair.go (which also does orphan

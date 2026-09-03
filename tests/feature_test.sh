@@ -524,15 +524,17 @@ echo "$VAL2" | grep -q "test_value_123" && fail "7.5c config delete" "still exis
 TAGS=$(B note tags 2>&1)
 echo "$TAGS" | grep -q "tiktok\|jwt\|api" && pass "7.6 note tags" || fail "7.6 tags" "empty"
 
-# 7.7 backward compat with real ~/.claudemem
-if [ -d "$HOME/.claudemem" ]; then
+# 7.7 backward compat with the real ~/.claudemem — OPT-IN only (FEATURE_TEST_REAL_STORE=1): these three
+# run the INSTALLED binary against the developer's live store, and `search` writes access_log rows there,
+# so the documented `make feature-test` used to mutate real user data on every run (review of PR #21).
+if [ "${FEATURE_TEST_REAL_STORE:-0}" = "1" ] && [ -d "$HOME/.claudemem" ]; then
     claudemem session list --last 1 > /dev/null 2>&1 && pass "7.7 backward compat: live sessions" || fail "7.7 compat" "error"
     claudemem stats > /dev/null 2>&1 && pass "7.8 backward compat: live stats" || fail "7.8 compat" "error"
     claudemem search "vio" --auto-fallback-fts > /dev/null 2>&1 && pass "7.9 backward compat: live search" || fail "7.9 compat" "error"
 else
-    skip "7.7 backward compat" "no ~/.claudemem"
-    skip "7.8 backward compat" "no ~/.claudemem"
-    skip "7.9 backward compat" "no ~/.claudemem"
+    skip "7.7 backward compat" "opt-in: FEATURE_TEST_REAL_STORE=1 (touches the real ~/.claudemem)"
+    skip "7.8 backward compat" "opt-in: FEATURE_TEST_REAL_STORE=1"
+    skip "7.9 backward compat" "opt-in: FEATURE_TEST_REAL_STORE=1"
 fi
 
 # 7.10 note search across all categories
