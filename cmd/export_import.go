@@ -62,6 +62,10 @@ Examples:
 				}
 				return nil
 			}
+			// Skip the store write lock (a runtime artifact, recreated on first write; review of PR #22)
+			if rel == ".write.lock" {
+				return nil
+			}
 
 			// Create tar header
 			header, err := tar.FileInfoHeader(info, "")

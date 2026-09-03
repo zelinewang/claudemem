@@ -23,7 +23,7 @@ type SaveSessionResult struct {
 
 // SaveSession saves a session to the filesystem and database.
 // Dedup: same date + same project + same branch → update existing session instead of duplicating.
-func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, error) {
+func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionResult, error) {
 	if err := validateTitle(session.Title); err != nil {
 		return nil, fmt.Errorf("invalid session title: %w", err)
 	}

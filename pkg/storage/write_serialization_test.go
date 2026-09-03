@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zelinewang/claudemem/pkg/models"
 )
@@ -59,6 +60,108 @@ func TestAddNote_ConcurrentMergesKeepEveryParagraph(t *testing.T) {
 	}
 	if missing > 0 {
 		t.Fatalf("%d of %d merged paragraphs are missing from the note after concurrent merges", missing, workers+1)
+	}
+}
+
+// Review of PR #22, round 1 (P2-1): SaveSession is the same read-modify-write merge as the note
+// path (24 parallel `session save --session-id X` lost up to 15 of 25 summaries), and /wrapup is
+// exactly this call. Every merged summary must survive.
+func TestSaveSession_ConcurrentMergesKeepEverySummary(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	const sid = "SID-concurrent-1"
+	if _, err := store.SaveSession(sessionWithSummary(sid, "SUM-base")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	const workers = 24
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []string
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			if _, err := store.SaveSession(sessionWithSummary(sid, fmt.Sprintf("SUM-%03d", w))); err != nil {
+				mu.Lock()
+				errs = append(errs, err.Error())
+				mu.Unlock()
+			}
+		}(w)
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		t.Fatalf("%d errors, first: %s", len(errs), errs[0])
+	}
+	rows, err := store.db.Query(`SELECT filepath FROM entries WHERE type = 'session' AND session_id = ?`, sid)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	var paths []string
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		paths = append(paths, fp)
+	}
+	rows.Close()
+	if len(paths) != 1 {
+		t.Fatalf("expected exactly one session row for %s, got %d", sid, len(paths))
+	}
+	body, err := os.ReadFile(filepath.Join(store.baseDir, paths[0]))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	missing := 0
+	for w := 0; w < workers; w++ {
+		if !strings.Contains(string(body), fmt.Sprintf("SUM-%03d", w)) {
+			missing++
+		}
+	}
+	if !strings.Contains(string(body), "SUM-base") {
+		missing++
+	}
+	if missing > 0 {
+		t.Fatalf("%d of %d merged summaries are missing after concurrent session saves", missing, workers+1)
+	}
+}
+
+func sessionWithSummary(sessionID, summary string) *models.Session {
+	s := models.NewSession("Concurrent wrapup", "main", "claudemem-test", sessionID)
+	s.Summary = summary
+	return s
+}
+
+// Review of PR #22, round 1 (P2-2 / P2-3): a held lock must not block a writer forever, and a
+// re-entry (the lock is not reentrant) must fail loudly instead of hanging. The wait is bounded by
+// lockTimeout, shortened here so the test runs in milliseconds.
+func TestLockStore_BoundedWaitFailsLoudly(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	saved := lockTimeout
+	lockTimeout = 150 * time.Millisecond
+	defer func() { lockTimeout = saved }()
+
+	unlock, err := store.lockStore()
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	start := time.Now()
+	_, err = store.AddNote(models.NewNote("infrastructure", "Blocked Writer", "body"))
+	elapsed := time.Since(start)
+	unlock()
+	if err == nil {
+		t.Fatalf("AddNote succeeded while the store lock was held by this process (the lock is not exclusive?)")
+	}
+	if !strings.Contains(err.Error(), "locked by another claudemem writer") {
+		t.Fatalf("unexpected error text: %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("the bounded wait took %s — the timeout is not bounding it", elapsed)
+	}
+	// and once released, the same write goes through
+	if _, err := store.AddNote(models.NewNote("infrastructure", "Blocked Writer", "body")); err != nil {
+		t.Fatalf("AddNote after release: %v", err)
 	}
 }
 

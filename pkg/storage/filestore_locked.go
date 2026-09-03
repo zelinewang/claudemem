@@ -36,3 +36,16 @@ func (fs *FileStore) DeleteNote(id string) error {
 	defer unlock()
 	return fs.deleteNoteLocked(id)
 }
+
+// SaveSession creates a session, or merges it into the existing session with the same session id
+// (or the same date+project+branch for legacy sessions). Review of PR #22, round 1 (P2-1): this is
+// the same read-modify-write as the note merge — 24 parallel `session save --session-id X` lost up
+// to 15 of 25 summaries — and /wrapup is exactly this call, so it takes the same store lock.
+func (fs *FileStore) SaveSession(session *models.Session) (*SaveSessionResult, error) {
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return fs.saveSessionLocked(session)
+}
