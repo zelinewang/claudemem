@@ -12,7 +12,7 @@ import (
 )
 
 // AddNote adds a new note to the store
-func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
+func (fs *FileStore) addNoteLocked(note *models.Note) (*AddNoteResult, error) {
 	// Validate inputs
 	if _, err := sanitizePath(note.Category); err != nil {
 		return nil, fmt.Errorf("invalid category: %w", err)
@@ -51,7 +51,7 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 			}
 			existingNote.Updated = time.Now()
 
-			if err := fs.UpdateNote(existingNote); err != nil {
+			if err := fs.updateNoteLocked(existingNote); err != nil {
 				return nil, fmt.Errorf("failed to merge note: %w", err)
 			}
 			return &AddNoteResult{
@@ -316,7 +316,7 @@ func (fs *FileStore) freeFilename(category, slug, ownerID string) (string, error
 
 // UpdateNote updates an existing note in place: the file keeps its name across title changes and
 // moves only on a category change (see freeFilename)
-func (fs *FileStore) UpdateNote(note *models.Note) error {
+func (fs *FileStore) updateNoteLocked(note *models.Note) error {
 	// Validate inputs
 	if _, err := sanitizePath(note.Category); err != nil {
 		return fmt.Errorf("invalid category: %w", err)
@@ -446,7 +446,7 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 }
 
 // DeleteNote deletes a note by ID (supports prefix matching)
-func (fs *FileStore) DeleteNote(id string) error {
+func (fs *FileStore) deleteNoteLocked(id string) error {
 	var fpath, fullID, title string
 	err := fs.db.QueryRow(`
 		SELECT filepath, id, title FROM entries
