@@ -70,6 +70,11 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 	}
 
 	filename := Slugify(note.Title)
+	if fn, ferr := fs.freeFilename(note.Category, filename, note.ID); ferr != nil {
+		return nil, fmt.Errorf("choose a filename: %w", ferr)
+	} else {
+		filename = fn
+	}
 	notePath := filepath.Join(categoryDir, filename)
 
 	if err := validateFilepathWithinBase(fs.baseDir, notePath); err != nil {
@@ -231,6 +236,43 @@ func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
 }
 
 // UpdateNote updates an existing note
+// freeFilename returns slug, or slug-2.md, slug-3.md …: the first name under notes/<category>/ that
+// is not claimed by another entries row and not on disk with another note's id (a file already owned
+// by ownerID is fine). Filenames are stable ids under add-only cross-machine sync — a title change
+// keeps the name — so a slug no longer proves whose file it is: without this check a new note whose
+// title slugified onto a renamed note's stale filename silently overwrote it (review of PR #21,
+// P0-1..3), and a category move onto a same-slug note in the target category did so even before
+// (P0-4). A file that exists but is not indexed (resurrected by add-only sync, or copied by hand) is
+// judged by the id in its own frontmatter.
+func (fs *FileStore) freeFilename(category, slug, ownerID string) (string, error) {
+	base := strings.TrimSuffix(slug, ".md")
+	for i := 1; i <= 1000; i++ {
+		name := slug
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d.md", base, i)
+		}
+		rel := filepath.Join("notes", category, name)
+		var owner string
+		err := fs.db.QueryRow(`SELECT id FROM entries WHERE filepath = ?`, rel).Scan(&owner)
+		if err != nil && err != sql.ErrNoRows {
+			return "", fmt.Errorf("check filename owner: %w", err)
+		}
+		if err == nil && owner != ownerID {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(fs.notesDir, category, name))
+		if readErr == nil {
+			if n, perr := ParseNoteMarkdown(data); perr != nil || n.ID != ownerID {
+				continue
+			}
+		} else if !os.IsNotExist(readErr) {
+			return "", fmt.Errorf("check filename on disk: %w", readErr)
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("no free filename for %s in %s", slug, category)
+}
+
 func (fs *FileStore) UpdateNote(note *models.Note) error {
 	// Validate inputs
 	if _, err := sanitizePath(note.Category); err != nil {
@@ -268,7 +310,11 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 	// Keep the filename the note was created with; only a category change moves the file.
 	filename := filepath.Base(oldFpath)
 	if filepath.Base(filepath.Dir(oldFpath)) != note.Category || !strings.HasSuffix(filename, ".md") {
-		filename = Slugify(note.Title)
+		fn, ferr := fs.freeFilename(note.Category, Slugify(note.Title), note.ID)
+		if ferr != nil {
+			return fmt.Errorf("choose a filename: %w", ferr)
+		}
+		filename = fn
 	}
 	newPath := filepath.Join(categoryDir, filename)
 	newRelPath := filepath.Join("notes", note.Category, filename)
