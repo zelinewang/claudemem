@@ -42,6 +42,10 @@ func (fs *FileStore) lockStore() (func(), error) {
 		return nil, fmt.Errorf("open store lock %s: %w", path, err)
 	}
 	deadline := time.Now().Add(lockTimeout)
+	// Exponential backoff from 200 µs to a 10 ms cap: a flat 10 ms poll cost a full sleep per
+	// in-process handoff (a 40-goroutine merge went 0.02 s → 0.43 s; review of PR #22, round 2, P3-4).
+	// Cross-process arrivals are staggered by CLI startup, so only in-process consumers and CI notice.
+	wait := 200 * time.Microsecond
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -55,7 +59,10 @@ func (fs *FileStore) lockStore() (func(), error) {
 			f.Close()
 			return nil, fmt.Errorf("store is locked by another claudemem writer for more than %s (%s) — a write is stuck or the lock was re-entered; retry, or find the holder with `lsof %s`", lockTimeout, path, path)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(wait)
+		if wait < 10*time.Millisecond {
+			wait *= 2
+		}
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
