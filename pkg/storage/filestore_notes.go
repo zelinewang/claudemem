@@ -262,7 +262,14 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 	if err := os.MkdirAll(categoryDir, 0700); err != nil {
 		return fmt.Errorf("failed to create category directory: %w", err)
 	}
-	filename := Slugify(note.Title)
+	// Filenames are stable ids under add-only cross-machine sync (2026-09-03): a title change used
+	// to write a new slug file and delete the old one, and the peer's add-only push resurrected the
+	// old file — two files claiming one uuid (a reindex warning since PR #18; an abort before it).
+	// Keep the filename the note was created with; only a category change moves the file.
+	filename := filepath.Base(oldFpath)
+	if filepath.Base(filepath.Dir(oldFpath)) != note.Category || !strings.HasSuffix(filename, ".md") {
+		filename = Slugify(note.Title)
+	}
 	newPath := filepath.Join(categoryDir, filename)
 	newRelPath := filepath.Join("notes", note.Category, filename)
 	content := FormatNoteMarkdown(note)
@@ -310,7 +317,9 @@ func (fs *FileStore) UpdateNote(note *models.Note) error {
 
 	// Transaction committed successfully. Now do filesystem operations.
 	oldFullPath := filepath.Join(fs.baseDir, oldFpath)
-	os.Remove(oldFullPath) // Best effort: if this fails, we have a stale file but DB is correct
+	if oldFullPath != newPath {
+		os.Remove(oldFullPath) // category changed — best effort: if this fails, we have a stale file but DB is correct
+	}
 
 	// Rename temp file to final path
 	if err := os.Rename(tmpPath, newPath); err != nil {
