@@ -85,8 +85,37 @@ func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 
 	content := FormatNoteMarkdown(note)
 
-	if err := os.WriteFile(notePath, []byte(content), 0600); err != nil {
-		return nil, fmt.Errorf("failed to write note file: %w", err)
+	// Create the file EXCLUSIVELY: freeFilename's check and this write are not one atomic step, so two
+	// concurrent adds of one slug could both land on slug.md (review of PR #21 round 2, N1). O_EXCL
+	// makes the loser see EEXIST; it asks for the next free name (freeFilename now sees the winner's
+	// file) and retries.
+	for attempt := 1; ; attempt++ {
+		f, oerr := os.OpenFile(notePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if oerr == nil {
+			_, werr := f.Write([]byte(content))
+			cerr := f.Close()
+			if werr != nil || cerr != nil {
+				os.Remove(notePath)
+				if werr == nil {
+					werr = cerr
+				}
+				return nil, fmt.Errorf("failed to write note file: %w", werr)
+			}
+			break
+		}
+		if !os.IsExist(oerr) || attempt >= 20 {
+			return nil, fmt.Errorf("failed to write note file: %w", oerr)
+		}
+		fn, ferr := fs.freeFilename(note.Category, Slugify(note.Title), note.ID)
+		if ferr != nil {
+			return nil, fmt.Errorf("choose a filename: %w", ferr)
+		}
+		filename = fn
+		notePath = filepath.Join(categoryDir, filename)
+		if err := validateFilepathWithinBase(fs.baseDir, notePath); err != nil {
+			return nil, fmt.Errorf("path validation failed: %w", err)
+		}
+		relPath = filepath.Join("notes", note.Category, filename)
 	}
 
 	tx, err := fs.db.Begin()
@@ -269,7 +298,7 @@ func (fs *FileStore) freeFilename(category, slug, ownerID string) (string, error
 				continue
 			}
 		} else if !os.IsNotExist(readErr) {
-			return "", fmt.Errorf("check filename on disk: %w", readErr)
+			continue // something unreadable sits there (a directory, a permission problem): taken, step aside (review round 2, N2)
 		}
 		return name, nil
 	}

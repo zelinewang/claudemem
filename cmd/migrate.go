@@ -138,7 +138,12 @@ var verifyCmd = &cobra.Command{
 			for _, s := range result.SharedFiles {
 				OutputText("  • %d entries claim one file: %s (a note was overwritten, or two rows drifted onto one path — inspect the file's frontmatter id; repair does not touch this)", s.Entries, s.Path)
 			}
-			OutputText("\nRun 'claudemem repair' to fix issues.")
+			if result.EntryCount != result.FTSCount || len(result.OrphanedEntries) > 0 {
+				OutputText("\nRun 'claudemem repair' to fix the index issues above.")
+			}
+			if len(result.SharedFiles) > 0 {
+				OutputText("\nShared files need a human: open each file, keep the row whose id its frontmatter carries, and move the other row's file aside (e.g. under .sync-preserved/) before a reindex.")
+			}
 		}
 		return nil
 	},
