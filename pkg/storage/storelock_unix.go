@@ -46,7 +46,7 @@ func (fs *FileStore) lockStore() (func(), error) {
 	// matters is the handoff after a release: a blocking flock hands off at once, a 10 ms poll cost
 	// 4–8 ms per handoff (a 40-goroutine merge went 0.03 s → 0.43 s), and exponential backoff was
 	// worse (the longest waiter — the likely next holder — is also the sleepiest: up to 13.8 ms).
-	// 1 ms restores the blocking-lock numbers (0.05 s; handoff ≤ 0.5 ms) at ~2% of one core while
+	// 1 ms restores the blocking-lock numbers (0.05 s; handoff ≤ 1 ms, the poll interval) at ~2% of one core while
 	// contended, and keeps the bound and the loud error (review of PR #22, rounds 2–3, measured).
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
