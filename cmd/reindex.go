@@ -10,6 +10,7 @@ import (
 var (
 	reindexVectors bool
 	reindexAll     bool
+	reindexMissing bool
 )
 
 var reindexCmd = &cobra.Command{
@@ -19,11 +20,15 @@ var reindexCmd = &cobra.Command{
 
 Use --vectors to rebuild the vector index for the configured embedding backend.
 Use --all to rebuild both FTS5 and vector indexes.
+Use --vectors --missing to embed ONLY documents that have no vector yet
+(incremental: a daily sync job stays under the embedding quota instead of
+re-embedding every entry — a full rebuild of ~6,000 entries hit Vertex 429).
 
 Examples:
-  claudemem reindex              # Rebuild FTS5 index only
-  claudemem reindex --vectors    # Rebuild vector index only
-  claudemem reindex --all        # Rebuild both indexes`,
+  claudemem reindex                     # Rebuild FTS5 index only
+  claudemem reindex --vectors           # Rebuild vector index only (full re-embed)
+  claudemem reindex --vectors --missing # Embed only documents missing a vector
+  claudemem reindex --all               # Rebuild both indexes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := getFileStore()
 		if err != nil {
@@ -58,6 +63,14 @@ Examples:
 			}
 
 			backend := store.VectorBackend()
+			if reindexMissing {
+				count, err := store.IndexMissingVectors()
+				if err != nil {
+					return fmt.Errorf("vector backfill failed: %w", err)
+				}
+				OutputText("Vector index backfilled: %d missing documents embedded (backend: %s)", count, backend)
+				return nil
+			}
 			count, err := store.ReindexVectors()
 			if err != nil {
 				return fmt.Errorf("vector reindex failed: %w", err)
@@ -72,5 +85,6 @@ Examples:
 func init() {
 	reindexCmd.Flags().BoolVar(&reindexVectors, "vectors", false, "Rebuild vector index for semantic search")
 	reindexCmd.Flags().BoolVar(&reindexAll, "all", false, "Rebuild both FTS5 and vector indexes")
+	reindexCmd.Flags().BoolVar(&reindexMissing, "missing", false, "With --vectors: embed only documents that have no vector yet (incremental backfill)")
 	rootCmd.AddCommand(reindexCmd)
 }
