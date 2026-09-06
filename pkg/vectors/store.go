@@ -99,7 +99,7 @@ func (vs *VectorStore) initSchema() error {
 	case schemaV22:
 		return vs.migrateV22ToV23()
 	case schemaV23:
-		return nil
+		return vs.ensureVectorsIndexes()
 	}
 	return fmt.Errorf("unknown vectors schema kind %d", kind)
 }
@@ -162,6 +162,15 @@ CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
 CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
 `
 
+// vectorsIndexes is the idempotent secondary-index DDL for the live vectors
+// table. It is run on every open of an already-v23 store (so stores migrated
+// by a build that lost the indexes heal on their next start) and is what the
+// migrations rely on after the rename dance below.
+const vectorsIndexes = `
+CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
+CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
+`
+
 const v23Schema = `
 CREATE TABLE vectors (
 	doc_id     TEXT    NOT NULL,
@@ -182,6 +191,15 @@ func (vs *VectorStore) createV23Schema() error {
 	return err
 }
 
+// ensureVectorsIndexes recreates the secondary indexes if a previous build
+// lost them (see migrateV22ToV23). Idempotent and row-preserving.
+func (vs *VectorStore) ensureVectorsIndexes() error {
+	if _, err := vs.db.Exec(vectorsIndexes); err != nil {
+		return fmt.Errorf("ensure vectors indexes: %w", err)
+	}
+	return nil
+}
+
 // migrateV22ToV23 adds the chunk column preservation-first: existing rows
 // keep their vectors as chunk 0 (they remain searchable immediately); a later
 // `reindex --vectors` re-chunks long documents for full coverage.
@@ -194,6 +212,15 @@ func (vs *VectorStore) migrateV22ToV23() error {
 
 	if _, err := tx.Exec(`ALTER TABLE vectors RENAME TO vectors_v22`); err != nil {
 		return fmt.Errorf("rename v22: %w", err)
+	}
+	// The rename carries idx_vectors_backend / idx_vectors_doc over to
+	// vectors_v22. Drop them here so v23Schema can create them on the new
+	// table; otherwise IF NOT EXISTS skips them and DROP TABLE vectors_v22
+	// below silently deletes both.
+	if _, err := tx.Exec(`
+		DROP INDEX IF EXISTS idx_vectors_backend;
+		DROP INDEX IF EXISTS idx_vectors_doc`); err != nil {
+		return fmt.Errorf("drop v22 indexes: %w", err)
 	}
 	if _, err := tx.Exec(v23Schema); err != nil {
 		return fmt.Errorf("create v23: %w", err)
