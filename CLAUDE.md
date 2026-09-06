@@ -31,7 +31,8 @@ Persistent memory CLI for AI coding agents. Notes + sessions with bidirectional 
 4. **Human-readable storage** — Markdown files with YAML frontmatter, always
    inspectable. SQLite index + vectors are regenerable from markdown.
 5. **Backward compatible** — Existing notes/sessions must survive upgrades.
-   Schema migrations preserve data (see v21→v22 migration in pkg/vectors/store.go).
+   Schema migrations preserve data (see the v21→v22→v23 migration chain in
+   pkg/vectors/store.go; v23 adds per-chunk rows for long documents).
 
 ## Build & Test
 ```bash

@@ -331,8 +331,8 @@ func TestVectorStore_PruneInactiveBackends(t *testing.T) {
 		{"vertex", "gemini-embedding-001", "2"},
 		{"ollama", "nomic-embed-text", "1"},
 	} {
-		if _, err := db.Exec(`INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
-			VALUES (?, ?, ?, 2, X'0000803F0000803F', '2026-01-01T00:00:00Z')`,
+		if _, err := db.Exec(`INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+			VALUES (?, 0, ?, ?, 2, X'0000803F0000803F', '2026-01-01T00:00:00Z')`,
 			row.doc, row.backend, row.model); err != nil {
 			t.Fatalf("seed stale row: %v", err)
 		}
