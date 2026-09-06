@@ -56,13 +56,22 @@ func TestMigrateV21ToV22_PreservesVectors(t *testing.T) {
 		t.Fatalf("NewVectorStore (migration): %v", err)
 	}
 
-	// --- Verify: the vectors table should now have 2 v22-shaped rows ---
+	// --- Verify: the vectors table should now be v23-shaped (v21→v22→v23 chain) ---
 	kind, err := detectVectorsSchema(db)
 	if err != nil {
 		t.Fatalf("detect schema: %v", err)
 	}
-	if kind != schemaV22 {
-		t.Fatalf("expected v22 schema after migration, got %d", kind)
+	if kind != schemaV23 {
+		t.Fatalf("expected v23 schema after migration, got %d", kind)
+	}
+
+	// Preserved rows must carry chunk=0 (they were single-vector docs).
+	var nonZeroChunks int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM vectors WHERE chunk != 0`).Scan(&nonZeroChunks); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if nonZeroChunks != 0 {
+		t.Fatalf("expected all preserved rows at chunk=0, got %d non-zero", nonZeroChunks)
 	}
 
 	var count int
@@ -248,4 +257,115 @@ func (f *fakeEmbedder) EmbedBatch(texts []string, t InputType) ([][]float32, err
 		out[i] = v
 	}
 	return out, nil
+}
+
+// secondaryIndexNames returns the names of the idx_* indexes attached to the
+// given table. Migrations that RENAME the vectors table carry its indexes
+// along, so asserting on tbl_name is what proves they ended up on the live table.
+func secondaryIndexNames(t *testing.T, db *sql.DB, table string) map[string]bool {
+	t.Helper()
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name LIKE 'idx_%'`, table)
+	if err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	defer rows.Close()
+	names := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatalf("scan index name: %v", err)
+		}
+		names[n] = true
+	}
+	return names
+}
+
+// TestMigrateV22ToV23_KeepsSecondaryIndexes reproduces the Codex P2 finding on
+// the v23 PR: ALTER TABLE vectors RENAME TO vectors_v22 carries
+// idx_vectors_backend / idx_vectors_doc over to the renamed table, so the
+// CREATE INDEX IF NOT EXISTS statements in v23Schema are no-ops and DROP TABLE
+// vectors_v22 deletes both indexes. Every store migrated by the pre-release
+// build (the gengar-eu hub, 2026-09-01) ended up with only the PK autoindex.
+func TestMigrateV22ToV23_KeepsSecondaryIndexes(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE vector_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatalf("setup meta: %v", err)
+	}
+	if _, err := db.Exec(v22Schema); err != nil {
+		t.Fatalf("setup v22: %v", err)
+	}
+	blob := make([]byte, 4*4)
+	if _, err := db.Exec(`INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
+		VALUES ('docA', 'static', 'static-v1', 4, ?, '2026-09-01T00:00:00Z')`, blob); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if got := secondaryIndexNames(t, db, "vectors"); !got["idx_vectors_backend"] || !got["idx_vectors_doc"] {
+		t.Fatalf("v22 fixture should start with both secondary indexes, got %v", got)
+	}
+
+	if _, err := NewVectorStore(db, NewTFIDFEmbedder()); err != nil {
+		t.Fatalf("NewVectorStore (migration): %v", err)
+	}
+
+	kind, err := detectVectorsSchema(db)
+	if err != nil || kind != schemaV23 {
+		t.Fatalf("expected v23 after migration, got kind=%d err=%v", kind, err)
+	}
+	got := secondaryIndexNames(t, db, "vectors")
+	if !got["idx_vectors_backend"] || !got["idx_vectors_doc"] {
+		t.Fatalf("secondary indexes lost in v22→v23 migration: have %v on vectors", got)
+	}
+	var stale int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'vectors_v22'`).Scan(&stale); err != nil {
+		t.Fatalf("check renamed table: %v", err)
+	}
+	if stale != 0 {
+		t.Fatalf("vectors_v22 should be dropped after migration")
+	}
+}
+
+// TestInitSchema_V23RecreatesMissingIndexes covers stores that were already
+// migrated by a build without the fix above: opening them must heal the
+// missing secondary indexes without touching any row.
+func TestInitSchema_V23RecreatesMissingIndexes(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TABLE vector_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		CREATE TABLE vectors (
+			doc_id     TEXT    NOT NULL,
+			chunk      INTEGER NOT NULL,
+			backend    TEXT    NOT NULL,
+			model      TEXT    NOT NULL,
+			dim        INTEGER NOT NULL,
+			vector     BLOB    NOT NULL,
+			created_at TEXT    NOT NULL,
+			PRIMARY KEY (doc_id, chunk, backend, model)
+		);`); err != nil {
+		t.Fatalf("setup index-less v23: %v", err)
+	}
+	blob := make([]byte, 4*4)
+	if _, err := db.Exec(`INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+		VALUES ('docA', 0, 'static', 'static-v1', 4, ?, '2026-09-01T00:00:00Z')`, blob); err != nil {
+		t.Fatalf("seed row: %v", err)
+	}
+	if got := secondaryIndexNames(t, db, "vectors"); len(got) != 0 {
+		t.Fatalf("fixture should have no secondary indexes, got %v", got)
+	}
+
+	if _, err := NewVectorStore(db, NewTFIDFEmbedder()); err != nil {
+		t.Fatalf("NewVectorStore (open v23): %v", err)
+	}
+
+	got := secondaryIndexNames(t, db, "vectors")
+	if !got["idx_vectors_backend"] || !got["idx_vectors_doc"] {
+		t.Fatalf("opening an index-less v23 store must recreate the secondary indexes, have %v", got)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows must be untouched, count=%d err=%v", n, err)
+	}
 }

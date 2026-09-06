@@ -13,9 +13,15 @@ import (
 
 // VectorStore manages per-document embedding vectors stored in SQLite.
 //
-// Schema (v22 — see docs/HYBRID_EMBEDDING_PLAN.md):
+// Schema (v23 — see docs/HYBRID_EMBEDDING_PLAN.md):
 //
-//	vectors(doc_id, backend, model, dim, vector, created_at) PK(doc_id, backend, model)
+//	vectors(doc_id, chunk, backend, model, dim, vector, created_at)
+//	PK(doc_id, chunk, backend, model)
+//
+// v23 adds chunk: documents longer than the embedder's input budget are split
+// by ChunkForEmbed into overlapping chunks, one vector row each; Search
+// aggregates chunk similarities per doc_id with max. Short documents keep a
+// single chunk=0 row, identical to v22 behavior.
 //
 // Rationale for the composite key: two machines can share the same markdown
 // corpus via git and each embed with a different backend (e.g., web_dev uses
@@ -84,11 +90,16 @@ func (vs *VectorStore) initSchema() error {
 	}
 	switch kind {
 	case schemaNone:
-		return vs.createV22Schema()
+		return vs.createV23Schema()
 	case schemaV21:
-		return vs.migrateV21ToV22()
+		if err := vs.migrateV21ToV22(); err != nil {
+			return err
+		}
+		return vs.migrateV22ToV23()
 	case schemaV22:
-		return nil
+		return vs.migrateV22ToV23()
+	case schemaV23:
+		return vs.ensureVectorsIndexes()
 	}
 	return fmt.Errorf("unknown vectors schema kind %d", kind)
 }
@@ -99,6 +110,7 @@ const (
 	schemaNone vectorsSchemaKind = iota
 	schemaV21                    // (id, vector)
 	schemaV22                    // (doc_id, backend, model, dim, vector, created_at)
+	schemaV23                    // (doc_id, chunk, backend, model, dim, vector, created_at)
 )
 
 func detectVectorsSchema(db *sql.DB) (vectorsSchemaKind, error) {
@@ -124,6 +136,9 @@ func detectVectorsSchema(db *sql.DB) (vectorsSchemaKind, error) {
 	for _, c := range cols {
 		has[c] = true
 	}
+	if has["doc_id"] && has["backend"] && has["model"] && has["chunk"] {
+		return schemaV23, nil
+	}
 	if has["doc_id"] && has["backend"] && has["model"] {
 		return schemaV22, nil
 	}
@@ -147,9 +162,84 @@ CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
 CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
 `
 
-func (vs *VectorStore) createV22Schema() error {
-	_, err := vs.db.Exec(v22Schema)
+// vectorsIndexes is the idempotent secondary-index DDL for the live vectors
+// table. It is run on every open of an already-v23 store (so stores migrated
+// by a build that lost the indexes heal on their next start) and is what the
+// migrations rely on after the rename dance below.
+const vectorsIndexes = `
+CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
+CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
+`
+
+const v23Schema = `
+CREATE TABLE vectors (
+	doc_id     TEXT    NOT NULL,
+	chunk      INTEGER NOT NULL,
+	backend    TEXT    NOT NULL,
+	model      TEXT    NOT NULL,
+	dim        INTEGER NOT NULL,
+	vector     BLOB    NOT NULL,
+	created_at TEXT    NOT NULL,
+	PRIMARY KEY (doc_id, chunk, backend, model)
+);
+CREATE INDEX IF NOT EXISTS idx_vectors_backend ON vectors(backend, model);
+CREATE INDEX IF NOT EXISTS idx_vectors_doc ON vectors(doc_id);
+`
+
+func (vs *VectorStore) createV23Schema() error {
+	_, err := vs.db.Exec(v23Schema)
 	return err
+}
+
+// ensureVectorsIndexes recreates the secondary indexes if a previous build
+// lost them (see migrateV22ToV23). Idempotent and row-preserving.
+func (vs *VectorStore) ensureVectorsIndexes() error {
+	if _, err := vs.db.Exec(vectorsIndexes); err != nil {
+		return fmt.Errorf("ensure vectors indexes: %w", err)
+	}
+	return nil
+}
+
+// migrateV22ToV23 adds the chunk column preservation-first: existing rows
+// keep their vectors as chunk 0 (they remain searchable immediately); a later
+// `reindex --vectors` re-chunks long documents for full coverage.
+func (vs *VectorStore) migrateV22ToV23() error {
+	tx, err := vs.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`ALTER TABLE vectors RENAME TO vectors_v22`); err != nil {
+		return fmt.Errorf("rename v22: %w", err)
+	}
+	// The rename carries idx_vectors_backend / idx_vectors_doc over to
+	// vectors_v22. Drop them here so v23Schema can create them on the new
+	// table; otherwise IF NOT EXISTS skips them and DROP TABLE vectors_v22
+	// below silently deletes both.
+	if _, err := tx.Exec(`
+		DROP INDEX IF EXISTS idx_vectors_backend;
+		DROP INDEX IF EXISTS idx_vectors_doc`); err != nil {
+		return fmt.Errorf("drop v22 indexes: %w", err)
+	}
+	if _, err := tx.Exec(v23Schema); err != nil {
+		return fmt.Errorf("create v23: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+		SELECT doc_id, 0, backend, model, dim, vector, created_at FROM vectors_v22`); err != nil {
+		return fmt.Errorf("copy rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE vectors_v22`); err != nil {
+		return fmt.Errorf("drop v22: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr,
+		"claudemem: migrated vectors table from v22 to v23 (%d existing rows kept as chunk 0)\n",
+		countRows(vs.db, "vectors"))
+	return nil
 }
 
 // migrateV21ToV22 is the preservation-first migration. Rather than dropping
@@ -253,28 +343,49 @@ func countRows(db *sql.DB, table string) int {
 	return n
 }
 
-// IndexDocument adds/updates a single document's vector under the active
-// (backend, model). Forgiving by design: embed failures are logged and
-// skipped so a down backend does not block the write path. The health
-// subsystem (P5) can heal missing rows later via `claudemem repair`.
+// IndexDocument adds/updates a single document's vector row(s) under the
+// active (backend, model). Long documents are split by ChunkForEmbed into one
+// row per chunk. Forgiving by design: embed failures are logged and skipped
+// so a down backend does not block the write path. The health subsystem (P5)
+// heals missing rows later via `claudemem repair`.
 func (vs *VectorStore) IndexDocument(id, text string) error {
-	vec, err := vs.embedder.Embed(TruncateForEmbed(text), InputTypeDocument)
+	chunks := ChunkForEmbed(text)
+	vecs, err := vs.embedder.EmbedBatch(chunks, InputTypeDocument)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "index %s skipped (%s:%s embed failed: %v) — run `claudemem repair` to retry\n",
 			shortID(id), vs.embedder.Name(), vs.embedder.Model(), err)
 		return nil
 	}
-	if vec == nil {
-		return nil // TF-IDF returns nil before vocabulary is built
+	// All-or-nothing per doc: a partially indexed doc would look covered to
+	// MissingDocumentIDs while silently losing its tail.
+	for _, vec := range vecs {
+		if vec == nil {
+			return nil // TF-IDF returns nil before vocabulary is built
+		}
 	}
 
-	_, err = vs.db.Exec(`
-		INSERT OR REPLACE INTO vectors
-			(doc_id, backend, model, dim, vector, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		id, vs.embedder.Name(), vs.embedder.Model(), len(vec),
-		vectorToBlob(vec), time.Now().UTC().Format(time.RFC3339))
-	return err
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := vs.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Delete-then-insert shrinks away stale chunk rows when a doc that used
+	// to be N chunks now fits in fewer.
+	if _, err := tx.Exec(`DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`,
+		id, backend, model); err != nil {
+		return fmt.Errorf("clear stale chunks for %s: %w", shortID(id), err)
+	}
+	for i, vec := range vecs {
+		if _, err := tx.Exec(`
+			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, i, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+			return fmt.Errorf("insert chunk %d for %s: %w", i, shortID(id), err)
+		}
+	}
+	return tx.Commit()
 }
 
 // RemoveDocument removes ALL vectors for a given doc (across any backends
@@ -317,7 +428,9 @@ func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 	}
 	defer rows.Close()
 
-	var results []SearchResult
+	// v23: a long document owns one row per chunk — aggregate to the doc by
+	// max similarity (a hit anywhere in the doc credits the doc).
+	best := map[string]float32{}
 	queryDim := len(queryVec)
 	for rows.Next() {
 		var id string
@@ -330,12 +443,19 @@ func (vs *VectorStore) Search(query string, limit int) ([]SearchResult, error) {
 			continue
 		}
 		sim := CosineSimilarity(queryVec, docVec)
-		if sim > 0.01 {
-			results = append(results, SearchResult{ID: id, Similarity: sim})
+		if sim > best[id] {
+			best[id] = sim
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows iter: %w", err)
+	}
+
+	var results []SearchResult
+	for id, sim := range best {
+		if sim > 0.01 {
+			results = append(results, SearchResult{ID: id, Similarity: sim})
+		}
 	}
 
 	sortResultsBySimilarity(results)
@@ -353,6 +473,7 @@ type Document struct {
 
 type indexedDocumentVector struct {
 	docID  string
+	chunk  int
 	vector []float32
 }
 
@@ -396,8 +517,8 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
 	if len(indexed) > 0 {
 		stmt, err := tx.Prepare(`
-			INSERT INTO vectors (doc_id, backend, model, dim, vector, created_at)
-			VALUES (?, ?, ?, ?, ?, ?)`)
+			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare insert: %w", err)
 		}
@@ -405,8 +526,8 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, doc := range indexed {
-			if _, err := stmt.Exec(doc.docID, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
-				return fmt.Errorf("insert vector for %s: %w", doc.docID, err)
+			if _, err := stmt.Exec(doc.docID, doc.chunk, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
+				return fmt.Errorf("insert vector for %s chunk %d: %w", doc.docID, doc.chunk, err)
 			}
 		}
 	}
@@ -429,35 +550,50 @@ func (vs *VectorStore) embedDocumentsForRebuild(documents []Document) ([]indexed
 
 	const batchSize = 50
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
-	indexed := make([]indexedDocumentVector, 0, len(documents))
 
-	for i := 0; i < len(documents); i += batchSize {
-		end := i + batchSize
-		if end > len(documents) {
-			end = len(documents)
+	// Flatten documents into chunk jobs: a long document contributes one job
+	// per chunk (v23), a short one exactly one job — batching stays dense.
+	type chunkJob struct {
+		docID string
+		chunk int
+		text  string
+	}
+	var jobs []chunkJob
+	for _, d := range documents {
+		for i, c := range ChunkForEmbed(d.Text) {
+			jobs = append(jobs, chunkJob{docID: d.ID, chunk: i, text: c})
 		}
-		batch := documents[i:end]
+	}
+
+	indexed := make([]indexedDocumentVector, 0, len(jobs))
+
+	for i := 0; i < len(jobs); i += batchSize {
+		end := i + batchSize
+		if end > len(jobs) {
+			end = len(jobs)
+		}
+		batch := jobs[i:end]
 
 		texts := make([]string, len(batch))
-		for j, d := range batch {
-			texts[j] = TruncateForEmbed(d.Text)
+		for j, jb := range batch {
+			texts[j] = jb.text
 		}
 		embeddings, err := vs.embedder.EmbedBatch(texts, InputTypeDocument)
 		if err != nil {
 			return nil, fmt.Errorf("embed batch at offset %d (%s:%s): %w", i, backend, model, err)
 		}
 		if len(embeddings) != len(batch) {
-			return nil, fmt.Errorf("embed batch at offset %d (%s:%s): got %d vectors for %d documents",
+			return nil, fmt.Errorf("embed batch at offset %d (%s:%s): got %d vectors for %d chunks",
 				i, backend, model, len(embeddings), len(batch))
 		}
 
-		for j, d := range batch {
+		for j, jb := range batch {
 			vec := embeddings[j]
 			if vec == nil {
 				return nil, fmt.Errorf("embed batch at offset %d (%s:%s): nil vector for %s",
-					i+j, backend, model, shortID(d.ID))
+					i+j, backend, model, shortID(jb.docID))
 			}
-			indexed = append(indexed, indexedDocumentVector{docID: d.ID, vector: vec})
+			indexed = append(indexed, indexedDocumentVector{docID: jb.docID, chunk: jb.chunk, vector: vec})
 		}
 	}
 
@@ -498,8 +634,10 @@ func (vs *VectorStore) MissingDocumentIDs(ids []string) (map[string]bool, error)
 }
 
 // UpsertDocuments embeds and stores the given documents under the active
-// backend+model without deleting existing rows. It is used by sync pull to
-// fill gaps cheaply after remote markdown changes.
+// backend+model without touching other documents' rows. It is used by sync
+// pull to fill gaps cheaply after remote markdown changes. Long documents are
+// chunked (v23); each doc is written delete-then-insert so a doc whose chunk
+// count shrank does not leave stale rows behind.
 func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 	if len(documents) == 0 {
 		return 0, nil
@@ -508,18 +646,32 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 		return 0, err
 	}
 
-	stmt, err := vs.db.Prepare(`
-		INSERT OR REPLACE INTO vectors (doc_id, backend, model, dim, vector, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return 0, fmt.Errorf("prepare insert: %w", err)
-	}
-	defer stmt.Close()
-
 	const batchSize = 50
 	now := time.Now().UTC().Format(time.RFC3339)
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
 	indexed := 0
+
+	// insertDoc replaces all of a doc's chunk rows atomically.
+	insertDoc := func(id string, vecs [][]float32) error {
+		tx, err := vs.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`,
+			id, backend, model); err != nil {
+			return fmt.Errorf("clear stale chunks for %s: %w", shortID(id), err)
+		}
+		for i, vec := range vecs {
+			if _, err := tx.Exec(`
+				INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				id, i, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
+				return fmt.Errorf("insert vector for %s chunk %d: %w", shortID(id), i, err)
+			}
+		}
+		return tx.Commit()
+	}
 
 	for i := 0; i < len(documents); i += batchSize {
 		end := i + batchSize
@@ -528,36 +680,78 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 		}
 		batch := documents[i:end]
 
-		texts := make([]string, len(batch))
-		for j, d := range batch {
-			texts[j] = TruncateForEmbed(d.Text)
+		// Flatten the batch into chunk jobs, remembering each job's doc.
+		var jobTexts []string
+		jobDoc := make([]int, 0, len(batch)) // job index -> index into batch
+		jobChunk := make([]int, 0, len(batch))
+		for di, d := range batch {
+			for ci, c := range ChunkForEmbed(d.Text) {
+				jobTexts = append(jobTexts, c)
+				jobDoc = append(jobDoc, di)
+				jobChunk = append(jobChunk, ci)
+			}
 		}
-		embeddings, err := vs.embedder.EmbedBatch(texts, InputTypeDocument)
+
+		embeddings, err := vs.embedder.EmbedBatch(jobTexts, InputTypeDocument)
 		if err != nil {
 			fmt.Fprintf(os.Stderr,
 				"embed batch failed at offset %d (%s:%s): %v — retrying per-doc\n",
 				i, backend, model, err)
 			for _, d := range batch {
-				vec, singleErr := vs.embedder.Embed(TruncateForEmbed(d.Text), InputTypeDocument)
-				if singleErr != nil || vec == nil {
+				chunks := ChunkForEmbed(d.Text)
+				vecs, singleErr := vs.embedder.EmbedBatch(chunks, InputTypeDocument)
+				if singleErr != nil {
 					fmt.Fprintf(os.Stderr, "  skip %s: %v\n", shortID(d.ID), singleErr)
 					continue
 				}
-				if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
-					return indexed, fmt.Errorf("insert vector for %s: %w", d.ID, err)
+				ok := true
+				for _, v := range vecs {
+					if v == nil {
+						ok = false
+						break
+					}
+				}
+				if !ok {
+					continue
+				}
+				if err := insertDoc(d.ID, vecs); err != nil {
+					return indexed, err
 				}
 				indexed++
 			}
 			continue
 		}
 
-		for j, d := range batch {
-			vec := embeddings[j]
+		// Group chunk vectors back per doc (preserving batch order).
+		perDoc := make([][]indexedDocumentVector, len(batch))
+		for j, vec := range embeddings {
 			if vec == nil {
 				continue
 			}
-			if _, err := stmt.Exec(d.ID, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
-				return indexed, fmt.Errorf("insert vector for %s: %w", d.ID, err)
+			di := jobDoc[j]
+			perDoc[di] = append(perDoc[di], indexedDocumentVector{docID: batch[di].ID, chunk: jobChunk[j], vector: vec})
+		}
+		for di, d := range batch {
+			chunks := perDoc[di]
+			if len(chunks) == 0 {
+				continue
+			}
+			vecs := make([][]float32, len(chunks))
+			for _, c := range chunks {
+				vecs[c.chunk] = c.vector
+			}
+			full := true
+			for _, v := range vecs {
+				if v == nil {
+					full = false
+					break
+				}
+			}
+			if !full {
+				continue
+			}
+			if err := insertDoc(d.ID, vecs); err != nil {
+				return indexed, err
 			}
 			indexed++
 		}
