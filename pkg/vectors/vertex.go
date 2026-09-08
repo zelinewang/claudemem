@@ -89,6 +89,13 @@ func (v *VertexEmbedder) Embed(text string, t InputType) ([]float32, error) {
 	return vecs[0], nil
 }
 
+// vertexMaxInstancesPerRequest is the hard cap of the text-embedding predict
+// endpoint ("supported range is from 1 (inclusive) to 251 (exclusive)").
+// v23 chunking hands EmbedBatch every chunk of a 50-document batch at once,
+// which crossed the cap in the field (256 instances, 2026-09-08); the split
+// lives here so every caller is safe.
+const vertexMaxInstancesPerRequest = 250
+
 func (v *VertexEmbedder) EmbedBatch(texts []string, t InputType) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -96,7 +103,27 @@ func (v *VertexEmbedder) EmbedBatch(texts []string, t InputType) ([][]float32, e
 	if err := v.validateConfig(); err != nil {
 		return nil, err
 	}
+	if len(texts) <= vertexMaxInstancesPerRequest {
+		return v.embedRequest(texts, t)
+	}
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += vertexMaxInstancesPerRequest {
+		end := start + vertexMaxInstancesPerRequest
+		if end > len(texts) {
+			end = len(texts)
+		}
+		part, err := v.embedRequest(texts[start:end], t)
+		if err != nil {
+			return nil, fmt.Errorf("vertex instances %d-%d of %d: %w", start, end, len(texts), err)
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
 
+// embedRequest performs one predict call; callers keep len(texts) within
+// vertexMaxInstancesPerRequest.
+func (v *VertexEmbedder) embedRequest(texts []string, t InputType) ([][]float32, error) {
 	instances := make([]vertexEmbeddingInstance, len(texts))
 	for i, text := range texts {
 		instances[i] = vertexEmbeddingInstance{
