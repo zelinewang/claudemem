@@ -22,7 +22,7 @@ var repairCmd = &cobra.Command{
 	Short: "Fix drift detected by `claudemem health`",
 	Long: `Run health checks, then offer to repair any detected drift:
   - FTS5 out of sync → run reindex --fts
-  - Vectors missing for active backend → run reindex --vectors
+  - Vectors missing for active backend → run reindex --vectors --missing
   - Orphan rows → delete
   - Stale vectors from inactive embedding backends → delete (only with --prune-stale)
 
@@ -94,16 +94,20 @@ func runRepair(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Fix 2: vectors missing for active backend → reindex vectors
+	// Fix 2: entries without a vector for the active backend → incremental
+	// backfill. Only the missing documents are embedded (IndexMissingVectors);
+	// a full ReindexVectors re-embeds the whole store, which on a 6k-document
+	// store is minutes of paid Vertex calls (and 429s) for a handful of gaps.
+	// TF-IDF still rebuilds in full underneath — it needs the whole corpus.
 	if !report.I3VectorsMatchActiveBackend && fileStore.HasVectorStore() {
-		prompt := fmt.Sprintf("Rebuild vector index for %s:%s?",
+		prompt := fmt.Sprintf("Backfill missing vectors for %s:%s?",
 			report.ActiveBackend, report.ActiveModel)
 		if confirmRepair(reader, prompt) {
-			count, err := fileStore.ReindexVectors()
+			count, err := fileStore.IndexMissingVectors()
 			if err != nil {
-				return fmt.Errorf("vector reindex: %w", err)
+				return fmt.Errorf("vector backfill: %w", err)
 			}
-			OutputText("  ✓ Vector index rebuilt (%d documents, backend: %s)",
+			OutputText("  ✓ Vector index backfilled (%d documents, backend: %s)",
 				count, fileStore.VectorBackend())
 			repairs++
 		}

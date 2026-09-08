@@ -94,10 +94,16 @@ func CheckHealth(in HealthInputs) (*HealthReport, error) {
 			r.EntriesTotal, r.FTSTotal))
 	}
 
-	// I3 — per-(backend, model) vector counts (compared to entries).
-	// v23: a long document owns one row per chunk, so parity is measured on
+	// I3 — per-(backend, model) coverage of entries.
+	// v23: a long document owns one row per chunk, so coverage is measured on
 	// DISTINCT doc_id (every entry covered by ≥1 chunk), not on row count.
-	rows, err := in.DB.Query(`SELECT backend, model, COUNT(DISTINCT doc_id) FROM vectors GROUP BY backend, model`)
+	// Rows whose doc_id no longer exists in entries (orphans, I4) are excluded:
+	// counted here they would mask a missing document one-for-one, and a fully
+	// covered store would report a negative delta (seen on the Mac, 2026-09-08).
+	rows, err := in.DB.Query(`
+		SELECT backend, model, COUNT(DISTINCT doc_id) FROM vectors
+		WHERE doc_id IN (SELECT id FROM entries)
+		GROUP BY backend, model`)
 	if err != nil {
 		return nil, fmt.Errorf("group vectors: %w", err)
 	}
@@ -118,7 +124,7 @@ func CheckHealth(in HealthInputs) (*HealthReport, error) {
 		r.I3VectorsMatchActiveBackend = active == r.EntriesTotal
 		if !r.I3VectorsMatchActiveBackend {
 			r.Issues = append(r.Issues, fmt.Sprintf(
-				"I3: active backend %s has %d vectors but %d entries expect them (delta %d). Run `claudemem repair` to backfill.",
+				"I3: active backend %s covers %d of %d entries (missing %d). Run `claudemem reindex --vectors --missing` or `claudemem repair`.",
 				key, active, r.EntriesTotal, r.EntriesTotal-active))
 		}
 	} else {
