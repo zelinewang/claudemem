@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,7 +75,7 @@ func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
 	writeNoteMarkdown(t, store, "one.md", "sync", "First", "first remote note")
 	writeNoteMarkdown(t, store, "two.md", "sync", "Second", "second remote note")
 
-	indexed, err := store.IndexMissingVectors()
+	indexed, _, err := store.IndexMissingVectors()
 	if err != nil {
 		t.Fatalf("IndexMissingVectors failed: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
 		t.Fatalf("embed calls after first pass = %d, want 2", embedder.embedded)
 	}
 
-	indexed, err = store.IndexMissingVectors()
+	indexed, _, err = store.IndexMissingVectors()
 	if err != nil {
 		t.Fatalf("second IndexMissingVectors failed: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
 	}
 
 	writeNoteMarkdown(t, store, "three.md", "sync", "Third", "third remote note")
-	indexed, err = store.IndexMissingVectors()
+	indexed, _, err = store.IndexMissingVectors()
 	if err != nil {
 		t.Fatalf("third IndexMissingVectors failed: %v", err)
 	}
@@ -572,5 +573,44 @@ func TestFileStore_DeleteNote(t *testing.T) {
 	_, err = store.GetNote(result.NoteID)
 	if err == nil {
 		t.Errorf("Note should not exist after deletion")
+	}
+}
+
+// storagePoisonEmbedder fails any batch that contains a "poison" text and
+// embeds everything else — simulates a backend that rejects one document
+// (oversize, policy, transient 4xx) after passing the availability check.
+type storagePoisonEmbedder struct{ storageCountingEmbedder }
+
+func (e *storagePoisonEmbedder) EmbedBatch(texts []string, t vectors.InputType) ([][]float32, error) {
+	for _, s := range texts {
+		if strings.Contains(s, "poison") {
+			return nil, fmt.Errorf("backend rejected a poisoned input")
+		}
+	}
+	return e.storageCountingEmbedder.EmbedBatch(texts, t)
+}
+
+// TestFileStore_IndexMissingVectorsReportsSkippedDocs (Codex P1 on PR #20):
+// the backfill must tell the caller how many documents were missing and how
+// many it actually embedded, so `reindex --vectors --missing` can exit
+// non-zero instead of printing success over a still-incomplete index.
+func TestFileStore_IndexMissingVectorsReportsSkippedDocs(t *testing.T) {
+	store := setupTestStore(t)
+	embedder := &storagePoisonEmbedder{storageCountingEmbedder{name: "fake-cloud", model: "test-v1", dim: 4}}
+	vs, err := vectors.NewVectorStore(store.db, embedder)
+	if err != nil {
+		t.Fatalf("NewVectorStore failed: %v", err)
+	}
+	store.vectorStore = vs
+
+	writeNoteMarkdown(t, store, "ok.md", "sync", "Fine", "an ordinary note")
+	writeNoteMarkdown(t, store, "bad.md", "sync", "Poisoned", "this note is poison for the backend")
+
+	indexed, missing, err := store.IndexMissingVectors()
+	if err != nil {
+		t.Fatalf("IndexMissingVectors returned error: %v", err)
+	}
+	if missing != 2 || indexed != 1 {
+		t.Fatalf("want missing=2 indexed=1, got missing=%d indexed=%d", missing, indexed)
 	}
 }

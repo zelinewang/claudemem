@@ -114,11 +114,14 @@ var syncPullCmd = &cobra.Command{
 			_ = store.InitVectorStore()
 		}
 		if store.HasVectorStore() {
-			n, err := store.IndexMissingVectors()
+			n, missing, err := store.IndexMissingVectors()
 			if err != nil {
 				return fmt.Errorf("vector catch-up post-pull: %w", err)
 			}
 			vectorsAdded = n
+			if n < missing {
+				fmt.Fprintf(os.Stderr, "⚠ vector catch-up embedded %d of %d missing documents; rerun `claudemem reindex --vectors --missing` once the backend recovers\n", n, missing)
+			}
 		}
 
 		if !quiet {

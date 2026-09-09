@@ -82,6 +82,8 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	reader := bufio.NewReader(os.Stdin)
 	repairs := 0
 
+	var partial error // set when the vector backfill embedded fewer docs than were missing
+
 	// Fix 1: FTS drift → reindex FTS
 	if !report.I1MarkdownMatchesEntries || !report.I2EntriesMatchesFTS {
 		if confirmRepair(reader, "Rebuild FTS5 index from markdown?") {
@@ -103,12 +105,18 @@ func runRepair(cmd *cobra.Command, args []string) error {
 		prompt := fmt.Sprintf("Backfill missing vectors for %s:%s?",
 			report.ActiveBackend, report.ActiveModel)
 		if confirmRepair(reader, prompt) {
-			count, err := fileStore.IndexMissingVectors()
+			indexed, missing, err := fileStore.IndexMissingVectors()
 			if err != nil {
 				return fmt.Errorf("vector backfill: %w", err)
 			}
-			OutputText("  ✓ Vector index backfilled (%d documents, backend: %s)",
-				count, fileStore.VectorBackend())
+			if perr := partialBackfillError(indexed, missing); perr != nil {
+				OutputText("  ⚠ Vector index backfilled %d of %d documents (backend: %s)",
+					indexed, missing, fileStore.VectorBackend())
+				partial = perr // keep repairing (orphans etc.), fail at the end
+			} else {
+				OutputText("  ✓ Vector index backfilled (%d documents, backend: %s)",
+					indexed, fileStore.VectorBackend())
+			}
 			repairs++
 		}
 	}
@@ -184,7 +192,9 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	} else {
 		OutputText("⚠ some drift remains, see `claudemem health --deep`")
 	}
-	return nil
+	// A partial backfill is not a successful repair: exit non-zero after the
+	// remaining fixes and the health re-run so automation sees it.
+	return partial
 }
 
 func confirmRepair(reader *bufio.Reader, prompt string) bool {
