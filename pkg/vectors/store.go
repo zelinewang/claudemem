@@ -680,12 +680,16 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 		}
 		batch := documents[i:end]
 
-		// Flatten the batch into chunk jobs, remembering each job's doc.
+		// Flatten the batch into chunk jobs, remembering each job's doc and
+		// how many chunks each doc expects back.
 		var jobTexts []string
 		jobDoc := make([]int, 0, len(batch)) // job index -> index into batch
 		jobChunk := make([]int, 0, len(batch))
+		expected := make([]int, len(batch)) // chunks per doc
 		for di, d := range batch {
-			for ci, c := range ChunkForEmbed(d.Text) {
+			chunks := ChunkForEmbed(d.Text)
+			expected[di] = len(chunks)
+			for ci, c := range chunks {
 				jobTexts = append(jobTexts, c)
 				jobDoc = append(jobDoc, di)
 				jobChunk = append(jobChunk, ci)
@@ -722,25 +726,25 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 			continue
 		}
 
-		// Group chunk vectors back per doc (preserving batch order).
-		perDoc := make([][]indexedDocumentVector, len(batch))
+		// Group chunk vectors back per doc, sized to the EXPECTED chunk count
+		// so a positional nil (a backend that leaves a hole instead of
+		// erroring) rejects the whole document rather than storing a
+		// shorter one that health and MissingDocumentIDs would call covered.
+		perDoc := make([][][]float32, len(batch))
+		for di := range batch {
+			perDoc[di] = make([][]float32, expected[di])
+		}
 		for j, vec := range embeddings {
-			if vec == nil {
-				continue
+			if j >= len(jobDoc) {
+				break
 			}
-			di := jobDoc[j]
-			perDoc[di] = append(perDoc[di], indexedDocumentVector{docID: batch[di].ID, chunk: jobChunk[j], vector: vec})
+			if vec != nil {
+				perDoc[jobDoc[j]][jobChunk[j]] = vec
+			}
 		}
 		for di, d := range batch {
-			chunks := perDoc[di]
-			if len(chunks) == 0 {
-				continue
-			}
-			vecs := make([][]float32, len(chunks))
-			for _, c := range chunks {
-				vecs[c.chunk] = c.vector
-			}
-			full := true
+			vecs := perDoc[di]
+			full := len(vecs) > 0
 			for _, v := range vecs {
 				if v == nil {
 					full = false
@@ -748,6 +752,7 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 				}
 			}
 			if !full {
+				fmt.Fprintf(os.Stderr, "  skip %s: backend returned %d of %d chunk vectors\n", shortID(d.ID), countNonNil(vecs), len(vecs))
 				continue
 			}
 			if err := insertDoc(d.ID, vecs); err != nil {
@@ -871,6 +876,16 @@ func (vs *VectorStore) saveIndexBackend() {
 }
 
 // --- helpers ---
+
+func countNonNil(vecs [][]float32) int {
+	n := 0
+	for _, v := range vecs {
+		if v != nil {
+			n++
+		}
+	}
+	return n
+}
 
 func shortID(id string) string {
 	if len(id) >= 8 {
