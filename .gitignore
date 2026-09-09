@@ -1,5 +1,6 @@
 # Binaries (root only, not skills/claudemem/)
 /claudemem
+/claudemem-*
 *.exe
 *.dll
 *.so

@@ -260,8 +260,15 @@ git clone https://github.com/zelinewang/claudemem.git
 cd claudemem
 make build          # single static binary (CGO_ENABLED=0, pure Go)
 make install        # install to ~/.local/bin/
+make deploy HOST=my-server   # cross-compile + staged scp + atomic remote install
 ./claudemem --version
 ```
+
+Both `install` and `deploy` finish by running `~/.claudemem/ensure-wrapper.sh`
+(locally / on the remote) if it exists and is executable — an optional user
+hook for machines that keep a credential-injection wrapper in front of the
+real binary, which a plain install would otherwise clobber. Absent the hook,
+they behave exactly as before.
 
 Requires Go 1.25+. The build is a single pure-Go binary with no runtime
 dependencies; goreleaser (`.goreleaser.yml`) cross-compiles linux/darwin/windows
