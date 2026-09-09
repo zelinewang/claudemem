@@ -436,34 +436,40 @@ func (fs *FileStore) collectVectorDocuments() []vectors.Document {
 // IndexMissingVectors embeds only documents that do not yet have a vector row
 // for the active backend. TF-IDF still needs a full corpus rebuild because its
 // vocabulary is corpus-wide.
-func (fs *FileStore) IndexMissingVectors() (int, error) {
+// IndexMissingVectors embeds only the documents that have no vector for the
+// active backend. It returns how many it embedded and how many were missing;
+// indexed < missing means the backend skipped documents (logged per document
+// on stderr) and the caller should report a partial result, not success.
+func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 	if fs.vectorStore == nil {
-		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
+		return 0, 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
 	docs := fs.collectVectorDocuments()
 	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
+		// TF-IDF needs the whole corpus; a "backfill" is always a full rebuild.
 		if err := fs.vectorStore.RebuildIndex(docs); err != nil {
-			return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
+			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
-		return len(docs), nil
+		return len(docs), len(docs), nil
 	}
 
 	ids := make([]string, 0, len(docs))
 	for _, doc := range docs {
 		ids = append(ids, doc.ID)
 	}
-	missing, err := fs.vectorStore.MissingDocumentIDs(ids)
+	missingIDs, err := fs.vectorStore.MissingDocumentIDs(ids)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	missingDocs := make([]vectors.Document, 0, len(missing))
+	missingDocs := make([]vectors.Document, 0, len(missingIDs))
 	for _, doc := range docs {
-		if missing[doc.ID] {
+		if missingIDs[doc.ID] {
 			missingDocs = append(missingDocs, doc)
 		}
 	}
-	return fs.vectorStore.UpsertDocuments(missingDocs)
+	indexed, err = fs.vectorStore.UpsertDocuments(missingDocs)
+	return indexed, len(missingDocs), err
 }
 
 // ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.

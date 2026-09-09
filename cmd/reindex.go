@@ -30,6 +30,9 @@ Examples:
   claudemem reindex --vectors --missing # Embed only documents missing a vector
   claudemem reindex --all               # Rebuild both indexes`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateReindexFlags(reindexVectors, reindexAll, reindexMissing); err != nil {
+			return err
+		}
 		store, err := getFileStore()
 		if err != nil {
 			return err
@@ -64,12 +67,12 @@ Examples:
 
 			backend := store.VectorBackend()
 			if reindexMissing {
-				count, err := store.IndexMissingVectors()
+				indexed, missing, err := store.IndexMissingVectors()
 				if err != nil {
 					return fmt.Errorf("vector backfill failed: %w", err)
 				}
-				OutputText("Vector index backfilled: %d missing documents embedded (backend: %s)", count, backend)
-				return nil
+				OutputText("Vector index backfilled: %d of %d missing documents embedded (backend: %s)", indexed, missing, backend)
+				return partialBackfillError(indexed, missing)
 			}
 			count, err := store.ReindexVectors()
 			if err != nil {
@@ -87,4 +90,24 @@ func init() {
 	reindexCmd.Flags().BoolVar(&reindexAll, "all", false, "Rebuild both FTS5 and vector indexes")
 	reindexCmd.Flags().BoolVar(&reindexMissing, "missing", false, "With --vectors: embed only documents that have no vector yet (incremental backfill)")
 	rootCmd.AddCommand(reindexCmd)
+}
+
+// validateReindexFlags rejects --missing without a vector mode: --missing is a
+// modifier of vector indexing, and silently rebuilding only FTS behind a
+// success message would leave every missing vector untouched.
+func validateReindexFlags(vectors, all, missing bool) error {
+	if missing && !vectors && !all {
+		return fmt.Errorf("--missing only applies to vector indexing; add --vectors (or --all)")
+	}
+	return nil
+}
+
+// partialBackfillError turns "embedded fewer than were missing" into a
+// non-zero exit so cron/sync automation never records an incomplete semantic
+// index as healthy. Per-document reasons were already logged on stderr.
+func partialBackfillError(indexed, missing int) error {
+	if indexed >= missing {
+		return nil
+	}
+	return fmt.Errorf("%d of %d missing documents could not be embedded (see stderr); rerun `claudemem reindex --vectors --missing` once the backend recovers", missing-indexed, missing)
 }

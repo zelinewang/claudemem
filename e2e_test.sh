@@ -262,6 +262,34 @@ else
   fail "capture enabled" "notes before=$NOTES_BEFORE after=$NOTES_AFTER"
 fi
 
+# --- Test 24: repair fills a missing vector and clears an orphan row (tfidf, no network) ---
+echo ""
+echo "Test 24: repair backfills a missing vector and removes an orphan row"
+RSTORE="$STORE/repair-scenario"
+mkdir -p "$RSTORE"
+$BINARY --store "$RSTORE" config set features.semantic_search true > /dev/null 2>&1
+$BINARY --store "$RSTORE" config set embedding.backend tfidf > /dev/null 2>&1
+# three deliberately dissimilar notes: note add merges look-alike titles within a category
+$BINARY --store "$RSTORE" note add e2e --title "Gateway timeout runbook" --content "raise the upstream timeout and retry idempotent calls" > /dev/null 2>&1
+$BINARY --store "$RSTORE" note add e2e --title "Vector chunking design" --content "long documents split into overlapping chunks under a token budget" > /dev/null 2>&1
+$BINARY --store "$RSTORE" reindex --vectors > /dev/null 2>&1
+# a document with no vector: added while semantic search is switched off
+$BINARY --store "$RSTORE" config set features.semantic_search false > /dev/null 2>&1
+$BINARY --store "$RSTORE" note add e2e --title "Browser credential expiry" --content "stored token lapses after seven days and must be re-injected" > /dev/null 2>&1
+$BINARY --store "$RSTORE" config set features.semantic_search true > /dev/null 2>&1
+# an orphan vector row: the note's markdown goes away, FTS is rebuilt, its vector row stays behind
+GONE=$(ls "$RSTORE"/notes/e2e/*gateway* 2>/dev/null | head -1)
+mv "$GONE" "$RSTORE/gateway-moved.md"
+$BINARY --store "$RSTORE" reindex > /dev/null 2>&1
+BEFORE=$($BINARY --store "$RSTORE" health 2>&1)
+REPAIR=$($BINARY --store "$RSTORE" repair --yes 2>&1)
+AFTER=$($BINARY --store "$RSTORE" health --deep 2>&1)
+if echo "$BEFORE" | grep -q "missing 1" && echo "$REPAIR" | grep -q "Backfill missing vectors" && echo "$REPAIR" | grep -q "healthy now" && echo "$AFTER" | grep -q "✓ healthy"; then
+  pass "repair backfills the missing vector and clears the orphan"
+else
+  fail "repair scenario" "before=[$(echo "$BEFORE" | head -2 | tr '\n' ' ')] repair=[$(echo "$REPAIR" | tr '\n' ' ' | cut -c1-240)] after=[$(echo "$AFTER" | head -2 | tr '\n' ' ')]"
+fi
+
 # --- Cleanup ---
 rm -rf "$STORE"
 
