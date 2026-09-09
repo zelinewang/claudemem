@@ -25,6 +25,7 @@ type HealthReport struct {
 
 	// Per-invariant status. False = drift detected.
 	I1MarkdownMatchesEntries    bool
+	I0IndexNewerThanBinary      bool // set by the CLI when NewVectorStore refused a newer index (zero value = fine)
 	I2EntriesMatchesFTS         bool
 	I3VectorsMatchActiveBackend bool
 	I4NoOrphanRows              bool // deep only
@@ -41,6 +42,7 @@ type HealthReport struct {
 // Healthy reports whether all populated invariants pass.
 func (h *HealthReport) Healthy() bool {
 	base := h.I1MarkdownMatchesEntries &&
+		!h.I0IndexNewerThanBinary &&
 		h.I2EntriesMatchesFTS &&
 		h.I3VectorsMatchActiveBackend &&
 		h.I6ActiveBackendConfigured

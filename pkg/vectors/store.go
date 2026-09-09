@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -84,24 +85,71 @@ func (vs *VectorStore) initSchema() error {
 		return err
 	}
 
+	// Refuse a store written by a newer claudemem before touching anything.
+	if stamped := readMetaOrEmpty(vs.db, vectorsSchemaKey); stamped != "" {
+		n, convErr := strconv.Atoi(stamped)
+		if convErr != nil {
+			return fmt.Errorf("vector_meta.%s is %q, not a number", vectorsSchemaKey, stamped)
+		}
+		if n > currentVectorsSchema {
+			return &ErrIndexNewerThanBinary{IndexSchema: n, BinarySchema: currentVectorsSchema}
+		}
+	}
+
 	kind, err := detectVectorsSchema(vs.db)
 	if err != nil {
 		return err
 	}
 	switch kind {
 	case schemaNone:
-		return vs.createV23Schema()
+		err = vs.createV23Schema()
 	case schemaV21:
-		if err := vs.migrateV21ToV22(); err != nil {
-			return err
+		if err = vs.migrateV21ToV22(); err == nil {
+			err = vs.migrateV22ToV23()
 		}
-		return vs.migrateV22ToV23()
 	case schemaV22:
-		return vs.migrateV22ToV23()
+		err = vs.migrateV22ToV23()
 	case schemaV23:
-		return vs.ensureVectorsIndexes()
+		err = vs.ensureVectorsIndexes()
+	default:
+		return fmt.Errorf("unknown vectors schema kind %d", kind)
 	}
-	return fmt.Errorf("unknown vectors schema kind %d", kind)
+	if err != nil {
+		return err
+	}
+	return vs.stampVectorsSchema()
+}
+
+// stampVectorsSchema records the layout this binary just created, migrated
+// to, or verified, so an older binary can refuse the store later.
+func (vs *VectorStore) stampVectorsSchema() error {
+	if _, err := vs.db.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES (?, ?)`,
+		vectorsSchemaKey, strconv.Itoa(currentVectorsSchema)); err != nil {
+		return fmt.Errorf("stamp vectors schema: %w", err)
+	}
+	return nil
+}
+
+// currentVectorsSchema is the newest vectors table layout this binary can
+// read and write. Every store is stamped with it in vector_meta so that a
+// binary which knows an OLDER layout refuses to open a newer index instead
+// of writing into a table it does not understand (2026-09-03: a v22 build
+// installed over a v23-migrated store failed every vector INSERT for five
+// days while reporting nonsense health numbers).
+const currentVectorsSchema = 23
+
+const vectorsSchemaKey = "vectors_schema"
+
+// ErrIndexNewerThanBinary is returned by NewVectorStore when the index was
+// written by a claudemem that knows a newer vectors schema than this one.
+type ErrIndexNewerThanBinary struct {
+	IndexSchema  int
+	BinarySchema int
+}
+
+func (e *ErrIndexNewerThanBinary) Error() string {
+	return fmt.Sprintf("index vectors schema %d is newer than this claudemem (knows schema %d): upgrade claudemem before running anything that touches vectors, or rebuild the index with a build that knows schema %d",
+		e.IndexSchema, e.BinarySchema, e.IndexSchema)
 }
 
 type vectorsSchemaKind int
