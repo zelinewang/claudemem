@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/zelinewang/claudemem/pkg/config"
@@ -103,5 +105,24 @@ func TestStaleVectorSummary(t *testing.T) {
 	r3.VectorTotals = map[string]int{"tfidf:tfidf": 10}
 	if total, backends := staleVectorSummary(r3); total != 0 || backends != 0 {
 		t.Fatalf("active-only must report zero, got total=%d backends=%d", total, backends)
+	}
+}
+
+// TestIndexNewerIssue: when the vector store refuses to open because the
+// index carries a newer schema, health must show it as its own invariant
+// (I0) and count as unhealthy instead of silently skipping vector checks.
+func TestIndexNewerIssue(t *testing.T) {
+	msg, ok := indexNewerIssue(&vectors.ErrIndexNewerThanBinary{IndexSchema: 24, BinarySchema: 23})
+	if !ok {
+		t.Fatal("ErrIndexNewerThanBinary must be recognised")
+	}
+	if !strings.HasPrefix(msg, "I0:") || !strings.Contains(msg, "24") || !strings.Contains(msg, "upgrade") {
+		t.Fatalf("want an I0 issue naming schema 24 and asking to upgrade, got %q", msg)
+	}
+	if _, ok := indexNewerIssue(fmt.Errorf("connection refused")); ok {
+		t.Fatal("other init errors are not I0")
+	}
+	if _, ok := indexNewerIssue(nil); ok {
+		t.Fatal("nil is not an issue")
 	}
 }

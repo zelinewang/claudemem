@@ -19,7 +19,7 @@ func getFileStoreWithVectors() (*storage.FileStore, error) {
 	if cfgErr == nil && cfg.GetString("features.semantic_search") == "true" {
 		// Best effort: if vector store init fails, we still return a working store.
 		// Vector indexing will silently be skipped (vectorStore remains nil).
-		_ = store.InitVectorStore()
+		warnIfIndexNewer(store.InitVectorStore())
 	}
 
 	return store, nil

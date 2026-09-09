@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -67,8 +68,9 @@ func runHealth(cmd *cobra.Command, args []string) error {
 	// I3/I5 drift for vectors they never asked for. Matches the precedent
 	// set in cmd/reindex.go and cmd/search.go.
 	cfg, _ := config.Load(getStoreDir())
+	var initErr error
 	if cfg != nil && cfg.GetBool("features.semantic_search") {
-		_ = fileStore.InitVectorStore()
+		initErr = fileStore.InitVectorStore()
 	}
 
 	in := vectors.HealthInputs{
@@ -92,6 +94,12 @@ func runHealth(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		return fmt.Errorf("health check failed: %w", err)
+	}
+	// I0: the index was written by a newer claudemem. Every vector invariant
+	// below was skipped (no vector store), so say why, first, and fail.
+	if msg, ok := indexNewerIssue(initErr); ok {
+		report.I0IndexNewerThanBinary = true
+		report.Issues = append([]string{msg}, report.Issues...)
 	}
 	applyEmbeddingConfigHealth(report, cfg)
 
@@ -274,4 +282,23 @@ func init() {
 	healthCmd.Flags().BoolVar(&healthDeep, "deep", false, "Deep mode: also check for orphans + config match (I4/I5)")
 	healthCmd.Flags().BoolVar(&healthTrafficLight, "traffic-light", false, "Hook-safe one-line GREEN/YELLOW/RED health status; always exits 0")
 	rootCmd.AddCommand(healthCmd)
+}
+
+// indexNewerIssue turns the vector store's refusal to open a newer index into
+// the I0 health issue; any other init error is reported elsewhere.
+func indexNewerIssue(err error) (string, bool) {
+	var newer *vectors.ErrIndexNewerThanBinary
+	if err == nil || !errors.As(err, &newer) {
+		return "", false
+	}
+	return "I0: " + newer.Error(), true
+}
+
+// warnIfIndexNewer prints the I0 condition on stderr for commands that carry
+// on without vectors (note add, session save, sync), so the skipped vector
+// write is never silent.
+func warnIfIndexNewer(err error) {
+	if msg, ok := indexNewerIssue(err); ok {
+		fmt.Fprintf(os.Stderr, "⚠ %s — vectors NOT updated by this command\n", msg)
+	}
 }

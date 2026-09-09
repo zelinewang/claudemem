@@ -50,7 +50,13 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	// user never asked for. Keeps both commands consistent.
 	cfg, _ := config.Load(getStoreDir())
 	if cfg != nil && cfg.GetBool("features.semantic_search") {
-		_ = fileStore.InitVectorStore()
+		if initErr := fileStore.InitVectorStore(); initErr != nil {
+			if msg, ok := indexNewerIssue(initErr); ok {
+				// Never "repair" an index this binary cannot read: every fix
+				// would be a write into a layout it does not know.
+				return fmt.Errorf("%s — refusing to repair", msg)
+			}
+		}
 	}
 
 	in := vectors.HealthInputs{
