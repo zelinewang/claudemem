@@ -111,7 +111,7 @@ var syncPullCmd = &cobra.Command{
 		vectorsAdded := 0
 		cfg, _ := config.Load(getStoreDir())
 		if cfg != nil && cfg.GetBool("features.semantic_search") {
-			_ = store.InitVectorStore()
+			warnIfIndexNewer(store.InitVectorStore())
 		}
 		if store.HasVectorStore() {
 			n, missing, err := store.IndexMissingVectors()
