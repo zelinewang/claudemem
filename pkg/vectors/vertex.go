@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -169,11 +170,25 @@ func (v *VertexEmbedder) embedRequest(texts []string, t InputType) ([][]float32,
 		return nil, fmt.Errorf("expected %d embeddings, got %d", len(texts), len(parsed.Predictions))
 	}
 	out := make([][]float32, len(parsed.Predictions))
+	truncated, maxTokens := 0, 0
 	for i, prediction := range parsed.Predictions {
 		if len(prediction.Embeddings.Values) == 0 {
 			return nil, fmt.Errorf("vertex returned empty embedding at index %d", i)
 		}
 		out[i] = prediction.Embeddings.Values
+		if st := prediction.Embeddings.Statistics; st.Truncated {
+			truncated++
+			if st.TokenCount > maxTokens {
+				maxTokens = st.TokenCount
+			}
+		}
+	}
+	if truncated > 0 {
+		// The API silently embeds only the head of an over-limit input; say so,
+		// because the tail of that chunk is now invisible to semantic search
+		// and the chunk estimator undercounted this text.
+		vertexWarnf("vertex: %d of %d inputs exceeded the model's token limit and were truncated by the API (largest %d tokens); their tails are not embedded\n",
+			truncated, len(texts), maxTokens)
 	}
 	return out, nil
 }
@@ -275,5 +290,20 @@ type vertexPredictResponse struct {
 }
 
 type vertexPrediction struct {
-	Embeddings geminiEmbeddingValues `json:"embeddings"`
+	Embeddings vertexEmbeddings `json:"embeddings"`
 }
+
+type vertexEmbeddings struct {
+	Values     []float32        `json:"values"`
+	Statistics vertexStatistics `json:"statistics"`
+}
+
+// vertexStatistics is what the API reports per input; Truncated means the
+// input exceeded the model's token limit and only its head was embedded.
+type vertexStatistics struct {
+	TokenCount int  `json:"token_count"`
+	Truncated  bool `json:"truncated"`
+}
+
+// vertexWarnf reports API-side truncation. Swappable so tests can observe it.
+var vertexWarnf = func(format string, a ...any) { fmt.Fprintf(os.Stderr, format, a...) }

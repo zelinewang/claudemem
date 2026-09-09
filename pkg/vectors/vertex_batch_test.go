@@ -2,6 +2,7 @@ package vectors
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -77,6 +78,45 @@ func TestVertex_EmbedBatchSplitsAtInstanceLimit(t *testing.T) {
 	for i := range want {
 		if sizes[i] != want[i] {
 			t.Fatalf("want request sizes %v, got %v", want, sizes)
+		}
+	}
+}
+
+// TestVertex_EmbedBatchWarnsWhenAPITruncates: gemini-embedding-001 does not
+// reject an over-limit input — it embeds the first 2,048 tokens and reports
+// statistics.truncated=true (measured 2026-09-09: 5,919 UUID chars →
+// token_count 5380, truncated). Silent truncation is exactly the coverage
+// loss v23 chunking exists to prevent, so the embedder must surface it.
+func TestVertex_EmbedBatchWarnsWhenAPITruncates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"predictions":[
+			{"embeddings":{"values":[1],"statistics":{"token_count":5380,"truncated":true}}},
+			{"embeddings":{"values":[2],"statistics":{"token_count":12,"truncated":false}}}]}`))
+	}))
+	defer srv.Close()
+
+	var warnings []string
+	orig := vertexWarnf
+	vertexWarnf = func(format string, a ...any) { warnings = append(warnings, fmt.Sprintf(format, a...)) }
+	defer func() { vertexWarnf = orig }()
+
+	emb := NewVertexEmbedder("test-project", "us-central1", "gemini-embedding-001", 1).
+		WithBaseURL(srv.URL).
+		WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test"}))
+	out, err := emb.EmbedBatch([]string{"dense uuid text", "short"}, InputTypeDocument)
+	if err != nil {
+		t.Fatalf("EmbedBatch: %v", err)
+	}
+	if len(out) != 2 || out[0][0] != 1 || out[1][0] != 2 {
+		t.Fatalf("vectors must still be returned in order, got %v", out)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want exactly one truncation warning, got %d: %v", len(warnings), warnings)
+	}
+	for _, needle := range []string{"1 of 2", "truncated", "5380"} {
+		if !strings.Contains(warnings[0], needle) {
+			t.Fatalf("warning should mention %q, got %q", needle, warnings[0])
 		}
 	}
 }
