@@ -26,7 +26,7 @@ Captures and retrieves knowledge across conversations. Two behaviors:
 
 If `claudemem` is not on PATH:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zelinewang/claudemem/main/skills/claudemem/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zelinewang/claudemem/master/skills/claudemem/scripts/install.sh | bash
 ```
 
 ## CLI Reference

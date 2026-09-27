@@ -1,6 +1,6 @@
 #!/bin/bash
 # claudemem universal installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/zelinewang/claudemem/main/skills/claudemem/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/zelinewang/claudemem/master/skills/claudemem/scripts/install.sh | bash
 
 set -e
 
