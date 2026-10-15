@@ -568,14 +568,31 @@ func sameStoreDir(a, b string) bool {
 }
 
 // StoresOverlap reports whether two store directories are one, or one sits inside the other, after
-// symlinks are resolved. Such stores share files, so neither move nor a store read across them is
-// allowed.
+// symlinks are resolved and also through a bind mount or another alias that only the device and inode
+// numbers show. Such stores share files, so neither move nor a store read across them is allowed.
 func StoresOverlap(a, b string) bool {
 	if sameStoreDir(a, b) {
 		return true
 	}
 	ra, rb := resolvedDir(a), resolvedDir(b)
-	return isWithin(ra, rb) || isWithin(rb, ra)
+	return isWithin(ra, rb) || isWithin(rb, ra) || insideByInode(ra, b) || insideByInode(rb, a)
+}
+
+// insideByInode reports whether dir or one of its ancestors is the directory other (same device and
+// inode): dir is reached through an alias of other, such as a bind mount.
+func insideByInode(dir, other string) bool {
+	oi, err := os.Stat(other)
+	if err != nil {
+		return false
+	}
+	for d := dir; ; d = filepath.Dir(d) {
+		if di, err := os.Stat(d); err == nil && os.SameFile(di, oi) {
+			return true
+		}
+		if filepath.Dir(d) == d {
+			return false
+		}
+	}
 }
 
 // isWithin reports whether path is dir or lies under it (both resolved, absolute).

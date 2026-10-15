@@ -36,7 +36,8 @@ there, the next free one), durably and never over another file, then its index
 rows; only then does it leave this store. A run that stops half way leaves each
 entry whole in one store or both, and running the same file again finishes it.
 Two different files under one id, a file reached through a symlink or a bind
-mount between the stores, and stores that overlap are refused. Notes move first, then sessions. A
+mount between the stores, and stores that overlap (also through a bind mount)
+are refused. Notes move first, then sessions. A
 session moves only when every note it lists under Related Notes (a heading with
 that title at any level, in any case, with or without a colon) is in the target
 or moves in the same run, since a session file names its related notes by title;
