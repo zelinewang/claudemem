@@ -452,10 +452,13 @@ func (fs *FileStore) RemoveOrphanRows() (int, error) {
 	}
 	defer unlock()
 	removed := 0
-	for _, del := range []struct{ what, stmt string }{
+	deletes := []struct{ what, stmt string }{
 		{"FTS", `DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM entries)`},
-		{"vector", `DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`},
-	} {
+	}
+	if hasVectorsByDoc(fs.db) { // a store that never ran semantic search has no vectors table
+		deletes = append(deletes, struct{ what, stmt string }{"vector", `DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`})
+	}
+	for _, del := range deletes {
 		res, err := fs.db.Exec(del.stmt)
 		if err != nil {
 			return removed, fmt.Errorf("delete orphan %s rows: %w", del.what, err)

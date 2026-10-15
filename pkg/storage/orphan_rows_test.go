@@ -64,3 +64,18 @@ func TestRemoveOrphanRows_RemovesOnlyOrphansAndWaitsForTheLock(t *testing.T) {
 		}
 	}
 }
+
+// A store that never ran semantic search has no vectors table: only its search rows are checked.
+func TestRemoveOrphanRows_WithoutAVectorsTable(t *testing.T) {
+	store := setupTestStore(t)
+	gone := addTaggedNote(t, store, "misc", "Gone checklist", "text of the gone checklist", "team")
+	if _, err := store.db.Exec(`DELETE FROM entries WHERE id = ?`, gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	if hasVectorsByDoc(store.db) {
+		t.Fatal("the test store has a vectors table")
+	}
+	if n, err := store.RemoveOrphanRows(); err != nil || n != 1 {
+		t.Errorf("RemoveOrphanRows = %d, %v; want its 1 search row", n, err)
+	}
+}
