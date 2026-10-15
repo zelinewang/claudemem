@@ -194,10 +194,10 @@ func (fs *FileStore) GetNote(id string) (*models.Note, error) {
 	return fs.GetNoteWithTags(id, nil)
 }
 
-// GetNoteWithTags is GetNote restricted to the notes carrying every required tag. A note without
-// them is reported exactly as an absent id, so the error says nothing about it; a prefix is
-// matched only among the tagged notes. The file's own tags are checked too: when a stale index row
-// still lists a tag the file no longer has, the file wins.
+// GetNoteWithTags is GetNote restricted to the notes carrying every required tag: a prefix is
+// matched only among the tagged notes, and the file's own tags are checked too (when a stale index
+// row still lists a tag the file no longer has, the file wins). A note that exists without the tags
+// is reported as such (*MissingTagsError), not as an absent id: tags filter, they do not hide entries.
 func (fs *FileStore) GetNoteWithTags(id string, required []string) (*models.Note, error) {
 	tagFilter, tagArgs := tagsWhere("tags", required)
 	var fpath string
@@ -209,6 +209,9 @@ func (fs *FileStore) GetNoteWithTags(id string, required []string) (*models.Note
 	`, append([]interface{}{id, id}, tagArgs...)...).Scan(&fpath)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			if exists, existsErr := fs.entryExists("note", id); existsErr == nil && exists && len(required) > 0 {
+				return nil, &MissingTagsError{Kind: "note", ID: id, Tags: required}
+			}
 			return nil, fmt.Errorf("note not found: %s", id)
 		}
 		return nil, fmt.Errorf("failed to query note: %w", err)
@@ -219,7 +222,7 @@ func (fs *FileStore) GetNoteWithTags(id string, required []string) (*models.Note
 		return nil, err
 	}
 	if !HasAllTags(note.Tags, required) {
-		return nil, fmt.Errorf("note not found: %s", id)
+		return nil, &MissingTagsError{Kind: "note", ID: id, Tags: required}
 	}
 	return note, nil
 }

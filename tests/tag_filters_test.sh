@@ -76,10 +76,11 @@ IDS=$(BJ search tagkw --type session --tag team | json "','.join(r['id'] for r i
     || fail "search --type session --tag" "ids=[$IDS]"
 ERR_UNTAGGED=$(B session get "${S_PERSONAL:0:8}" --tag team 2>&1 >/dev/null; echo "exit=$?")
 ERR_ABSENT=$(B session get ffffffff --tag team 2>&1 >/dev/null; echo "exit=$?")
-if grep -q "session not found" <<<"$ERR_UNTAGGED" && [ "${ERR_ABSENT//ffffffff/${S_PERSONAL:0:8}}" = "$ERR_UNTAGGED" ] && ! grep -q "Secret" <<<"$ERR_UNTAGGED"; then
-    pass "session get --tag on a personal session reads exactly like an absent id"
+if grep -q "session ${S_PERSONAL:0:8} does not carry the tag team" <<<"$ERR_UNTAGGED" && grep -q "exit=1" <<<"$ERR_UNTAGGED" \
+    && grep -q "session not found: ffffffff" <<<"$ERR_ABSENT"; then
+    pass "session get --tag on a session without the tag says so; an absent id is not found"
 else
-    fail "session get --tag (untagged)" "$ERR_UNTAGGED"
+    fail "session get --tag (untagged)" "[$ERR_UNTAGGED] [$ERR_ABSENT]"
 fi
 
 echo ""
@@ -89,10 +90,11 @@ grep -q "Deploy runbook" <<<"$OUT" \
     && pass "note get --tag prints a shared note" || fail "note get --tag (shared)" "$OUT"
 ERR_UNTAGGED=$(B note get "$N_PERSONAL" --tag team 2>&1 >/dev/null; echo "exit=$?")
 ERR_ABSENT=$(B note get ffffffff-ffff-ffff-ffff-ffffffffffff --tag team 2>&1 >/dev/null; echo "exit=$?")
-if grep -q "note not found" <<<"$ERR_UNTAGGED" && [ "${ERR_ABSENT//ffffffff-ffff-ffff-ffff-ffffffffffff/$N_PERSONAL}" = "$ERR_UNTAGGED" ] && ! grep -q "Private" <<<"$ERR_UNTAGGED"; then
-    pass "note get --tag on a personal note reads exactly like an absent id"
+if grep -q "note $N_PERSONAL does not carry the tag team" <<<"$ERR_UNTAGGED" && grep -q "exit=1" <<<"$ERR_UNTAGGED" \
+    && grep -q "note not found: ffffffff-ffff-ffff-ffff-ffffffffffff" <<<"$ERR_ABSENT"; then
+    pass "note get --tag on a note without the tag says so; an absent id is not found"
 else
-    fail "note get --tag (untagged)" "$ERR_UNTAGGED"
+    fail "note get --tag (untagged)" "[$ERR_UNTAGGED] [$ERR_ABSENT]"
 fi
 
 echo ""
@@ -163,11 +165,20 @@ fi
 
 echo ""
 echo "7. stats --tag"
+N_OTHER=$(BJ note add misc --title "Untagged scratch" --content "x" --tags other | json "d['note_id']")
+for _ in 1 2 3 4 5 6; do B note get "$N_OTHER" >/dev/null 2>&1; done
 OUT=$(B stats --tag team 2>&1)
-if grep -q "^Notes:    3$" <<<"$OUT" && grep -q "^Sessions: 2$" <<<"$OUT" && ! grep -qE "Deploy runbook|Private holiday|Release review|Secret diary|Storage:" <<<"$OUT"; then
-    pass "stats --tag prints the tagged counts and no titles"
+if grep -q "^Notes:    3$" <<<"$OUT" && grep -q "^Sessions: 2$" <<<"$OUT" && grep -q "Recent Activity:" <<<"$OUT" \
+    && grep -q "Release review" <<<"$OUT" && ! grep -qE "Untagged scratch|Storage:" <<<"$OUT" && B stats | grep -q "Untagged scratch"; then
+    pass "stats --tag prints the dashboard of the tagged entries only, without the storage size"
 else
     fail "stats --tag" "$OUT"
+fi
+OUT=$(B stats --tag team --top-accessed 2>&1)
+if grep -q "Top Accessed:" <<<"$OUT" && ! grep -q "Untagged scratch" <<<"$OUT" && B stats --top-accessed | grep -q "Untagged scratch"; then
+    pass "stats --tag --top-accessed lists only tagged entries"
+else
+    fail "stats --tag --top-accessed" "$OUT"
 fi
 
 echo ""

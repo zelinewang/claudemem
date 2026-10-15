@@ -24,7 +24,7 @@ Examples:
   # Get session in JSON format
   claudemem session get 12345678 --format json
 
-  # Only if the session carries team; otherwise it reads as not found
+  # Only if the session carries team; otherwise it says that it does not
   claudemem session get 12345678 --tag team`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSessionGet,
@@ -34,7 +34,7 @@ var sessionGetTags []string
 
 func init() {
 	sessionCmd.AddCommand(sessionGetCmd)
-	sessionGetCmd.Flags().StringArrayVar(&sessionGetTags, "tag", nil, "Only consider sessions carrying all these tags (comma-separated or repeated); others read as not found")
+	sessionGetCmd.Flags().StringArrayVar(&sessionGetTags, "tag", nil, "Only consider sessions carrying all these tags (comma-separated or repeated)")
 }
 
 func runSessionGet(cmd *cobra.Command, args []string) error {
@@ -53,12 +53,15 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	// Get session: the primary store first, then the stores it reads
 	var session *models.Session
 	where := -1
-	var firstErr error
+	var firstErr, untagged error
 	for i, rs := range stores {
 		s, err := rs.Store.GetSessionWithTags(id, required)
 		if err != nil {
 			if i == 0 {
 				firstErr = err
+			}
+			if untagged == nil {
+				untagged = missingTagsIn(stores, i, err)
 			}
 			continue
 		}
@@ -69,6 +72,9 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: %s also matches a session in %s; showing the one in %s\n", id, rs.Name, stores[where].Name)
 	}
 	if session == nil {
+		if untagged != nil {
+			return fmt.Errorf("failed to get session: %w", untagged)
+		}
 		return fmt.Errorf("failed to get session: %w", firstErr)
 	}
 

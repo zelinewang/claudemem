@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,32 @@ var (
 	// ErrWrongKind reports that the id exists but belongs to the other kind (a note id given as a session).
 	ErrWrongKind = errors.New("entry is of the other kind")
 )
+
+// MissingTagsError reports that the entry a get names exists but does not carry every tag asked
+// for. Tags filter what a command returns; they do not hide that an entry exists.
+type MissingTagsError struct {
+	Kind string   // "note" or "session"
+	ID   string   // the id or id prefix asked for
+	Tags []string // the tags asked for
+}
+
+func (e *MissingTagsError) Error() string {
+	word := "tags"
+	if len(e.Tags) == 1 {
+		word = "tag"
+	}
+	return fmt.Sprintf("%s %s does not carry the %s %s", e.Kind, e.ID, word, strings.Join(e.Tags, ", "))
+}
+
+// entryExists reports whether an entry of this kind has the id, or an id starting with it.
+func (fs *FileStore) entryExists(kind, id string) (bool, error) {
+	var one int
+	err := fs.db.QueryRow(`SELECT 1 FROM entries WHERE (id = ? OR id LIKE ? || '%') AND type = ? LIMIT 1`, id, id, kind).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
 
 // HasAllTags reports whether have carries every tag in required, compared case-insensitively.
 // An empty required list passes everything.

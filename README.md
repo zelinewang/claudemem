@@ -146,7 +146,7 @@ claudemem search "query" [--type note|session] [--tag t1,t2] [--limit N]
 
 # Tags
 claudemem context inject --tag project-x    # only entries carrying every listed tag
-claudemem stats --tag project-x             # counts of the tagged set, no titles
+claudemem stats --tag project-x             # the statistics of the tagged entries
 claudemem tag apply --file tags.jsonl [--dry-run]   # bulk add/remove, see below
 
 # Several stores
@@ -183,10 +183,11 @@ A tag is one word: a new tag with a space or comma is refused on every write (an
 keeps such a tag and stays editable). A `--tag t1,t2` filter keeps the entries that carry every
 listed tag, matched as whole tags, ignoring the case of ASCII letters (`--tag team` does not match
 `team-old`); `--tag` can be repeated, all the tags are required, and a `--tag` that names no tag
-is an error. On `get`, an entry without the tags is reported exactly like an id that does not
-exist, and `stats --tag` prints counts only. Search checks each tagged hit against its file; the
-counts of `stats --tag` and the `context inject` header come from the index, so run
-`claudemem reindex` after editing files by hand.
+is an error. Tags filter what a command shows; they do not hide entries: on `get`, an entry that
+exists without the tags is reported as such, and `stats --tag` is the usual dashboard over the
+tagged entries (with `--top-accessed` too), without the storage size, which belongs to the whole
+store. Search checks each tagged hit against its file; `stats --tag` and the `context inject`
+header come from the index, so run `claudemem reindex` after editing files by hand.
 
 `--add-tag` / `--remove-tag` and `tag apply` change tags only: the tags list in the file's
 frontmatter and the entry's index rows (the body, the `updated` time and the vectors stay as

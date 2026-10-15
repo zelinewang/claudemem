@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -190,6 +191,19 @@ func readStoreFailed(stores []readStore, i int, err error) error {
 	}
 	fmt.Fprintf(os.Stderr, "warning: store %s: %v; going on without it\n", stores[i].Name, err)
 	return nil
+}
+
+// missingTagsIn returns err when it says that the entry exists in store i without the tags asked
+// for, naming that store when it is not the primary; nil for any other error.
+func missingTagsIn(stores []readStore, i int, err error) error {
+	var missing *storage.MissingTagsError
+	if !errors.As(err, &missing) {
+		return nil
+	}
+	if i == 0 {
+		return err
+	}
+	return fmt.Errorf("%w (in %s)", err, stores[i].Name)
 }
 
 // readStoreHint adds to a write command's error, when the entry is missing from the primary store

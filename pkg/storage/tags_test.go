@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -259,8 +260,9 @@ func TestSessionTags_StoredListedSearched(t *testing.T) {
 	}
 }
 
-// A get on an entry without the required tags must read exactly like a get on an absent id.
-func TestGetWithTags_UntaggedReadsAsAbsent(t *testing.T) {
+// Tags filter, they do not hide entries: a get on an entry that exists without the required tags
+// says so, and a get on an absent id says that it does not exist.
+func TestGetWithTags_SaysAnEntryLacksTheTags(t *testing.T) {
 	store := setupTestStore(t)
 	note := addTaggedNote(t, store, "c", "Private note title", "x", "personal")
 	session := saveTaggedSession(t, store, "Private session title", "x", "personal")
@@ -268,29 +270,25 @@ func TestGetWithTags_UntaggedReadsAsAbsent(t *testing.T) {
 	if _, err := store.GetNoteWithTags(note.ID, []string{"personal"}); err != nil {
 		t.Errorf("tagged note: %v", err)
 	}
+	if _, err := store.GetNoteWithTags(note.ID, nil); err != nil {
+		t.Errorf("no filter: %v", err)
+	}
 	_, untagged := store.GetNoteWithTags(note.ID, []string{"team"})
-	_, absent := store.GetNote(note.ID)
-	if untagged == nil || absent != nil {
-		t.Fatalf("untagged = %v, absent lookup of an existing note = %v", untagged, absent)
+	var missing *MissingTagsError
+	if !errors.As(untagged, &missing) || untagged.Error() != fmt.Sprintf("note %s does not carry the tag team", note.ID) {
+		t.Errorf("untagged note: %v", untagged)
 	}
-	_, missing := store.GetNoteWithTags(note.ID, nil)
-	if missing != nil {
-		t.Fatalf("no filter: %v", missing)
-	}
-	if want := fmt.Sprintf("note not found: %s", note.ID); untagged.Error() != want {
-		t.Errorf("untagged note error = %q, want %q (the absent-id error)", untagged.Error(), want)
-	}
-	if strings.Contains(untagged.Error(), "Private") {
-		t.Errorf("error names the title: %q", untagged.Error())
+	_, absent := store.GetNoteWithTags("ffffffff", []string{"team"})
+	if absent == nil || errors.As(absent, &missing) || absent.Error() != "note not found: ffffffff" {
+		t.Errorf("absent note: %v", absent)
 	}
 
-	_, untaggedSession := store.GetSessionWithTags(session.ID[:8], []string{"team"})
-	_, absentSession := store.GetSession("00000000")
-	if untaggedSession == nil || absentSession == nil {
-		t.Fatalf("untagged session = %v, absent = %v", untaggedSession, absentSession)
+	_, untaggedSession := store.GetSessionWithTags(session.ID[:8], []string{"team", "ops"})
+	if !errors.As(untaggedSession, &missing) || untaggedSession.Error() != fmt.Sprintf("session %s does not carry the tags team, ops", session.ID[:8]) {
+		t.Errorf("untagged session: %v", untaggedSession)
 	}
-	if want := strings.Replace(absentSession.Error(), "00000000", session.ID[:8], 1); untaggedSession.Error() != want {
-		t.Errorf("untagged session error = %q, want %q", untaggedSession.Error(), want)
+	if _, err := store.GetSessionWithTags("00000000", []string{"team"}); err == nil || errors.As(err, &missing) {
+		t.Errorf("absent session: %v", err)
 	}
 	if got, err := store.GetSessionWithTags(session.ID[:8], []string{"PERSONAL"}); err != nil || got.ID != session.ID {
 		t.Errorf("tagged session by prefix: %v (err %v)", got, err)
@@ -340,6 +338,32 @@ func TestTaggedStats_CountsOnlyTheTaggedSet(t *testing.T) {
 	}
 	if want := []TagInfo{{"team", 4}, {"api", 2}}; fmt.Sprint(stats.TopTags) != fmt.Sprint(want) {
 		t.Errorf("top tags = %v, want %v", stats.TopTags, want)
+	}
+	var recent []string
+	for _, r := range stats.RecentEntries {
+		recent = append(recent, r.Title)
+	}
+	sort.Strings(recent)
+	if want := "Alpha deploy guide,Bravo billing rules,Charlie backup runbook,Shared session"; strings.Join(recent, ",") != want {
+		t.Errorf("recent entries = %v, want the tagged ones %s", recent, want)
+	}
+}
+
+func TestGetTopAccessedWithTags(t *testing.T) {
+	store := setupTestStore(t)
+	shared := addTaggedNote(t, store, "work", "Shared", "x", "team")
+	private := addTaggedNote(t, store, "life", "Private", "x", "personal")
+	for i := 0; i < 3; i++ {
+		store.LogAccess(private.ID, "get")
+	}
+	store.LogAccess(shared.ID, "get")
+	store.LogAccess("gone-entry", "get")
+	top, err := store.GetTopAccessedWithTags(10, []string{"team"})
+	if err != nil || len(top) != 1 || top[0].ID != shared.ID {
+		t.Errorf("top accessed --tag team = %+v, %v", top, err)
+	}
+	if all, err := store.GetTopAccessed(10); err != nil || len(all) != 3 || all[0].ID != private.ID {
+		t.Errorf("top accessed = %+v, %v", all, err)
 	}
 }
 

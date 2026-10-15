@@ -63,7 +63,7 @@ claudemem search "query" --semantic             # Force semantic even if feature
 
 # Tags
 claudemem context inject --tag project-x  # inject only entries carrying the tag
-claudemem stats --tag project-x           # counts of the tagged set, no titles
+claudemem stats --tag project-x           # the statistics of the tagged entries
 claudemem tag apply --file tags.jsonl [--dry-run]   # bulk: {"id","kind":"note|session","add":[],"remove":[]} per line
 
 # Several stores

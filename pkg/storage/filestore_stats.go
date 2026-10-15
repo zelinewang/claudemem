@@ -108,19 +108,50 @@ func (fs *FileStore) stats(tagLimit int) (*StoreStats, error) {
 	}
 
 	// Get recent entries
+	recent, err := fs.recentEntries("", nil)
+	if err != nil {
+		return nil, err
+	}
+	stats.RecentEntries = recent
+
+	// Calculate storage size
+	var totalSize int64
+	err = filepath.Walk(fs.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+		if !info.IsDir() {
+			totalSize += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		// Non-fatal, just log
+		fmt.Fprintf(os.Stderr, "Warning: could not calculate storage size: %v\n", err)
+	}
+	stats.StorageSize = totalSize
+
+	return stats, nil
+}
+
+// recentEntries returns the recentEntriesShown newest entries, among those that pass the WHERE
+// fragment where (starting with " AND", or empty for all).
+func (fs *FileStore) recentEntries(where string, args []interface{}) ([]SearchResult, error) {
 	recentQuery := `
 		SELECT
 			id, type, title, category, tags, created,
 			date_str, branch, project
 		FROM entries
+		WHERE 1 = 1` + where + `
 		ORDER BY created DESC
 		LIMIT ?`
-	rows, err = fs.db.Query(recentQuery, recentEntriesShown)
+	rows, err := fs.db.Query(recentQuery, append(append([]interface{}{}, args...), recentEntriesShown)...)
 	if err != nil {
 		return nil, fmt.Errorf("get recent entries failed: %w", err)
 	}
 	defer rows.Close()
 
+	recent := []SearchResult{}
 	for rows.Next() {
 		var r SearchResult
 		var tagsStr, category, date, branch, project sql.NullString
@@ -160,32 +191,17 @@ func (fs *FileStore) stats(tagLimit int) (*StoreStats, error) {
 		r.Score = 0
 		r.Preview = ""
 
-		stats.RecentEntries = append(stats.RecentEntries, r)
+		recent = append(recent, r)
 	}
-
-	// Calculate storage size
-	var totalSize int64
-	err = filepath.Walk(fs.baseDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-		if !info.IsDir() {
-			totalSize += info.Size()
-		}
-		return nil
-	})
-	if err != nil {
-		// Non-fatal, just log
-		fmt.Fprintf(os.Stderr, "Warning: could not calculate storage size: %v\n", err)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
-	stats.StorageSize = totalSize
-
-	return stats, nil
+	return recent, nil
 }
 
-// TaggedStats counts only the entries carrying every required tag: notes, sessions, the notes'
-// categories and the ten most used tags among them. Counts only: no titles and no file reads. Ties
-// sort by name, so the output is stable.
+// TaggedStats is Stats over the entries carrying every required tag: notes, sessions, the notes'
+// categories, the ten most used tags among them and the newest of them, from the index (no file
+// reads). Ties sort by name, so the output is stable.
 func (fs *FileStore) TaggedStats(required []string) (*TaggedStats, error) {
 	return fs.taggedStats(required, topTagsShown)
 }
@@ -207,7 +223,7 @@ func (fs *FileStore) taggedStats(required []string, tagLimit int) (*TaggedStats,
 	}
 	defer rows.Close()
 
-	stats := &TaggedStats{Tags: required, Categories: []CategoryInfo{}, TopTags: []TagInfo{}}
+	stats := &TaggedStats{Tags: required, Categories: []CategoryInfo{}, TopTags: []TagInfo{}, RecentEntries: []SearchResult{}}
 	categories := make(map[string]int)
 	tagCounts := make(map[string]int)
 	for rows.Next() {
@@ -246,6 +262,9 @@ func (fs *FileStore) taggedStats(required []string, tagLimit int) (*TaggedStats,
 	})
 	if tagLimit > 0 && len(stats.TopTags) > tagLimit {
 		stats.TopTags = stats.TopTags[:tagLimit]
+	}
+	if stats.RecentEntries, err = fs.recentEntries(tagFilter, tagArgs); err != nil {
+		return nil, err
 	}
 	return stats, nil
 }
@@ -287,9 +306,9 @@ func MergeStats(parts []*StoreStats) *StoreStats {
 }
 
 // MergeTaggedStats adds up the tagged stats of several stores, as MergeStats does. The parts should
-// come from TaggedStatsAllTags, with the same tags.
+// come from TaggedStatsAllTags, with the same tags; each part's recent entries keep their Store field.
 func MergeTaggedStats(parts []*TaggedStats) *TaggedStats {
-	merged := &TaggedStats{Categories: []CategoryInfo{}, TopTags: []TagInfo{}}
+	merged := &TaggedStats{Categories: []CategoryInfo{}, TopTags: []TagInfo{}, RecentEntries: []SearchResult{}}
 	categories := make(map[string]int)
 	tags := make(map[string]int)
 	for _, part := range parts {
@@ -304,6 +323,7 @@ func MergeTaggedStats(parts []*TaggedStats) *TaggedStats {
 		for _, t := range part.TopTags {
 			tags[t.Name] += t.Count
 		}
+		merged.RecentEntries = append(merged.RecentEntries, part.RecentEntries...)
 	}
 	merged.Categories = countsByName(categories)
 	for _, c := range countsByName(tags) {
@@ -311,6 +331,12 @@ func MergeTaggedStats(parts []*TaggedStats) *TaggedStats {
 	}
 	if len(merged.TopTags) > topTagsShown {
 		merged.TopTags = merged.TopTags[:topTagsShown]
+	}
+	sort.SliceStable(merged.RecentEntries, func(i, j int) bool {
+		return merged.RecentEntries[i].Created.After(merged.RecentEntries[j].Created)
+	})
+	if len(merged.RecentEntries) > recentEntriesShown {
+		merged.RecentEntries = merged.RecentEntries[:recentEntriesShown]
 	}
 	return merged
 }

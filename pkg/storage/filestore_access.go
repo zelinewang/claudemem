@@ -42,6 +42,12 @@ func (fs *FileStore) LogAccess(entryID, accessType string) {
 
 // GetTopAccessed returns the most frequently accessed entries.
 func (fs *FileStore) GetTopAccessed(limit int) ([]AccessStat, error) {
+	return fs.GetTopAccessedWithTags(limit, nil)
+}
+
+// GetTopAccessedWithTags is GetTopAccessed among the entries carrying every required tag (deleted
+// entries carry none, so they are left out).
+func (fs *FileStore) GetTopAccessedWithTags(limit int, required []string) ([]AccessStat, error) {
 	if fs.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -50,6 +56,11 @@ func (fs *FileStore) GetTopAccessed(limit int) ([]AccessStat, error) {
 		limit = 10
 	}
 
+	join, where := "LEFT JOIN", ""
+	tagFilter, args := tagsWhere("e.tags", required)
+	if len(required) > 0 {
+		join, where = "JOIN", "WHERE 1 = 1"+tagFilter
+	}
 	query := `
 		SELECT
 			a.entry_id,
@@ -58,12 +69,13 @@ func (fs *FileStore) GetTopAccessed(limit int) ([]AccessStat, error) {
 			COUNT(*) AS access_count,
 			MAX(a.accessed_at) AS last_accessed
 		FROM access_log a
-		LEFT JOIN entries e ON a.entry_id = e.id
+		` + join + ` entries e ON a.entry_id = e.id
+		` + where + `
 		GROUP BY a.entry_id
 		ORDER BY access_count DESC
 		LIMIT ?`
 
-	rows, err := fs.db.Query(query, limit)
+	rows, err := fs.db.Query(query, append(args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("top accessed query failed: %w", err)
 	}

@@ -20,9 +20,9 @@ var statsCmd = &cobra.Command{
 	Long: `Display statistics about stored notes and sessions including counts,
 categories, tags, and recent activity.
 
-With --tag, only the entries carrying all the given tags are counted, and only
-counts are printed (notes, sessions, categories, top tags): no titles, no recent
-activity and no storage size.
+With --tag, the statistics cover only the entries carrying all the given tags
+(the storage size, which belongs to the whole store, is left out). Tags filter
+what is shown; they do not hide entries.
 
 When the store reads other stores (stores.read), the numbers add up all of
 them, with a line per store.`,
@@ -30,9 +30,6 @@ them, with a line per store.`,
 		required, err := tagFlag(cmd, "tag")
 		if err != nil {
 			return err
-		}
-		if len(required) > 0 && statsTopAccessed {
-			return fmt.Errorf("--top-accessed lists titles, so it cannot be combined with --tag")
 		}
 		stores, err := openReadStores()
 		if err != nil {
@@ -50,7 +47,7 @@ them, with a line per store.`,
 		}
 		var topAccessed []storage.AccessStat
 		if statsTopAccessed {
-			if topAccessed, err = storesTopAccessed(stores, 10); err != nil {
+			if topAccessed, err = storesTopAccessed(stores, 10, nil); err != nil {
 				return fmt.Errorf("failed to get top accessed: %w", err)
 			}
 		}
@@ -138,16 +135,7 @@ them, with a line per store.`,
 
 		// Top accessed entries (token economics)
 		if statsTopAccessed {
-			OutputText("")
-			if len(topAccessed) == 0 {
-				OutputText("Top Accessed: (no access data yet)")
-			} else {
-				OutputText("Top Accessed:")
-				for i, a := range topAccessed {
-					OutputText("  %d. [%s] %s — %d accesses (last: %s)%s",
-						i+1, a.Type, a.Title, a.AccessCount, a.LastAccessed[:10], storeSuffix(a.Store))
-				}
-			}
+			printTopAccessed(topAccessed)
 		}
 
 		return nil
@@ -188,15 +176,15 @@ func storesStats(stores []readStore) (*storage.StoreStats, []storeTotals, error)
 	return storage.MergeStats(parts), totals, nil
 }
 
-// storesTopAccessed returns the limit most accessed entries of the stores read, each naming its store
-// when there are several.
-func storesTopAccessed(stores []readStore, limit int) ([]storage.AccessStat, error) {
+// storesTopAccessed returns the limit most accessed entries of the stores read, among those carrying
+// every required tag, each naming its store when there are several.
+func storesTopAccessed(stores []readStore, limit int, required []string) ([]storage.AccessStat, error) {
 	if len(stores) == 1 {
-		return stores[0].Store.GetTopAccessed(limit)
+		return stores[0].Store.GetTopAccessedWithTags(limit, required)
 	}
 	all := []storage.AccessStat{}
 	for i, rs := range stores {
-		top, err := rs.Store.GetTopAccessed(limit)
+		top, err := rs.Store.GetTopAccessedWithTags(limit, required)
 		if err != nil {
 			if err := readStoreFailed(stores, i, err); err != nil {
 				return nil, err
@@ -230,7 +218,8 @@ func printStoreTotals(totals []storeTotals) {
 	}
 }
 
-// runTaggedStats prints the counts of the entries carrying every required tag, and nothing else.
+// runTaggedStats prints the statistics of the entries carrying every required tag: the dashboard of
+// stats, without the storage size.
 func runTaggedStats(stores []readStore, required []string) error {
 	var stats *storage.TaggedStats
 	var totals []storeTotals
@@ -249,19 +238,34 @@ func runTaggedStats(stores []readStore, required []string) error {
 				}
 				continue
 			}
+			for j := range part.RecentEntries {
+				part.RecentEntries[j].Store = rs.Name
+			}
 			parts = append(parts, part)
 			totals = append(totals, storeTotals{Store: rs.Name, TotalNotes: part.TotalNotes, TotalSessions: part.TotalSessions})
 		}
 		stats = storage.MergeTaggedStats(parts)
 	}
-	if outputFormat == "json" {
-		if len(stores) > 1 {
-			return OutputJSON(struct {
-				*storage.TaggedStats
-				Stores []storeTotals `json:"stores"`
-			}{TaggedStats: stats, Stores: totals})
+	var topAccessed []storage.AccessStat
+	if statsTopAccessed {
+		var err error
+		if topAccessed, err = storesTopAccessed(stores, 10, required); err != nil {
+			return fmt.Errorf("failed to get top accessed: %w", err)
 		}
-		return OutputJSON(stats)
+	}
+	if outputFormat == "json" {
+		payload := struct {
+			*storage.TaggedStats
+			Stores      []storeTotals        `json:"stores,omitempty"`
+			TopAccessed []storage.AccessStat `json:"top_accessed,omitempty"`
+		}{TaggedStats: stats, TopAccessed: topAccessed}
+		if len(stores) > 1 {
+			payload.Stores = totals
+		}
+		if statsTopAccessed && topAccessed == nil {
+			payload.TopAccessed = []storage.AccessStat{}
+		}
+		return OutputJSON(payload)
 	}
 
 	OutputText("ClaudeMem Statistics (tagged %s)", strings.Join(required, ", "))
@@ -291,8 +295,32 @@ func runTaggedStats(stores []readStore, required []string) error {
 		}
 		OutputText("Top Tags (top %d):", len(stats.TopTags))
 		OutputText("  %s", strings.Join(tagStrings, ", "))
+		OutputText("")
+	}
+	if len(stats.RecentEntries) > 0 {
+		OutputText("Recent Activity:")
+		for _, entry := range stats.RecentEntries {
+			OutputText("  %s [%s] %s%s", entry.Created.Format("2006-01-02"), entry.Type, entry.Title, storeSuffix(entry.Store))
+		}
+	}
+	if statsTopAccessed {
+		printTopAccessed(topAccessed)
 	}
 	return nil
+}
+
+// printTopAccessed prints the most accessed entries after the dashboard.
+func printTopAccessed(topAccessed []storage.AccessStat) {
+	OutputText("")
+	if len(topAccessed) == 0 {
+		OutputText("Top Accessed: (no access data yet)")
+		return
+	}
+	OutputText("Top Accessed:")
+	for i, a := range topAccessed {
+		OutputText("  %d. [%s] %s — %d accesses (last: %s)%s",
+			i+1, a.Type, a.Title, a.AccessCount, a.LastAccessed[:10], storeSuffix(a.Store))
+	}
 }
 
 func formatBytes(bytes int64) string {
@@ -317,6 +345,6 @@ func min(a, b int) int {
 
 func init() {
 	statsCmd.Flags().BoolVar(&statsTopAccessed, "top-accessed", false, "Show most accessed entries (token economics)")
-	statsCmd.Flags().StringArrayVar(&statsTags, "tag", nil, "Count only entries carrying all these tags (comma-separated or repeated); prints counts, no titles")
+	statsCmd.Flags().StringArrayVar(&statsTags, "tag", nil, "Only the entries carrying all these tags (comma-separated or repeated)")
 	rootCmd.AddCommand(statsCmd)
 }

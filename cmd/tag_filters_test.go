@@ -184,16 +184,14 @@ func TestCLI_SessionTagsSaveListSearchGet(t *testing.T) {
 	if out := mustRunCLI(t, s.path, "session", "get", s.sharedSession[:8], "--tag", "team"); !strings.Contains(out, "Release review") {
 		t.Errorf("session get --tag team on a shared session:\n%s", out)
 	}
-	untaggedOut, untagged := runCLI(t, s.path, "session", "get", s.personalSession[:8], "--tag", "team")
-	absentOut, absent := runCLI(t, s.path, "session", "get", "ffffffff", "--tag", "team")
-	if untagged == nil || absent == nil {
-		t.Fatalf("errors: untagged %v, absent %v", untagged, absent)
+	// tags filter, they do not hide entries: a session without the tags is reported as such
+	_, untagged := runCLI(t, s.path, "session", "get", s.personalSession[:8], "--tag", "team")
+	_, absent := runCLI(t, s.path, "session", "get", "ffffffff", "--tag", "team")
+	if untagged == nil || !strings.Contains(untagged.Error(), "session "+s.personalSession[:8]+" does not carry the tag team") {
+		t.Errorf("session get --tag on a session without the tag: %v", untagged)
 	}
-	if strings.Replace(absent.Error(), "ffffffff", s.personalSession[:8], 1) != untagged.Error() || untaggedOut != absentOut {
-		t.Errorf("a personal session must read as absent:\nuntagged: %v %q\nabsent:   %v %q", untagged, untaggedOut, absent, absentOut)
-	}
-	if strings.Contains(untagged.Error()+untaggedOut, "Secret") {
-		t.Errorf("the not-found error names the title: %v", untagged)
+	if absent == nil || !strings.Contains(absent.Error(), "session not found: ffffffff") {
+		t.Errorf("session get --tag on an absent id: %v", absent)
 	}
 }
 
@@ -203,20 +201,20 @@ func TestCLI_NoteGetTag(t *testing.T) {
 	if out := mustRunCLI(t, s.path, "note", "get", s.sharedNote[:8], "--tag", "team"); !strings.Contains(out, "Deploy runbook") {
 		t.Errorf("note get --tag on a shared note:\n%s", out)
 	}
-	untaggedOut, untagged := runCLI(t, s.path, "note", "get", s.personalNote, "--tag", "team")
-	absentOut, absent := runCLI(t, s.path, "note", "get", "ffffffff-ffff-ffff-ffff-ffffffffffff", "--tag", "team")
-	if untagged == nil || absent == nil {
-		t.Fatalf("errors: untagged %v, absent %v", untagged, absent)
+	// tags filter, they do not hide entries: a note without the tags is reported as such
+	_, untagged := runCLI(t, s.path, "note", "get", s.personalNote, "--tag", "team")
+	_, absent := runCLI(t, s.path, "note", "get", "ffffffff-ffff-ffff-ffff-ffffffffffff", "--tag", "team")
+	if untagged == nil || !strings.Contains(untagged.Error(), "note "+s.personalNote+" does not carry the tag team") {
+		t.Errorf("note get --tag on a note without the tag: %v", untagged)
 	}
-	if strings.Replace(absent.Error(), "ffffffff-ffff-ffff-ffff-ffffffffffff", s.personalNote, 1) != untagged.Error() || untaggedOut != absentOut {
-		t.Errorf("a personal note must read as absent:\nuntagged: %v\nabsent:   %v", untagged, absent)
+	if absent == nil || !strings.Contains(absent.Error(), "note not found: ffffffff-ffff-ffff-ffff-ffffffffffff") {
+		t.Errorf("note get --tag on an absent id: %v", absent)
 	}
 
-	// category + title, and the title-pattern fallback, see only tagged notes
+	// category + title, and the title-pattern fallback, consider only tagged notes
 	_, exact := runCLI(t, s.path, "note", "get", "life", "Private holiday", "--tag", "team")
-	_, none := runCLI(t, s.path, "note", "get", "life", "No such title", "--tag", "team")
-	if exact == nil || none == nil || strings.Replace(none.Error(), "No such title", "Private holiday", 1) != exact.Error() {
-		t.Errorf("exact title of a personal note: %v (absent title: %v)", exact, none)
+	if exact == nil || !strings.Contains(exact.Error(), `no notes found in life matching "Private holiday" that carry the tags team`) {
+		t.Errorf("exact title of a note without the tag: %v", exact)
 	}
 	addNoteCLI(t, s.path, "ops", "Ops diary", "x", "personal")
 	out := mustRunCLI(t, s.path, "note", "get", "ops", "o", "--tag", "team")
@@ -375,24 +373,44 @@ func TestCLI_TagApply(t *testing.T) {
 func TestCLI_StatsTag(t *testing.T) {
 	s := newTaggedStore(t)
 	out := mustRunCLI(t, s.path, "stats", "--tag", "team", "--format", "json")
-	var stats storage.TaggedStats
+	var stats struct {
+		storage.TaggedStats
+		RecentEntries []storage.SearchResult `json:"recent_entries"`
+	}
 	if err := json.Unmarshal([]byte(out), &stats); err != nil {
 		t.Fatalf("parse stats: %v\n%s", err, out)
 	}
-	if stats.TotalNotes != 1 || stats.TotalSessions != 1 || len(stats.Categories) != 1 || stats.Categories[0].Name != "ops" {
+	if stats.TotalNotes != 1 || stats.TotalSessions != 1 || len(stats.Categories) != 1 || stats.Categories[0].Name != "ops" || len(stats.RecentEntries) != 2 {
 		t.Errorf("stats --tag team = %+v", stats)
 	}
+
+	// the dashboard over the tagged entries: their titles, never the others'
 	text := mustRunCLI(t, s.path, "stats", "--tag", "team")
-	for _, title := range []string{"Deploy runbook", "Release review", "Private holiday", "Secret diary"} {
-		if strings.Contains(out+text, title) {
-			t.Errorf("stats --tag printed the title %q:\n%s", title, text)
-		}
-	}
-	if !strings.Contains(text, "Notes:    1\nSessions: 1\n") || strings.Contains(text, "Storage:") {
+	if !strings.Contains(text, "Notes:    1\nSessions: 1\n") || strings.Contains(text, "Storage:") ||
+		!strings.Contains(text, "Recent Activity:") || !strings.Contains(text, "Deploy runbook") || !strings.Contains(text, "Release review") {
 		t.Errorf("stats --tag text:\n%s", text)
 	}
-	if _, err := runCLI(t, s.path, "stats", "--tag", "team", "--top-accessed"); err == nil {
-		t.Error("--top-accessed with --tag was accepted")
+	for _, title := range []string{"Private holiday", "Secret diary"} {
+		if strings.Contains(out+text, title) {
+			t.Errorf("stats --tag team printed the untagged %q:\n%s", title, text)
+		}
+	}
+
+	// --top-accessed lists the most read tagged entries
+	mustRunCLI(t, s.path, "note", "get", s.personalNote)
+	mustRunCLI(t, s.path, "note", "get", s.personalNote)
+	mustRunCLI(t, s.path, "note", "get", s.sharedNote)
+	var accessed struct {
+		TopAccessed []storage.AccessStat `json:"top_accessed"`
+	}
+	if err := json.Unmarshal([]byte(mustRunCLI(t, s.path, "stats", "--tag", "team", "--top-accessed", "--format", "json")), &accessed); err != nil {
+		t.Fatal(err)
+	}
+	if len(accessed.TopAccessed) != 1 || accessed.TopAccessed[0].ID != s.sharedNote {
+		t.Errorf("stats --tag team --top-accessed = %+v, want the shared note only", accessed.TopAccessed)
+	}
+	if text := mustRunCLI(t, s.path, "stats", "--tag", "team", "--top-accessed"); !strings.Contains(text, "Top Accessed:") || strings.Contains(text, "Private holiday") {
+		t.Errorf("stats --tag --top-accessed text:\n%s", text)
 	}
 }
 
@@ -459,5 +477,22 @@ func TestCLI_TagsAreOneWord(t *testing.T) {
 	}
 	if _, err := runCLI(t, storePath, "note", "update", id, "--add-tag", "deep learning"); err == nil {
 		t.Error("note update --add-tag accepted a tag with a space")
+	}
+}
+
+// With several stores, a get --tag on an entry that sits in a store read without the tags says so,
+// naming that store.
+func TestCLI_ReadStores_GetTagNamesTheStoreWithoutTheTags(t *testing.T) {
+	s := newTwoStores(t)
+	theirs := addNoteCLI(t, s.other, "ops", "Their note", "x", "personal")
+	sid := saveSessionCLI(t, s.other, "Their session", "sid-x", "x", "personal")
+	if _, err := runCLI(t, s.primary, "note", "get", theirs, "--tag", "team"); err == nil || !strings.Contains(err.Error(), "does not carry the tag team (in "+s.otherName+")") {
+		t.Errorf("note get --tag on the other store's note: %v", err)
+	}
+	if _, err := runCLI(t, s.primary, "session", "get", sid, "--tag", "team"); err == nil || !strings.Contains(err.Error(), "does not carry the tag team (in "+s.otherName+")") {
+		t.Errorf("session get --tag on the other store's session: %v", err)
+	}
+	if out := mustRunCLI(t, s.primary, "note", "get", theirs, "--tag", "personal"); !strings.Contains(out, "Their note") {
+		t.Errorf("note get --tag personal:\n%s", out)
 	}
 }

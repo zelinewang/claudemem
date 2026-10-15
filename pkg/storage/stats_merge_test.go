@@ -101,7 +101,7 @@ func TestStatsAllTags_MakesTheMergeExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	tagged := MergeTaggedStats([]*TaggedStats{taggedA, taggedB})
-	if tagged.TotalNotes != 3 || fmt.Sprint(tagged.Tags) != "[t11]" || fmt.Sprint(tagged.TopTags) != "[{t11 3}]" || len(tagged.Categories) != 3 {
+	if tagged.TotalNotes != 3 || fmt.Sprint(tagged.Tags) != "[t11]" || fmt.Sprint(tagged.TopTags) != "[{t11 3}]" || len(tagged.Categories) != 3 || len(tagged.RecentEntries) != 3 {
 		t.Errorf("merged tagged stats %+v", tagged)
 	}
 }

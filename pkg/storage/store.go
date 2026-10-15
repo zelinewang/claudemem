@@ -111,14 +111,16 @@ type StoreStats struct {
 	StorageSize   int64          `json:"storage_size_bytes"`
 }
 
-// TaggedStats counts the notes and sessions carrying every required
-// tag, their categories and their most used tags. Counts only: no titles, previews or storage size.
+// TaggedStats is StoreStats over the notes and sessions carrying every required tag: their counts,
+// their categories, their most used tags and the newest of them. The storage size belongs to the
+// whole store, so it is left out.
 type TaggedStats struct {
 	Tags          []string       `json:"tags"`
 	TotalNotes    int            `json:"total_notes"`
 	TotalSessions int            `json:"total_sessions"`
 	Categories    []CategoryInfo `json:"categories"`
 	TopTags       []TagInfo      `json:"top_tags"`
+	RecentEntries []SearchResult `json:"recent_entries"`
 }
 
 // CategoryInfo provides information about a category

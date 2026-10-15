@@ -18,8 +18,8 @@ var noteGetCmd = &cobra.Command{
 	Short: "Get a specific note",
 	Long: `Get a specific note by ID or by category and title.
 
-With --tag, only notes carrying all the given tags are considered: a note
-without them is reported exactly like a note that does not exist.
+With --tag, only notes carrying all the given tags are considered; a note
+that exists without them is reported as such.
 
 When the store reads other stores (stores.read), they are searched after it,
 in order, and the output names the store the note came from.
@@ -45,12 +45,15 @@ Examples:
 		if len(args) == 1 {
 			var note *models.Note
 			where := -1
-			var firstErr error
+			var firstErr, untagged error
 			for i, rs := range stores {
 				n, err := rs.Store.GetNoteWithTags(args[0], required)
 				if err != nil {
 					if i == 0 {
 						firstErr = err
+					}
+					if untagged == nil {
+						untagged = missingTagsIn(stores, i, err)
 					}
 					continue
 				}
@@ -61,6 +64,9 @@ Examples:
 				fmt.Fprintf(os.Stderr, "warning: %s also matches a note in %s; showing the one in %s\n", args[0], rs.Name, stores[where].Name)
 			}
 			if note == nil {
+				if untagged != nil {
+					return fmt.Errorf("failed to get note: %w", untagged)
+				}
 				return fmt.Errorf("failed to get note: %w", firstErr)
 			}
 
@@ -104,6 +110,9 @@ Examples:
 		}
 
 		if len(matches) == 0 {
+			if len(required) > 0 {
+				return fmt.Errorf("no notes found in %s matching \"%s\" that carry the tags %s", category, titlePattern, strings.Join(required, ", "))
+			}
 			return fmt.Errorf("no notes found in %s matching \"%s\"", category, titlePattern)
 		}
 
@@ -176,5 +185,5 @@ func outputNote(note *models.Note, store string) error {
 
 func init() {
 	noteCmd.AddCommand(noteGetCmd)
-	noteGetCmd.Flags().StringArrayVar(&noteGetTags, "tag", nil, "Only consider notes carrying all these tags (comma-separated or repeated); others read as not found")
+	noteGetCmd.Flags().StringArrayVar(&noteGetTags, "tag", nil, "Only consider notes carrying all these tags (comma-separated or repeated)")
 }

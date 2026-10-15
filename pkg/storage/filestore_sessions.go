@@ -210,9 +210,10 @@ func (fs *FileStore) GetSession(id string) (*models.Session, error) {
 	return fs.GetSessionWithTags(id, nil)
 }
 
-// GetSessionWithTags is GetSession restricted to the sessions carrying every required tag. A
-// session without them is reported exactly as an absent id (the error names nothing but the given id); a
-// prefix is matched only among the tagged sessions, and the file's own tags are checked too.
+// GetSessionWithTags is GetSession restricted to the sessions carrying every required tag: a prefix
+// is matched only among the tagged sessions, and the file's own tags are checked too. A session that
+// exists without the tags is reported as such (*MissingTagsError), not as an absent id: tags filter,
+// they do not hide entries.
 func (fs *FileStore) GetSessionWithTags(id string, required []string) (*models.Session, error) {
 	// Exact id or prefix; the smallest id wins an ambiguous prefix, as in GetNote
 	tagFilter, tagArgs := tagsWhere("tags", required)
@@ -226,6 +227,9 @@ func (fs *FileStore) GetSessionWithTags(id string, required []string) (*models.S
 	).Scan(&fpath)
 
 	if err == sql.ErrNoRows {
+		if exists, existsErr := fs.entryExists("session", id); existsErr == nil && exists && len(required) > 0 {
+			return nil, &MissingTagsError{Kind: "session", ID: id, Tags: required}
+		}
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
 	if err != nil {
@@ -245,7 +249,7 @@ func (fs *FileStore) GetSessionWithTags(id string, required []string) (*models.S
 		return nil, fmt.Errorf("failed to parse session markdown: %w", err)
 	}
 	if !HasAllTags(session.Tags, required) {
-		return nil, fmt.Errorf("session not found: %s", id)
+		return nil, &MissingTagsError{Kind: "session", ID: id, Tags: required}
 	}
 
 	return session, nil
