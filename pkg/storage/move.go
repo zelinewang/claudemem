@@ -148,6 +148,7 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 		dryRun:       dryRun,
 		inTarget:     map[string]bool{},
 		refusedNotes: map[string]bool{},
+		unreadable:   map[string]bool{},
 		report: &MoveReport{
 			DryRun: dryRun, Entries: len(ids),
 			Moved: []MovedEntry{}, AlreadyInTarget: []MovedEntry{},
@@ -168,8 +169,11 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	for _, e := range ids {
 		want[e.ID] = true
 	}
-	m.fromFiles, m.fromNoteFiles = entryFilesByID(from.baseDir, want)
-	m.toFiles, m.toNoteFiles = entryFilesByID(to.baseDir, want)
+	var fromUnreadable, toUnreadable []unreadablePath
+	m.fromFiles, m.fromNoteFiles, fromUnreadable = entryFilesByID(from.baseDir, want)
+	m.toFiles, m.toNoteFiles, toUnreadable = entryFilesByID(to.baseDir, want)
+	m.reportUnreadable("this store", fromUnreadable)
+	m.reportUnreadable("the target", toUnreadable)
 	moveStep("after-walk")
 
 	var notes, sessions []MoveID
@@ -213,8 +217,10 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 // entry's own checks, and a later reindex of the target could keep it instead of the moved file. An
 // entry with such a copy in either store is reported as left to clean up instead of moved.
 func (m *mover) recheckCopies(want map[string]bool) {
-	fromFiles, _ := entryFilesByID(m.from.baseDir, want)
-	toFiles, _ := entryFilesByID(m.to.baseDir, want)
+	fromFiles, _, fromUnreadable := entryFilesByID(m.from.baseDir, want)
+	toFiles, _, toUnreadable := entryFilesByID(m.to.baseDir, want)
+	m.reportUnreadable("this store", fromUnreadable)
+	m.reportUnreadable("the target", toUnreadable)
 	recheck := func(list []MovedEntry) []MovedEntry {
 		kept := []MovedEntry{}
 		for _, e := range list {
@@ -269,6 +275,7 @@ type mover struct {
 	toNoteFiles   []string            // the same in the target
 	inTarget      map[string]bool     // notes in the target after this run (or, dry, that would be)
 	refusedNotes  map[string]bool     // notes this run refused or did not attempt: they stay here
+	unreadable    map[string]bool     // the unreadable files already reported, by store and path
 	report        *MoveReport
 }
 
@@ -298,6 +305,18 @@ func (m *mover) needsCleanup(e MoveID, kind string, problems []string) {
 	m.report.NeedsCleanup = append(m.report.NeedsCleanup, MoveIssue{Line: e.Line, ID: e.ID, Kind: kind, Reason: strings.Join(problems, "; ")})
 	if kind == "note" {
 		m.inTarget[e.ID] = true
+	}
+}
+
+// reportUnreadable warns, once each, about the files and directories of a store that a walk could not
+// read: the move cannot tell whether they hold a copy of an entry it moves, which a reindex would bring
+// back once they can be read.
+func (m *mover) reportUnreadable(store string, list []unreadablePath) {
+	for _, item := range list {
+		if key := store + "\x00" + item.rel; !m.unreadable[key] {
+			m.unreadable[key] = true
+			m.warn("%s: %s cannot be read (%v), so the move cannot tell whether it holds a copy of an entry it moves; check it by hand", store, item.rel, item.err)
+		}
 	}
 }
 

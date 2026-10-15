@@ -306,10 +306,11 @@ file, or an id or prefix of 8 or more characters in backticks, that names a note
 the session; one that names no note is not a note ref.
 
 Missing and refused entries, and entries left to clean up (in the target, with a different copy of
-the file, or rows the move could not remove, still in this store), make the exit code 1. With an
-add-only sync between machines, a moved file can come back from another machine's copy: move there
-too, or run the move again after the next pull, which removes a copy that came back when it is the
-same file.
+the file, or rows the move could not remove, still in this store), make the exit code 1. A file or
+directory under `notes/` or `sessions/` of either store that the move cannot read is a warning: the
+move cannot tell whether it holds a copy of an entry it moves. With an add-only sync between
+machines, a moved file can come back from another machine's copy: move there too, or run the move
+again after the next pull, which removes a copy that came back when it is the same file.
 
 Before a migration, run `claudemem --store <store> reindex` and then `claudemem --store <store>
 health` on the store the entries leave, so that its index matches its files: the move goes by the

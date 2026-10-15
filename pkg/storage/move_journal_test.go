@@ -73,7 +73,7 @@ func TestMoveEntries_ARerunRemovesTheFileAStoppedMoveLeft(t *testing.T) {
 	if records := journalRecords(t, to); len(records) != 0 {
 		t.Errorf("records left in the journal: %v", records)
 	}
-	files, _ := entryFilesByID(to.baseDir, map[string]bool{note.ID: true})
+	files, _, _ := entryFilesByID(to.baseDir, map[string]bool{note.ID: true})
 	if len(files[note.ID]) != 1 {
 		t.Errorf("the target holds %v for the note, want one file", files[note.ID])
 	}

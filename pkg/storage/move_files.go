@@ -207,20 +207,42 @@ func kindOfPath(rel string) string {
 
 // entryFilesByID walks a store's notes and sessions. It maps each wanted id to the files whose
 // frontmatter names it, also a file a stopped move set aside, and returns the ids of every note file,
-// sorted: a session's related note may sit in a file the index does not list.
-func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, []string) {
+// sorted: a session's related note may sit in a file the index does not list. It also returns the
+// files and directories it could not read (relative to the store, with the error): any of them may
+// hold a copy of a wanted entry.
+func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, []string, []unreadablePath) {
 	found := map[string][]string{}
 	var notes []string
+	var unreadable []unreadablePath
+	cannotRead := func(path string, err error) {
+		rel, _ := filepath.Rel(baseDir, path)
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
+			err = pathErr.Err // the path is named apart, relative to the store
+		}
+		unreadable = append(unreadable, unreadablePath{rel: rel, err: err})
+	}
 	for _, sub := range []string{"notes", "sessions"} {
-		filepath.Walk(filepath.Join(baseDir, sub), func(path string, info os.FileInfo, err error) error {
-			if err != nil || !info.Mode().IsRegular() || strings.HasPrefix(info.Name(), "._") {
+		root := filepath.Join(baseDir, sub)
+		filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				if path != root || !os.IsNotExist(err) {
+					cannotRead(path, err)
+				}
+				return nil
+			}
+			if !info.Mode().IsRegular() || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
 			setAside := isSetAside(info.Name())
 			if !setAside && !strings.HasSuffix(info.Name(), ".md") {
 				return nil
 			}
-			id := frontmatterID(path)
+			id, readErr := readFrontmatterID(path)
+			if readErr != nil {
+				cannotRead(path, readErr)
+				return nil
+			}
 			if want[id] {
 				rel, _ := filepath.Rel(baseDir, path)
 				found[id] = append(found[id], rel)
@@ -232,7 +254,13 @@ func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, 
 		})
 	}
 	sort.Strings(notes)
-	return found, notes
+	return found, notes, unreadable
+}
+
+// unreadablePath is a file or directory of a store that a walk could not read, relative to the store.
+type unreadablePath struct {
+	rel string
+	err error
 }
 
 // idsWithPrefix returns the distinct ids of sorted that start with prefix.
@@ -248,9 +276,16 @@ func idsWithPrefix(sorted []string, prefix string) []string {
 
 // frontmatterID is the top-level id in a file's YAML frontmatter, or "".
 func frontmatterID(path string) string {
+	id, _ := readFrontmatterID(path)
+	return id
+}
+
+// readFrontmatterID is frontmatterID, with the error when the file cannot be opened or read. A file
+// without such an id, or with a line too long to scan, is "" without an error.
+func readFrontmatterID(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -259,18 +294,21 @@ func frontmatterID(path string) string {
 		line := strings.TrimRight(sc.Text(), "\r")
 		if n == 0 {
 			if line != "---" {
-				return ""
+				return "", nil
 			}
 			continue
 		}
 		if line == "---" {
-			return ""
+			return "", nil
 		}
 		if value, ok := strings.CutPrefix(line, "id:"); ok {
-			return strings.Trim(strings.TrimSpace(value), `"'`)
+			return strings.Trim(strings.TrimSpace(value), `"'`), nil
 		}
 	}
-	return ""
+	if err := sc.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
+		return "", err
+	}
+	return "", nil
 }
 
 // movePath is rel inside store as an absolute path, checked for a move: it stays inside the store,

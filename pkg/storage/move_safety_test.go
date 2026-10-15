@@ -394,6 +394,41 @@ func TestMoveEntries_ReportsALeftoverCopyItCannotCheck(t *testing.T) {
 	}
 }
 
+// A file or a directory under notes/ or sessions/ that the walk cannot read is reported: it may hold a
+// copy of a moved entry, which a reindex would bring back once it can be read.
+func TestMoveEntries_ReportsFilesTheWalkCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs permissions that keep a file from being read")
+	}
+	for _, what := range []string{"a file", "a directory"} {
+		t.Run(what, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+			rel := entryFile(t, from, note.ID)
+			data := readRelFile(t, from, rel)
+			if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+				t.Fatalf("report %+v", report)
+			}
+			blocked := filepath.Join("notes", "archive", filepath.Base(rel))
+			writeRel(t, from, blocked, data) // a copy comes back, somewhere the walk cannot read
+			if what == "a directory" {
+				blocked = filepath.Dir(blocked)
+			}
+			path := filepath.Join(from.baseDir, blocked)
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(path, 0700) })
+			for _, dryRun := range []bool{true, false} {
+				report := mustMove(t, from, to, dryRun, note.ID)
+				if warnings := strings.Join(report.Warnings, "\n"); !strings.Contains(warnings, blocked+" cannot be read") {
+					t.Errorf("dry run %v: no warning about %s: %q", dryRun, blocked, warnings)
+				}
+			}
+		})
+	}
+}
+
 // What a stopped run leaves is recognized: a temp file is removed, and a file in the target without
 // rows is used when this store's rows have lost their file.
 func TestMoveEntries_FinishesWhatAStoppedRunLeft(t *testing.T) {
