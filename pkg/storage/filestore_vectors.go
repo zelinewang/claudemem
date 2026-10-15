@@ -518,6 +518,7 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 		if err != nil {
 			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
+		warnUnlisted(left)
 		return len(docs) - left, len(docs) - left, nil
 	}
 
@@ -536,6 +537,9 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 		}
 	}
 	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate())
+	if err == nil {
+		warnUnlisted(left)
+	}
 	return indexed, len(missingDocs) - left, err
 }
 
@@ -551,8 +555,18 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}
+	warnUnlisted(left)
 
 	return len(docs) - left, nil
+}
+
+// warnUnlisted says how many of the entries read from files got no vectors because the index does
+// not list them: files that came in outside claudemem, which a reindex lists, or entries removed
+// while the others were embedded, which need nothing.
+func warnUnlisted(n int) {
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "warning: the index does not list %d of the entries read from files, so they got no vectors: if their files are still there, run `claudemem reindex`, then `claudemem reindex --vectors --missing`\n", n)
+	}
 }
 
 // vectorGate is the gate of a bulk vector write of documents read from files: it runs the write

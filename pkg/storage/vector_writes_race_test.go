@@ -1,6 +1,9 @@
 package storage
 
 import (
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/zelinewang/claudemem/pkg/vectors"
@@ -158,4 +161,68 @@ func TestVectorWrites_SkipAnEntryTheIndexDoesNotList(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A backfill or a rebuild that leaves out entries the index does not list says how many, and how to
+// embed them: their files may have come in outside claudemem, and a reindex lists them.
+func TestVectorWrites_SayHowManyTheIndexDoesNotList(t *testing.T) {
+	for _, write := range []string{"backfill", "rebuild"} {
+		t.Run(write, func(t *testing.T) {
+			store := setupTestStore(t)
+			addTaggedNote(t, store, "ops", "Kept runbook", "text of the kept runbook", "team")
+			run := func() string {
+				attachHookEmbedder(t, store)
+				return captureStderr(t, func() {
+					var err error
+					if write == "backfill" {
+						_, _, err = store.IndexMissingVectors()
+					} else {
+						_, err = store.ReindexVectors()
+					}
+					if err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			if got := run(); strings.Contains(got, "does not list") {
+				t.Errorf("a run with every entry listed warns: %q", got)
+			}
+
+			copied := addTaggedNote(t, store, "misc", "Copied checklist", "text of the copied checklist", "team")
+			rel := entryFile(t, store, copied.ID)
+			data := readRelFile(t, store, rel)
+			if err := store.DeleteNote(copied.ID); err != nil {
+				t.Fatal(err)
+			}
+			writeRel(t, store, rel, data) // a file put here outside claudemem, which no reindex has listed
+			got := run()
+			if !strings.Contains(got, "the index does not list 1 of the entries read from files") ||
+				!strings.Contains(got, "run `claudemem reindex`") {
+				t.Errorf("a run that left out the unlisted entry says %q, want how many, and to run claudemem reindex", got)
+			}
+			if n := vectorRowsOf(t, store, copied.ID); n != 0 {
+				t.Errorf("the entry the index does not list has %d vector rows, want 0", n)
+			}
+		})
+	}
+}
+
+// captureStderr runs f and returns what it wrote to os.Stderr.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make(chan []byte)
+	go func() {
+		b, _ := io.ReadAll(r)
+		out <- b
+	}()
+	old := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	f()
+	w.Close()
+	return string(<-out)
 }
