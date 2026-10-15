@@ -55,7 +55,9 @@ that its index matches its files.
 The report lists the entries moved, already in the target, missing (in neither
 store), refused (with the reason) and left to clean up (in the target, with
 something left in this store); any of the last three makes the exit code 1. With
---dry-run both stores are opened read-only and nothing changes.
+--dry-run both stores are opened read-only and no entry, file or index row changes
+in either; SQLite may still create the -wal and -shm files next to an index in
+WAL mode, as any reader does.
 
 Examples:
   claudemem move --to ~/team-memory --file ids.txt --dry-run
@@ -69,7 +71,7 @@ Examples:
 func init() {
 	moveCmd.Flags().StringVar(&moveTo, "to", "", "the store to move the entries to (required; absolute or ~/ path of an existing store)")
 	moveCmd.Flags().StringVar(&moveFile, "file", "", "file of ids to move, one per line (required; - reads standard input)")
-	moveCmd.Flags().BoolVar(&moveDryRun, "dry-run", false, "report what would move, change nothing")
+	moveCmd.Flags().BoolVar(&moveDryRun, "dry-run", false, "report what would move; change no entry, file or index row")
 	rootCmd.AddCommand(moveCmd)
 }
 
@@ -118,7 +120,7 @@ func runMove(cmd *cobra.Command, args []string) error {
 	}
 
 	// No vector store: a move carries no vectors and never embeds. A dry run opens both stores
-	// read-only, so it changes nothing in either (not even the journal mode of an index).
+	// read-only, so it changes no entry, file or index row in either, nor the journal mode of an index.
 	open := storage.NewFileStore
 	if moveDryRun {
 		open = storage.OpenReadOnly

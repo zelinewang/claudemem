@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -78,5 +79,39 @@ func TestOpenReadOnly_RefusesAnIndexWithoutTables(t *testing.T) {
 	}
 	if _, err := OpenReadOnly(dir); err == nil || !strings.Contains(err.Error(), "entries") {
 		t.Errorf("an empty index: %v", err)
+	}
+}
+
+// A store whose index directory is read-only cannot be opened even to read it while the index is in
+// WAL mode: SQLite writes the index's -wal and -shm files next to it, also to read. The error says so,
+// instead of calling the index broken.
+func TestOpenReadOnly_SaysTheIndexDirectoryIsReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory its permissions keep from being written")
+	}
+	dir := t.TempDir()
+	writer, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addTaggedNote(t, writer, "ops", "Runbook", "rokw steps", "team")
+	writer.Close()
+	index := filepath.Join(dir, ".index")
+	for _, side := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(filepath.Join(index, "search.db"+side)); err == nil {
+			t.Fatalf("search.db%s is still there after the store closed", side)
+		}
+	}
+	if err := os.Chmod(index, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(index, 0700) })
+	store, err := OpenReadOnly(dir)
+	if err == nil {
+		store.Close()
+		t.Skip("this SQLite reads a WAL index in a read-only directory")
+	}
+	if !strings.Contains(err.Error(), "is read-only") || !strings.Contains(err.Error(), index) || strings.Contains(err.Error(), "no entries table") {
+		t.Errorf("error %q, want one that names the read-only index directory", err)
 	}
 }

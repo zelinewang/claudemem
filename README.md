@@ -236,7 +236,8 @@ the listed order) and warns. The other commands (`graph`, `health`, `sync`, `exp
 another existing store, keeping each entry's id and its file (under the same name, or the next free
 `-N` name if another file holds it there). The ids file has one full id per line; blank lines and
 anything after a `#` are skipped, and the whole file is checked before anything moves. `--dry-run`
-opens both stores read-only and changes nothing in either.
+opens both stores read-only and changes no entry, file or index row in either (SQLite may still
+create the `-wal` and `-shm` files next to an index in WAL mode, as any reader does).
 
 The target's index rows are built from the file, as `reindex` builds them. No vectors go along, and
 the target's own vectors for a moved entry are removed: a store's vectors can be older than its file

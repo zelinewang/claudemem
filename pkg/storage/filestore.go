@@ -2,13 +2,14 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
@@ -171,11 +172,28 @@ func OpenReadOnly(baseDir string) (*FileStore, error) {
 		var name string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE name = ?`, table).Scan(&name); err != nil {
 			db.Close()
+			if reason := readOnlyIndexReason(err, fs.indexDir); reason != "" {
+				return nil, fmt.Errorf("%s", reason)
+			}
 			return nil, fmt.Errorf("the index has no %s table (%v)", table, err)
 		}
 	}
 	fs.db = db
 	return fs, nil
+}
+
+// readOnlyIndexReason says why an index cannot be read when SQLite refused a read for want of writing
+// next to it: an index in WAL mode needs its -wal and -shm files, which a reader creates when they are
+// missing. It returns "" for any other error.
+func readOnlyIndexReason(err error, indexDir string) string {
+	var se *sqlite.Error
+	if !errors.As(err, &se) || se.Code()&0xff != 8 { // SQLITE_READONLY and its extended codes
+		return ""
+	}
+	if se.Code() == 1544 { // SQLITE_READONLY_DIRECTORY
+		return fmt.Sprintf("the index directory %s is read-only: SQLite writes the -wal and -shm files of an index in WAL mode next to it, also to read it; make the directory writable", indexDir)
+	}
+	return fmt.Sprintf("SQLite cannot write the -wal or -shm file of the index in %s, which it needs also to read an index in WAL mode (%v)", indexDir, err)
 }
 
 // readOnlyDSN is the SQLite URI that opens path read-only.
