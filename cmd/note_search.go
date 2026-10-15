@@ -59,9 +59,10 @@ Examples:
 		if len(listed) > maxNoteSearchResults {
 			listed = listed[:maxNoteSearchResults]
 		}
-		notes := make([]*models.Note, len(listed))
-		for i, l := range listed {
-			notes[i] = l.Note
+		// nil when nothing matched, so that JSON prints null as it always has
+		var notes []*models.Note
+		for _, l := range listed {
+			notes = append(notes, l.Note)
 		}
 
 		// Output results
