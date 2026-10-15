@@ -257,7 +257,11 @@ so none runs in the middle of an entry: note and session writes, `reindex`, `rep
 embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
 keeping the vectors another writer added meanwhile. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
-rows. A different copy of a moved file that arrives in either store during the run (a sync pull in a long
+rows. The target keeps a journal of the files a move is putting into it
+(`.index/move-pending`): the next move into that store removes what a stopped run wrote there and never
+committed, its temp file and the entry's file while the target's index does not list it there, as long
+as they still hold what the move wrote; a rerun is then not refused over its own leftover, and a note
+that turns out to belong elsewhere leaves no copy in the target. A different copy of a moved file that arrives in either store during the run (a sync pull in a long
 move) is found by a second walk at the end, and its entry is left to clean up. Two different files
 under one id (anywhere in the target), a file reached through a symlink
 or another alias between the two stores (a bind mount: one file in one directory, reached by two

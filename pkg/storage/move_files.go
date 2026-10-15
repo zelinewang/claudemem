@@ -343,34 +343,51 @@ func joinStore(fs *FileStore, rel string) string { return filepath.Join(fs.baseD
 // kept: when it is this very file it is used, when it holds this id otherwise the move is refused,
 // and otherwise the next free name is taken. It returns where the file is, and whether this call
 // created it.
+//
+// Each attempt is first recorded in the target's move journal (move_journal.go): a run that stops
+// before the entry's rows commit leaves the record, and the next run removes the files it names. The
+// record stays while this call returns a file it created; the caller clears it once the rows commit,
+// or the file is rolled back.
 func (m *mover) installFile(kind, id, rel string, data []byte) (string, bool, error) {
 	wanted := rel
+	sum := sha256Hex(data)
 	for attempt := 0; attempt < 10; attempt++ {
 		path, err := movePath(m.to, m.from, rel)
 		if err != nil {
+			m.to.clearPending(id)
 			return "", false, err
 		}
 		if err := mkdirAllSynced(filepath.Dir(path)); err != nil {
+			m.to.clearPending(id)
 			return "", false, err
 		}
-		tmp, err := writeTemp(path, data)
-		if err != nil {
+		tmp := newTempPath(path)
+		if err := m.to.recordPending(pendingInstall{ID: id, File: rel, Temp: filepath.Join(filepath.Dir(rel), filepath.Base(tmp)), SHA256: sum}); err != nil {
+			return "", false, fmt.Errorf("record the install in the target's move journal: %w", err)
+		}
+		if err := writeNewFile(tmp, data); err != nil {
+			m.to.clearPending(id)
 			return "", false, err
 		}
+		moveStep("after-temp")
 		err = linkNoReplace(tmp, path)
 		os.Remove(tmp)
 		if err == nil {
 			if err := syncDir(filepath.Dir(path)); err != nil {
-				os.Remove(path)
+				if os.Remove(path) == nil {
+					m.to.clearPending(id)
+				}
 				return "", false, fmt.Errorf("sync the target directory: %w", err)
 			}
 			return rel, true, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
+			m.to.clearPending(id)
 			return "", false, err
 		}
 		if existing, readErr := os.ReadFile(path); readErr == nil {
 			if f, perr := parseEntryFile(kind, existing); perr == nil && f.id == id {
+				m.to.clearPending(id) // the file there is not this call's to remove
 				if bytes.Equal(existing, data) {
 					return rel, false, nil
 				}
@@ -378,9 +395,11 @@ func (m *mover) installFile(kind, id, rel string, data []byte) (string, bool, er
 			}
 		}
 		if rel, err = m.to.freeEntryPath(kind, wanted, id); err != nil {
+			m.to.clearPending(id)
 			return "", false, err
 		}
 	}
+	m.to.clearPending(id)
 	return "", false, fmt.Errorf("no free file name for %s in the target", wanted)
 }
 

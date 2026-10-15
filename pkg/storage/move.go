@@ -158,6 +158,10 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 			return nil, fmt.Errorf("make the target's index sync each commit: %w", err)
 		}
 	}
+	// What a stopped run put into the target without committing its rows goes first.
+	if err := m.recoverPending(); err != nil {
+		return nil, fmt.Errorf("the target's move journal: %w", err)
+	}
 	want := make(map[string]bool, len(ids))
 	for _, e := range ids {
 		want[e.ID] = true
@@ -417,9 +421,10 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	}
 	moveStep("after-install")
 	if err := m.writeTargetRows(f, rel); err != nil {
-		m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(linked, rel))
+		m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(e.ID, linked, rel))
 		return
 	}
+	m.to.clearPending(e.ID)
 	moveStep("after-target-rows")
 	m.to.removeStaleTemps(rel, data)
 
@@ -591,23 +596,26 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 			}
 		}
 		if err := m.writeTargetRows(f, rel); err != nil {
-			m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(linked, rel))
+			m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(e.ID, linked, rel))
 			return
 		}
+		m.to.clearPending(e.ID)
 		m.to.removeStaleTemps(rel, data)
 	}
 	m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, "", rel))
 }
 
 // rollBack removes the file a failed entry put into the target (linked: this run created it), and
-// returns what the report adds when that removal fails: the file stays there, without rows.
-func (m *mover) rollBack(linked bool, rel string) string {
+// returns what the report adds when that removal fails: the file stays there, without rows, and its
+// record in the target's move journal stays too, so that a later run removes it.
+func (m *mover) rollBack(id string, linked bool, rel string) string {
 	if !linked {
 		return ""
 	}
 	if err := os.Remove(joinStore(m.to, rel)); err != nil && !os.IsNotExist(err) {
 		return fmt.Sprintf("; the file it put into the target stays there at %s, without rows, since it could not be removed: %v", rel, err)
 	}
+	m.to.clearPending(id)
 	return ""
 }
 
