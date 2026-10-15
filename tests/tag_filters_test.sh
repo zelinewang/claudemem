@@ -10,6 +10,7 @@ set -uo pipefail
 
 BINARY="${BINARY:-./claudemem}"
 STORE=$(mktemp -d)
+FAKE_HOME=$(mktemp -d)
 PASS=0; FAIL=0
 
 pass() { PASS=$((PASS+1)); echo "  [PASS] $1"; }
@@ -18,7 +19,7 @@ B() { "$BINARY" --store "$STORE" "$@"; }
 BJ() { "$BINARY" --store "$STORE" "$@" --format json; }
 json() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)" 2>/dev/null; }
 
-cleanup() { rm -rf "$STORE"; }
+cleanup() { rm -rf "$STORE" "$FAKE_HOME"; }
 trap cleanup EXIT
 
 if [ ! -x "$BINARY" ]; then
@@ -193,6 +194,18 @@ if [ "$PERSONAL_RESUME" = "sid-c" ] && [ -n "$SHARED_RESUME" ] && [ "$SHARED_RES
     pass "session resolve resumes only a session on the caller's side of the label"
 else
     fail "session resolve --tag" "shared=[$SHARED_RESUME] personal=[$PERSONAL_RESUME]"
+fi
+
+echo ""
+echo "9. help and the usage block after an error never print the home path"
+HELP=$(HOME="$FAKE_HOME" "$BINARY" --help 2>&1)
+RUN_ERR=$(HOME="$FAKE_HOME" "$BINARY" --store "$STORE" note get no-such-id 2>&1)
+FLAG_ERR=$(HOME="$FAKE_HOME" "$BINARY" --store "$STORE" note get --no-such-flag 2>&1)
+ALL_OUT="$HELP$RUN_ERR$FLAG_ERR"
+if grep -q -- "--store" <<<"$ALL_OUT" && ! grep -qF "$FAKE_HOME" <<<"$ALL_OUT"; then
+    pass "--help and the usage after a command or flag error show --store without the home path"
+else
+    fail "home path in help or usage" "$(grep -F -- "--store" <<<"$ALL_OUT")"
 fi
 
 echo ""
