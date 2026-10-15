@@ -60,13 +60,13 @@ echo "2. sessions carry tags"
 TAGS=$(BJ session get "$S_SHARED" | json "','.join(d['tags'])")
 [ "$TAGS" = "team" ] && pass "session save --tags stores the tags" || fail "session save --tags" "tags=[$TAGS]"
 OUT=$(B session list --tag team 2>&1)
-if echo "$OUT" | grep -q "Release review" && ! echo "$OUT" | grep -q "Secret diary"; then
+if grep -q "Release review" <<<"$OUT" && ! grep -q "Secret diary" <<<"$OUT"; then
     pass "session list --tag filters"
 else
     fail "session list --tag" "$OUT"
 fi
 OUT=$(B session search tagkw --tag team 2>&1)
-if echo "$OUT" | grep -q "Release review" && ! echo "$OUT" | grep -q "Secret diary"; then
+if grep -q "Release review" <<<"$OUT" && ! grep -q "Secret diary" <<<"$OUT"; then
     pass "session search --tag filters"
 else
     fail "session search --tag" "$OUT"
@@ -76,7 +76,7 @@ IDS=$(BJ search tagkw --type session --tag team | json "','.join(r['id'] for r i
     || fail "search --type session --tag" "ids=[$IDS]"
 ERR_UNTAGGED=$(B session get "${S_PERSONAL:0:8}" --tag team 2>&1 >/dev/null; echo "exit=$?")
 ERR_ABSENT=$(B session get ffffffff --tag team 2>&1 >/dev/null; echo "exit=$?")
-if echo "$ERR_UNTAGGED" | grep -q "session not found" && [ "${ERR_ABSENT//ffffffff/${S_PERSONAL:0:8}}" = "$ERR_UNTAGGED" ] && ! echo "$ERR_UNTAGGED" | grep -q "Secret"; then
+if grep -q "session not found" <<<"$ERR_UNTAGGED" && [ "${ERR_ABSENT//ffffffff/${S_PERSONAL:0:8}}" = "$ERR_UNTAGGED" ] && ! grep -q "Secret" <<<"$ERR_UNTAGGED"; then
     pass "session get --tag on a personal session reads exactly like an absent id"
 else
     fail "session get --tag (untagged)" "$ERR_UNTAGGED"
@@ -84,11 +84,12 @@ fi
 
 echo ""
 echo "3. note get --tag"
-B note get "${N_SHARED:0:8}" --tag team 2>&1 | grep -q "Deploy runbook" \
-    && pass "note get --tag prints a shared note" || fail "note get --tag (shared)" "not printed"
+OUT=$(B note get "${N_SHARED:0:8}" --tag team 2>&1)
+grep -q "Deploy runbook" <<<"$OUT" \
+    && pass "note get --tag prints a shared note" || fail "note get --tag (shared)" "$OUT"
 ERR_UNTAGGED=$(B note get "$N_PERSONAL" --tag team 2>&1 >/dev/null; echo "exit=$?")
 ERR_ABSENT=$(B note get ffffffff-ffff-ffff-ffff-ffffffffffff --tag team 2>&1 >/dev/null; echo "exit=$?")
-if echo "$ERR_UNTAGGED" | grep -q "note not found" && [ "${ERR_ABSENT//ffffffff-ffff-ffff-ffff-ffffffffffff/$N_PERSONAL}" = "$ERR_UNTAGGED" ] && ! echo "$ERR_UNTAGGED" | grep -q "Private"; then
+if grep -q "note not found" <<<"$ERR_UNTAGGED" && [ "${ERR_ABSENT//ffffffff-ffff-ffff-ffff-ffffffffffff/$N_PERSONAL}" = "$ERR_UNTAGGED" ] && ! grep -q "Private" <<<"$ERR_UNTAGGED"; then
     pass "note get --tag on a personal note reads exactly like an absent id"
 else
     fail "note get --tag (untagged)" "$ERR_UNTAGGED"
@@ -143,17 +144,18 @@ fi
 OUT=$(B tag apply --file "$EDITS" 2>&1)
 TAGGED=$(BJ search tagkw --tag team | json "len(d)")
 LEFT=$(BJ search tagkw --tag personal | json "len(d)")
-if echo "$OUT" | grep -q "^tag apply: 5 entries, 3 changed (2 notes, 1 sessions), 2 unchanged, 0 unknown, 0 failed" && [ "$TAGGED" = "5" ] && [ "$LEFT" = "0" ]; then
+if grep -q "^tag apply: 5 entries, 3 changed (2 notes, 1 sessions), 2 unchanged, 0 unknown, 0 failed" <<<"$OUT" && [ "$TAGGED" = "5" ] && [ "$LEFT" = "0" ]; then
     pass "tag apply updates the tags and search --tag finds all 5"
 else
     fail "tag apply" "$OUT (tagged=$TAGGED, personal left=$LEFT)"
 fi
-B tag apply --file "$EDITS" 2>&1 | grep -q "0 changed (0 notes, 0 sessions), 5 unchanged" \
-    && pass "tag apply again changes nothing" || fail "tag apply idempotence" "second run changed entries"
+OUT=$(B tag apply --file "$EDITS" 2>&1)
+grep -q "0 changed (0 notes, 0 sessions), 5 unchanged" <<<"$OUT" \
+    && pass "tag apply again changes nothing" || fail "tag apply idempotence" "$OUT"
 printf '{"id": "00000000-0000-0000-0000-000000000000", "kind": "note", "add": ["x"]}\n' > "$STORE/unknown.jsonl"
 if OUT=$(B tag apply --file "$STORE/unknown.jsonl" 2>&1); then
     fail "tag apply unknown id" "exit 0"
-elif echo "$OUT" | grep -q "unknown, line 1: entry not found"; then
+elif grep -q "unknown, line 1: entry not found" <<<"$OUT"; then
     pass "tag apply reports an unknown id and exits 1"
 else
     fail "tag apply unknown id" "$OUT"
@@ -162,7 +164,7 @@ fi
 echo ""
 echo "7. stats --tag"
 OUT=$(B stats --tag team 2>&1)
-if echo "$OUT" | grep -q "^Notes:    3$" && echo "$OUT" | grep -q "^Sessions: 2$" && ! echo "$OUT" | grep -qE "Deploy runbook|Private holiday|Release review|Secret diary|Storage:"; then
+if grep -q "^Notes:    3$" <<<"$OUT" && grep -q "^Sessions: 2$" <<<"$OUT" && ! grep -qE "Deploy runbook|Private holiday|Release review|Secret diary|Storage:" <<<"$OUT"; then
     pass "stats --tag prints the tagged counts and no titles"
 else
     fail "stats --tag" "$OUT"
