@@ -19,13 +19,13 @@ var (
 var moveCmd = &cobra.Command{
 	Use:   "move --to <store> --file <ids>",
 	Short: "Move entries to another store, keeping their ids",
-	Long: `Move the listed notes and sessions from this store (--store) to another existing store,
-keeping each entry's id and its file. The target's index rows are built from the
-file. No vectors go along, and the target's own vectors for a moved entry are
-removed: the report counts the entries and prints the command that embeds them
-in the target. The access log is not carried over: it records what a person
-read in this store. The entry's access rows here are removed with it, so its
-read counts start over in the target.
+	Long: `Move the listed notes and sessions from this store (--store) to another existing
+store, keeping each entry's id and its file. The target's index rows are built
+from the file. No vectors go along, and the target's own vectors for a moved
+entry are removed: the report counts the entries and prints the command that
+embeds them in the target. The access log is not carried over: it records what a
+person read in this store. The entry's access rows here are removed with it, so
+its read counts start over in the target.
 
 The file lists one full id per line; blank lines and everything after a # are
 skipped, and --file - reads standard input. The whole file is checked before
@@ -38,28 +38,28 @@ rows; only then does it leave this store. A run that stops half way leaves each
 entry whole in one store or both, and running the same file again finishes it.
 For the whole move and its reruns, stop everything else that writes to either
 store (editors, an add-only sync, claudemem sync jobs): a program that writes
-through a file it opened before the move can lose that write.
-Two different files under one id, a file reached through a symlink or a bind
-mount between the stores, and stores that overlap (also through a bind mount,
-of a store or of a directory inside it) are refused. Notes move first, then sessions. A
-session moves only when every note it lists under Related Notes (a heading with
-that title at any level, in any case, with or without a colon) is in the target
-or moves in the same run, since a session file names its related notes by title;
-a ref in backticks there that is no note id keeps the session, and so does a note
+through a file it opened before the move can lose that write. Two different
+files under one id, a file reached through a symlink or a bind mount between the
+stores, and stores that overlap (also through a bind mount, of a store or of a
+directory inside it) are refused. Notes move first, then sessions. A session
+moves only when every note it lists under Related Notes (a heading with that
+title at any level, in any case, with or without a colon) is in the target or
+moves in the same run, since a session file names its related notes by title; a
+ref in backticks there that is no note id keeps the session, and so does a note
 id anywhere else in the file (a full id, or an id prefix of 8 or more characters
 in backticks) that names a note staying here. A note counts as in a store when
 its index lists it or a note file there holds it, and a related note that
-neither store holds is only a warning, since that link is dead in both. Before a migration, run reindex and then health on this store, so
-that its index matches its files.
+neither store holds is only a warning, since that link is dead in both. Before a
+migration, run reindex and then health on this store, so that its index matches
+its files.
 
 The report lists the entries moved, already in the target, missing (in neither
 store), refused (with the reason), left to clean up (in the target, with
 something left in this store) and those that left the target during the run
 (another move or a delete took them out); any of the last four makes the exit
-code 1. With
---dry-run both stores are opened read-only and no entry, file or index row changes
-in either; SQLite may still create the -wal and -shm files next to an index in
-WAL mode, as any reader does.
+code 1. With --dry-run both stores are opened read-only and no entry, file or
+index row changes in either; SQLite may still create the -wal and -shm files
+next to an index in WAL mode, as any reader does.
 
 Examples:
   claudemem move --to ~/team-memory --file ids.txt --dry-run
