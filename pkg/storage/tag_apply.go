@@ -108,6 +108,7 @@ type TagApplyReport struct {
 	NotesChanged    int             `json:"notes_changed"`
 	SessionsChanged int             `json:"sessions_changed"`
 	Unchanged       int             `json:"unchanged"`
+	IndexRefreshed  int             `json:"index_refreshed"` // unchanged entries whose stale index rows were rebuilt
 	Unknown         []TagApplyIssue `json:"unknown"`
 	Failed          []TagApplyIssue `json:"failed"`
 }
@@ -118,10 +119,7 @@ type TagApplyReport struct {
 // on; running the same edits again changes nothing. progress, when set, is called after each entry.
 func (fs *FileStore) ApplyTagEdits(edits []TagEdit, dryRun bool, progress func(done, total int)) *TagApplyReport {
 	report := &TagApplyReport{DryRun: dryRun, Entries: len(edits), Unknown: []TagApplyIssue{}, Failed: []TagApplyIssue{}}
-	var rowIDs map[string]int64
-	if !dryRun {
-		rowIDs = fs.ftsRowIDs() // one FTS scan for the run instead of one per entry
-	}
+	rowIDs := fs.ftsRowIDs() // one FTS scan for the run instead of one per entry (a dry run reads them too)
 	for i, e := range edits {
 		res, err := fs.editTagsLocking(e.Kind, e.ID, e.Add, e.Remove, dryRun, rowIDs[e.ID])
 		switch {
@@ -138,6 +136,9 @@ func (fs *FileStore) ApplyTagEdits(edits []TagEdit, dryRun bool, progress func(d
 			}
 		default:
 			report.Unchanged++
+			if res.IndexRefreshed {
+				report.IndexRefreshed++
+			}
 		}
 		if progress != nil {
 			progress(i+1, len(edits))

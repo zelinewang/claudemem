@@ -174,10 +174,14 @@ Add `--format json` to any command for structured output.
 
 ### Tags
 
-A `--tag t1,t2` filter keeps the entries that carry every listed tag, matched as whole tags,
-ignoring the case of ASCII letters (`--tag team` does not match `team-old`). On `get`, an entry
-without the tags is reported exactly like an id that does not exist, and `stats --tag` prints
-counts only.
+A tag is one word: a new tag with a space or comma is refused on every write (an older entry
+keeps such a tag and stays editable). A `--tag t1,t2` filter keeps the entries that carry every
+listed tag, matched as whole tags, ignoring the case of ASCII letters (`--tag team` does not match
+`team-old`); `--tag` can be repeated, all the tags are required, and a `--tag` that names no tag
+is an error. On `get`, an entry without the tags is reported exactly like an id that does not
+exist, and `stats --tag` prints counts only. Search checks each tagged hit against its file; the
+counts of `stats --tag` and the `context inject` header come from the index, so run
+`claudemem reindex` after editing files by hand.
 
 `--add-tag` / `--remove-tag` and `tag apply` change tags only: the tags list in the file's
 frontmatter and the entry's index rows (the body, the `updated` time and the vectors stay as
@@ -190,7 +194,8 @@ one JSON object per line:
 
 The whole file is validated before anything changes; each entry is then applied atomically
 under the store lock, unknown ids are listed (exit 1), and a second run of the same file
-changes nothing.
+changes nothing. An entry whose file already has the requested tags but whose index rows do
+not is reported as a stale index row and its rows are rebuilt from the file.
 
 ## Search Backends
 

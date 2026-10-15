@@ -12,7 +12,7 @@ import (
 var (
 	injectLimit   int
 	injectProject string
-	injectTags    string
+	injectTags    []string
 )
 
 var contextInjectCmd = &cobra.Command{
@@ -40,7 +40,7 @@ func init() {
 	contextCmd.AddCommand(contextInjectCmd)
 	contextInjectCmd.Flags().IntVar(&injectLimit, "limit", 5, "Number of recent items per category")
 	contextInjectCmd.Flags().StringVar(&injectProject, "project", "", "Filter by project path")
-	contextInjectCmd.Flags().StringVar(&injectTags, "tag", "", "Only notes and sessions carrying all these tags (comma-separated)")
+	contextInjectCmd.Flags().StringArrayVar(&injectTags, "tag", nil, "Only notes and sessions carrying all these tags (comma-separated or repeated)")
 }
 
 type contextPayload struct {
@@ -64,7 +64,10 @@ type contextStats struct {
 }
 
 func runContextInject(cmd *cobra.Command, args []string) error {
-	required := splitTagList(injectTags)
+	required, err := tagFlag(cmd, "tag")
+	if err != nil {
+		return err
+	}
 	store, err := getUnifiedStore()
 	if err != nil {
 		return err

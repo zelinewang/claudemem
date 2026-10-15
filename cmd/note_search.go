@@ -9,7 +9,7 @@ import (
 
 var (
 	searchCategory string
-	searchTags     string
+	searchTags     []string
 )
 
 // noteSearchCmd represents the note search command
@@ -29,13 +29,9 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
 
-		// Parse tags
-		var tags []string
-		if searchTags != "" {
-			tags = strings.Split(searchTags, ",")
-			for i, tag := range tags {
-				tags[i] = strings.TrimSpace(tag)
-			}
+		tags, err := tagFlag(cmd, "tag")
+		if err != nil {
+			return err
 		}
 
 		// Get store and search
@@ -88,5 +84,5 @@ Examples:
 func init() {
 	noteCmd.AddCommand(noteSearchCmd)
 	noteSearchCmd.Flags().StringVar(&searchCategory, "in", "", "Filter by category")
-	noteSearchCmd.Flags().StringVar(&searchTags, "tag", "", "Filter by tags (comma-separated)")
+	noteSearchCmd.Flags().StringArrayVar(&searchTags, "tag", nil, "Filter by tags, all required (comma-separated or repeated)")
 }

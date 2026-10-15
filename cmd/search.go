@@ -18,7 +18,7 @@ var (
 	searchLimit           int
 	searchCompact         bool
 	searchFilterCategory  string
-	searchFilterTags      string
+	searchFilterTags      []string
 	searchAfter           string
 	searchBefore          string
 	searchSort            string
@@ -47,6 +47,10 @@ Examples:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
+		tags, err := tagFlag(cmd, "tag")
+		if err != nil {
+			return err
+		}
 
 		// Get file store (concrete type for vector access)
 		fileStore, err := getFileStore()
@@ -87,16 +91,6 @@ Examples:
 					return fmt.Errorf("run `claudemem setup` to reconfigure, then retry")
 				case recoveryExit:
 					return fmt.Errorf("aborted")
-				}
-			}
-		}
-
-		// Parse tags
-		var tags []string
-		if searchFilterTags != "" {
-			for _, t := range strings.Split(searchFilterTags, ",") {
-				if trimmed := strings.TrimSpace(t); trimmed != "" {
-					tags = append(tags, trimmed)
 				}
 			}
 		}
@@ -248,7 +242,7 @@ func init() {
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 20, "Maximum number of results")
 	searchCmd.Flags().BoolVar(&searchCompact, "compact", false, "Compact output (ID + title + score only)")
 	searchCmd.Flags().StringVar(&searchFilterCategory, "category", "", "Filter by category")
-	searchCmd.Flags().StringVar(&searchFilterTags, "tag", "", "Only entries carrying all these tags, matched as whole tags (comma-separated)")
+	searchCmd.Flags().StringArrayVar(&searchFilterTags, "tag", nil, "Only entries carrying all these tags, matched as whole tags (comma-separated or repeated)")
 	searchCmd.Flags().StringVar(&searchAfter, "after", "", "Filter entries after date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchBefore, "before", "", "Filter entries before date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")

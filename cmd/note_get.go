@@ -9,7 +9,7 @@ import (
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
-var noteGetTags string
+var noteGetTags []string
 
 // noteGetCmd represents the note get command
 var noteGetCmd = &cobra.Command{
@@ -27,7 +27,10 @@ Examples:
   claudemem note get abc12345 --tag team   # Only if the note carries team`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		required := splitTagList(noteGetTags)
+		required, err := tagFlag(cmd, "tag")
+		if err != nil {
+			return err
+		}
 		store, err := getStore()
 		if err != nil {
 			return err
@@ -159,5 +162,5 @@ Examples:
 
 func init() {
 	noteCmd.AddCommand(noteGetCmd)
-	noteGetCmd.Flags().StringVar(&noteGetTags, "tag", "", "Only consider notes carrying all these tags (comma-separated); others read as not found")
+	noteGetCmd.Flags().StringArrayVar(&noteGetTags, "tag", nil, "Only consider notes carrying all these tags (comma-separated or repeated); others read as not found")
 }

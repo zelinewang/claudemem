@@ -56,7 +56,7 @@ claudemem session update <id> --add-tag X --remove-tag Y
 # Search
 claudemem search "query" [--type note|session] [--limit N]
 claudemem search "query" --compact              # IDs + titles only
-claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, all required)
+claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, all required; --tag repeatable)
 
 # Tags
 claudemem context inject --tag project-x  # inject only entries carrying the tag

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -78,6 +79,37 @@ func validateTags(tags []string) error {
 		}
 	}
 	return nil
+}
+
+// tagIsOneWord reports whether tag has no whitespace and no comma. The index keeps an entry's tags as
+// one space-joined string, so "a b" would read back as the two tags a and b (and match a filter on
+// either), and a tag list on the command line is split at commas.
+func tagIsOneWord(tag string) bool {
+	return strings.IndexFunc(tag, isTagSeparator) < 0
+}
+
+func isTagSeparator(r rune) bool { return unicode.IsSpace(r) || r == ',' }
+
+// validateNewTags refuses a tag that is not one word, unless existing already holds it: an entry
+// written before this check keeps the tags it has and stays editable.
+func validateNewTags(tags, existing []string) error {
+	for _, tag := range tags {
+		if tagIsOneWord(tag) || containsExact(existing, tag) {
+			continue
+		}
+		return fmt.Errorf("tag %q has a space or comma; a tag is one word, for example %q",
+			tag, strings.Join(strings.FieldsFunc(tag, isTagSeparator), "-"))
+	}
+	return nil
+}
+
+func containsExact(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 // validateFilepathWithinBase ensures a resolved filepath stays within the base directory.

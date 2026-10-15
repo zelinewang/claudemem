@@ -15,7 +15,7 @@ var (
 	listDateRange string
 	listBranch    string
 	listProject   string
-	listTags      string
+	listTags      []string
 )
 
 var sessionListCmd = &cobra.Command{
@@ -58,10 +58,14 @@ func init() {
 	sessionListCmd.Flags().StringVar(&listDateRange, "date-range", "", "Filter by date range (START..END or 7d)")
 	sessionListCmd.Flags().StringVar(&listBranch, "branch", "", "Filter by branch")
 	sessionListCmd.Flags().StringVar(&listProject, "project", "", "Filter by project path")
-	sessionListCmd.Flags().StringVar(&listTags, "tag", "", "Only sessions carrying all these tags (comma-separated)")
+	sessionListCmd.Flags().StringArrayVar(&listTags, "tag", nil, "Only sessions carrying all these tags (comma-separated or repeated)")
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
+	tags, err := tagFlag(cmd, "tag")
+	if err != nil {
+		return err
+	}
 	store, err := getSessionStore()
 	if err != nil {
 		return err
@@ -72,7 +76,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	opts := storage.SessionListOpts{
 		Branch:  listBranch,
 		Project: listProject,
-		Tags:    splitTagList(listTags),
+		Tags:    tags,
 		Limit:   listLast,
 	}
 

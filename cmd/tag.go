@@ -106,14 +106,45 @@ func printTagApplyReport(r *storage.TagApplyReport) {
 	if r.DryRun {
 		header, verb = "tag apply (dry run)", "would change"
 	}
-	OutputText("%s: %d entries, %d %s (%d notes, %d sessions), %d unchanged, %d unknown, %d failed",
-		header, r.Entries, r.Changed, verb, r.NotesChanged, r.SessionsChanged, r.Unchanged, len(r.Unknown), len(r.Failed))
+	stale := ""
+	if r.IndexRefreshed > 0 {
+		stale = fmt.Sprintf(", %d stale index rows refreshed", r.IndexRefreshed)
+		if r.DryRun {
+			stale = fmt.Sprintf(", %d stale index rows to refresh", r.IndexRefreshed)
+		}
+	}
+	OutputText("%s: %d entries, %d %s (%d notes, %d sessions), %d unchanged, %d unknown, %d failed%s",
+		header, r.Entries, r.Changed, verb, r.NotesChanged, r.SessionsChanged, r.Unchanged, len(r.Unknown), len(r.Failed), stale)
 	for _, issue := range r.Unknown {
 		OutputText("  unknown, line %d: %s", issue.Line, issue.Reason)
 	}
 	for _, issue := range r.Failed {
 		OutputText("  failed, line %d: %s", issue.Line, issue.Reason)
 	}
+}
+
+// tagFlag returns the tags given with a repeatable, comma-separated tag flag (--tag, --add-tag,
+// --remove-tag), or nil when the flag was not given. Repeated flags add up: --tag a --tag b requires
+// both. A flag given with no tag in it (--tag "" or --tag " , ", say from an unset variable) is an
+// error rather than a filter that quietly matches more.
+func tagFlag(cmd *cobra.Command, name string) ([]string, error) {
+	f := cmd.Flags().Lookup(name)
+	if f == nil || !f.Changed {
+		return nil, nil
+	}
+	values, err := cmd.Flags().GetStringArray(name)
+	if err != nil {
+		return nil, err
+	}
+	var tags []string
+	for _, v := range values {
+		given := splitTagList(v)
+		if len(given) == 0 {
+			return nil, fmt.Errorf("--%s was given but names no tag", name)
+		}
+		tags = append(tags, given...)
+	}
+	return tags, nil
 }
 
 // splitTagList splits a comma-separated tag list, trimming spaces and dropping empty items.
@@ -140,9 +171,12 @@ func printTagEdit(res *storage.TagEditResult) error {
 	if tags == "" {
 		tags = "(none)"
 	}
-	if res.Changed {
+	switch {
+	case res.Changed:
 		OutputText("✓ Updated tags of %s \"%s\" (id: %s): %s", res.Kind, res.Title, idShort, tags)
-	} else {
+	case res.IndexRefreshed:
+		OutputText("Tags of %s \"%s\" (id: %s) already as requested: %s (stale index rows refreshed)", res.Kind, res.Title, idShort, tags)
+	default:
 		OutputText("Tags of %s \"%s\" (id: %s) already as requested: %s", res.Kind, res.Title, idShort, tags)
 	}
 	return nil

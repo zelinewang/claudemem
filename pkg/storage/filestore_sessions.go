@@ -27,6 +27,10 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 	if err := validateTitle(session.Title); err != nil {
 		return nil, fmt.Errorf("invalid session title: %w", err)
 	}
+	// the given tags only: tags an existing session already carries are merged in below as they are
+	if err := validateNewTags(session.Tags, nil); err != nil {
+		return nil, err
+	}
 
 	// ── Dedup check ──
 	// Sessions are fundamentally CONVERSATION-based, not topic-based.

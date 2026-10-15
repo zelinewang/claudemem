@@ -14,13 +14,16 @@ import (
 
 // TagEditResult describes one tag edit: the entry's tags before and after, and whether the edit
 // changed anything (an edit that adds tags already present and removes absent ones does not).
+// IndexRefreshed reports that the file already had the requested tags but the index rows did not
+// match it, and were rebuilt from the file.
 type TagEditResult struct {
-	ID      string   `json:"id"`
-	Kind    string   `json:"kind"`
-	Title   string   `json:"title"`
-	Before  []string `json:"before"`
-	After   []string `json:"after"`
-	Changed bool     `json:"changed"`
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Title          string   `json:"title"`
+	Before         []string `json:"before"`
+	After          []string `json:"after"`
+	Changed        bool     `json:"changed"`
+	IndexRefreshed bool     `json:"index_refreshed,omitempty"`
 }
 
 // EditTags adds and removes tags on the note or session with exactly this id (no prefix match).
@@ -94,7 +97,17 @@ func (fs *FileStore) editTags(kind, id string, add, remove []string, dryRun bool
 	}
 	res := &TagEditResult{ID: id, Kind: kind, Title: old.title, Before: old.tags, After: old.tags}
 	if !changed {
-		return res, nil
+		// The file is as requested. An index row that disagrees with it (a file edited by hand or
+		// brought by a sync, not yet reindexed) is rebuilt from the file, so search sees the same tags.
+		stale, err := fs.tagRowsStale(id, old.tags, ftsRowID)
+		if err != nil || !stale {
+			return res, err
+		}
+		res.IndexRefreshed = true
+		if dryRun {
+			return res, nil
+		}
+		return res, fs.writeTagRows(id, old, ftsRowID)
 	}
 	if err := verifyTagRewrite(oldData, newData); err != nil {
 		return nil, fmt.Errorf("%s: %w", rel, err)
@@ -129,29 +142,9 @@ func (fs *FileStore) editTags(kind, id string, add, remove []string, dryRun bool
 		return nil, fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	tx, err := fs.db.Begin()
-	if err != nil {
+	if err := fs.writeTagRows(id, updated, ftsRowID); err != nil {
 		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-	joined := strings.Join(updated.tags, " ")
-	if _, err := tx.Exec(`UPDATE entries SET tags = ? WHERE id = ?`, joined, id); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to update entry tags: %w", err)
-	}
-	if err := deleteFTSRow(tx, id, ftsRowID); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to delete from FTS: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
-		id, updated.title, updated.ftsContent, joined); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to insert into FTS: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		os.Remove(tmpPath)
-		return nil, fmt.Errorf("failed to commit: %w", err)
+		return nil, err
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -167,6 +160,61 @@ func (fs *FileStore) editTags(kind, id string, add, remove []string, dryRun bool
 		os.Remove(tmpPath)
 	}
 	return res, nil
+}
+
+// writeTagRows sets the entry's tags in its entries row and rebuilds its memory_fts row from f, in one
+// transaction, the way Reindex builds them.
+func (fs *FileStore) writeTagRows(id string, f *entryFields, ftsRowID int64) error {
+	tx, err := fs.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+	joined := strings.Join(f.tags, " ")
+	if _, err := tx.Exec(`UPDATE entries SET tags = ? WHERE id = ?`, joined, id); err != nil {
+		return fmt.Errorf("failed to update entry tags: %w", err)
+	}
+	if err := deleteFTSRow(tx, id, ftsRowID); err != nil {
+		return fmt.Errorf("failed to delete from FTS: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`,
+		id, f.title, f.ftsContent, joined); err != nil {
+		return fmt.Errorf("failed to insert into FTS: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+	return nil
+}
+
+// tagRowsStale reports whether the entry's entries row or memory_fts row carries other tags than
+// tags, or the entry has not exactly one memory_fts row. With a known rowid the FTS row is read
+// directly; otherwise by id, which scans the FTS table (fine for one edit, avoided in bulk runs).
+func (fs *FileStore) tagRowsStale(id string, tags []string, ftsRowID int64) (bool, error) {
+	joined := strings.Join(tags, " ")
+	var indexed string
+	if err := fs.db.QueryRow(`SELECT tags FROM entries WHERE id = ?`, id).Scan(&indexed); err != nil {
+		return false, fmt.Errorf("read the index row of %s: %w", id, err)
+	}
+	if indexed != joined {
+		return true, nil
+	}
+	if ftsRowID > 0 {
+		var ftsTags string
+		err := fs.db.QueryRow(`SELECT tags FROM memory_fts WHERE rowid = ? AND id = ?`, ftsRowID, id).Scan(&ftsTags)
+		if err == nil {
+			return ftsTags != joined, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, fmt.Errorf("read the FTS row of %s: %w", id, err)
+		}
+	}
+	var rows int
+	var minTags, maxTags sql.NullString
+	if err := fs.db.QueryRow(`SELECT COUNT(*), MIN(tags), MAX(tags) FROM memory_fts WHERE id = ?`, id).Scan(&rows, &minTags, &maxTags); err != nil {
+		return false, fmt.Errorf("read the FTS row of %s: %w", id, err)
+	}
+	return rows != 1 || minTags.String != joined || maxTags.String != joined, nil
 }
 
 // deleteFTSRow removes the entry's memory_fts row. memory_fts.id is UNINDEXED, so deleting by id

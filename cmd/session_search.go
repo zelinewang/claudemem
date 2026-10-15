@@ -11,7 +11,7 @@ import (
 var (
 	searchBranch      string
 	searchDateRange   string
-	sessionSearchTags string
+	sessionSearchTags []string
 )
 
 var sessionSearchCmd = &cobra.Command{
@@ -51,11 +51,15 @@ func init() {
 
 	sessionSearchCmd.Flags().StringVar(&searchBranch, "branch", "", "Filter by branch")
 	sessionSearchCmd.Flags().StringVar(&searchDateRange, "date-range", "", "Filter by date range (START..END or 7d)")
-	sessionSearchCmd.Flags().StringVar(&sessionSearchTags, "tag", "", "Only sessions carrying all these tags (comma-separated)")
+	sessionSearchCmd.Flags().StringArrayVar(&sessionSearchTags, "tag", nil, "Only sessions carrying all these tags (comma-separated or repeated)")
 }
 
 func runSessionSearch(cmd *cobra.Command, args []string) error {
 	query := args[0]
+	tags, err := tagFlag(cmd, "tag")
+	if err != nil {
+		return err
+	}
 
 	store, err := getSessionStore()
 	if err != nil {
@@ -66,7 +70,7 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 	// Build options
 	opts := storage.SessionListOpts{
 		Branch: searchBranch,
-		Tags:   splitTagList(sessionSearchTags),
+		Tags:   tags,
 	}
 
 	// Handle date range

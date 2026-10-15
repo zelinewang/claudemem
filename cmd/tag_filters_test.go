@@ -395,3 +395,69 @@ func TestCLI_StatsTag(t *testing.T) {
 		t.Error("--top-accessed with --tag was accepted")
 	}
 }
+
+// --tag adds up when repeated; a --tag that names no tag is an error, never "no filter".
+func TestCLI_TagFlagsRepeatAndRefuseEmpty(t *testing.T) {
+	s := newTaggedStore(t)
+	teamOnly := addNoteCLI(t, s.path, "misc", "Team only", "labelkw team only", "team")
+
+	var results []storage.SearchResult
+	json.Unmarshal([]byte(mustRunCLI(t, s.path, "search", "labelkw", "--tag", "team", "--tag", "ops", "--format", "json")), &results)
+	var ids []string
+	for _, r := range results {
+		ids = append(ids, r.ID)
+	}
+	if strings.Join(ids, ",") != s.sharedNote {
+		t.Errorf("--tag team --tag ops = %v, want only the note carrying both (%s; %s carries team only)", ids, s.sharedNote, teamOnly)
+	}
+
+	for _, args := range [][]string{
+		{"search", "labelkw"},
+		{"note", "search", "labelkw"},
+		{"note", "get", s.sharedNote},
+		{"session", "list"},
+		{"session", "search", "labelkw"},
+		{"session", "get", s.sharedSession},
+		{"context", "inject"},
+		{"stats"},
+	} {
+		for _, empty := range []string{"", " , "} {
+			out, err := runCLI(t, s.path, append(args, "--tag", "team", "--tag", empty)...)
+			if err == nil || !strings.Contains(err.Error(), "--tag was given but names no tag") {
+				t.Errorf("%v --tag team --tag %q: %v\n%s", args, empty, err, out)
+			}
+		}
+	}
+
+	mustRunCLI(t, s.path, "note", "update", s.personalNote, "--add-tag", "a", "--add-tag", "b,c", "--remove-tag", "personal")
+	if got := fmt.Sprint(noteJSON(t, s.path, s.personalNote)["tags"]); got != "[a b c]" {
+		t.Errorf("repeated --add-tag: tags = %s, want [a b c]", got)
+	}
+	if _, err := runCLI(t, s.path, "note", "update", s.personalNote, "--add-tag", ""); err == nil {
+		t.Error("note update --add-tag \"\" was accepted")
+	}
+	if _, err := runCLI(t, s.path, "session", "update", s.personalSession, "--remove-tag", " , "); err == nil {
+		t.Error("session update --remove-tag \" , \" was accepted")
+	}
+}
+
+// A tag is one word on every write path; the error names a one-word form.
+func TestCLI_TagsAreOneWord(t *testing.T) {
+	storePath := t.TempDir()
+	for _, args := range [][]string{
+		{"note", "add", "work", "--title", "Two words", "--content", "x", "--tags", "machine learning"},
+		{"session", "save", "--title", "Two words", "--branch", "main", "--project", "p", "--session-id", "sid-x", "--summary", "x", "--tags", "machine learning"},
+	} {
+		out, err := runCLI(t, storePath, args...)
+		if err == nil || !strings.Contains(err.Error(), `a tag is one word, for example "machine-learning"`) {
+			t.Errorf("%v: %v\n%s", args[:2], err, out)
+		}
+	}
+	id := addNoteCLI(t, storePath, "work", "One word", "x", "machine-learning")
+	if _, err := runCLI(t, storePath, "note", "update", id, "--tags", "deep learning"); err == nil {
+		t.Error("note update --tags accepted a tag with a space")
+	}
+	if _, err := runCLI(t, storePath, "note", "update", id, "--add-tag", "deep learning"); err == nil {
+		t.Error("note update --add-tag accepted a tag with a space")
+	}
+}

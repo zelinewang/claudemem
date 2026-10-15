@@ -261,7 +261,7 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 				filtered = append(filtered, r)
 			}
 		}
-		semanticResults = filtered
+		semanticResults = fs.keepResultsWithTags(filtered, opts.Tags)
 	}
 
 	// If either side is empty, return the other directly

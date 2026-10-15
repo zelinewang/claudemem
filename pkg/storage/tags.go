@@ -3,8 +3,9 @@ package storage
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
-	"unicode"
 )
 
 // A tag filter is a list of required tags: an entry passes when it carries every one of them as a
@@ -91,8 +92,11 @@ func ValidateTagEdit(add, remove []string) error {
 		if len(tag) > MaxTagLen {
 			return fmt.Errorf("tag too long (max %d chars): %q", MaxTagLen, tag)
 		}
-		if strings.IndexFunc(tag, func(r rune) bool { return unicode.IsSpace(r) || r == ',' || r == 0 }) >= 0 {
-			return fmt.Errorf("tag %q must be a single word: no spaces or commas", tag)
+		if strings.ContainsRune(tag, 0) {
+			return fmt.Errorf("tag contains null byte")
+		}
+		if err := validateNewTags([]string{tag}, nil); err != nil {
+			return err
 		}
 	}
 	for _, tag := range remove {
@@ -121,4 +125,39 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// keepResultsWithTags drops the search results whose file does not carry every required tag. The SQL
+// tag filter reads the index, which can disagree with the file: a stale row (a file edited by hand or
+// brought by a sync, not yet reindexed) or an old tag with a space in it, which the space-joined index
+// reads as two tags. The file is the source of truth.
+func (fs *FileStore) keepResultsWithTags(results []SearchResult, required []string) []SearchResult {
+	if len(required) == 0 {
+		return results
+	}
+	kept := make([]SearchResult, 0, len(results))
+	for _, r := range results {
+		if tags, ok := fs.fileTags(r.ID); ok && HasAllTags(tags, required) {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+// fileTags returns the tags in the frontmatter of the entry's file; ok is false when the entry or its
+// file cannot be read.
+func (fs *FileStore) fileTags(id string) (tags []string, ok bool) {
+	var kind, rel string
+	if err := fs.db.QueryRow(`SELECT type, filepath FROM entries WHERE id = ?`, id).Scan(&kind, &rel); err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join(fs.baseDir, rel))
+	if err != nil {
+		return nil, false
+	}
+	f, err := parseEntryFile(kind, data)
+	if err != nil || f.id != id {
+		return nil, false
+	}
+	return f.tags, true
 }

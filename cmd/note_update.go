@@ -13,8 +13,8 @@ var (
 	updateTitle      string
 	updateContent    string
 	updateTags       string
-	updateAddTags    string
-	updateRemoveTags string
+	updateAddTags    []string
+	updateRemoveTags []string
 )
 
 // noteUpdateCmd represents the note update command
@@ -38,8 +38,14 @@ Examples:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-		addTags := splitTagList(updateAddTags)
-		removeTags := splitTagList(updateRemoveTags)
+		addTags, err := tagFlag(cmd, "add-tag")
+		if err != nil {
+			return err
+		}
+		removeTags, err := tagFlag(cmd, "remove-tag")
+		if err != nil {
+			return err
+		}
 		tagEdit := len(addTags) > 0 || len(removeTags) > 0
 		if updateTags != "" && tagEdit {
 			return fmt.Errorf("--tags replaces the whole tag list; use it without --add-tag/--remove-tag")
@@ -127,6 +133,6 @@ func init() {
 	noteUpdateCmd.Flags().StringVar(&updateTitle, "title", "", "New title")
 	noteUpdateCmd.Flags().StringVar(&updateContent, "content", "", "New content")
 	noteUpdateCmd.Flags().StringVar(&updateTags, "tags", "", "New tags, replacing the current ones (comma-separated)")
-	noteUpdateCmd.Flags().StringVar(&updateAddTags, "add-tag", "", "Tags to add, keeping the others (comma-separated)")
-	noteUpdateCmd.Flags().StringVar(&updateRemoveTags, "remove-tag", "", "Tags to remove, keeping the others (comma-separated)")
+	noteUpdateCmd.Flags().StringArrayVar(&updateAddTags, "add-tag", nil, "Tags to add, keeping the others (comma-separated or repeated)")
+	noteUpdateCmd.Flags().StringArrayVar(&updateRemoveTags, "remove-tag", nil, "Tags to remove, keeping the others (comma-separated or repeated)")
 }

@@ -29,15 +29,19 @@ Examples:
 	RunE: runSessionGet,
 }
 
-var sessionGetTags string
+var sessionGetTags []string
 
 func init() {
 	sessionCmd.AddCommand(sessionGetCmd)
-	sessionGetCmd.Flags().StringVar(&sessionGetTags, "tag", "", "Only consider sessions carrying all these tags (comma-separated); others read as not found")
+	sessionGetCmd.Flags().StringArrayVar(&sessionGetTags, "tag", nil, "Only consider sessions carrying all these tags (comma-separated or repeated); others read as not found")
 }
 
 func runSessionGet(cmd *cobra.Command, args []string) error {
 	id := args[0]
+	required, err := tagFlag(cmd, "tag")
+	if err != nil {
+		return err
+	}
 
 	store, err := getSessionStore()
 	if err != nil {
@@ -46,7 +50,7 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	// Get session
-	session, err := store.GetSessionWithTags(id, splitTagList(sessionGetTags))
+	session, err := store.GetSessionWithTags(id, required)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}

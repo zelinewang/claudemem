@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	sessionUpdateAddTags    string
-	sessionUpdateRemoveTags string
+	sessionUpdateAddTags    []string
+	sessionUpdateRemoveTags []string
 )
 
 var sessionUpdateCmd = &cobra.Command{
@@ -32,13 +32,19 @@ Examples:
 
 func init() {
 	sessionCmd.AddCommand(sessionUpdateCmd)
-	sessionUpdateCmd.Flags().StringVar(&sessionUpdateAddTags, "add-tag", "", "Tags to add (comma-separated)")
-	sessionUpdateCmd.Flags().StringVar(&sessionUpdateRemoveTags, "remove-tag", "", "Tags to remove (comma-separated)")
+	sessionUpdateCmd.Flags().StringArrayVar(&sessionUpdateAddTags, "add-tag", nil, "Tags to add (comma-separated or repeated)")
+	sessionUpdateCmd.Flags().StringArrayVar(&sessionUpdateRemoveTags, "remove-tag", nil, "Tags to remove (comma-separated or repeated)")
 }
 
 func runSessionUpdate(cmd *cobra.Command, args []string) error {
-	addTags := splitTagList(sessionUpdateAddTags)
-	removeTags := splitTagList(sessionUpdateRemoveTags)
+	addTags, err := tagFlag(cmd, "add-tag")
+	if err != nil {
+		return err
+	}
+	removeTags, err := tagFlag(cmd, "remove-tag")
+	if err != nil {
+		return err
+	}
 	if len(addTags) == 0 && len(removeTags) == 0 {
 		return fmt.Errorf("no updates specified (use --add-tag or --remove-tag)")
 	}

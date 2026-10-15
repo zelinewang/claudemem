@@ -26,6 +26,9 @@ func (fs *FileStore) addNoteLocked(note *models.Note) (*AddNoteResult, error) {
 	if err := validateTags(note.Tags); err != nil {
 		return nil, err
 	}
+	if err := validateNewTags(note.Tags, nil); err != nil {
+		return nil, err
+	}
 
 	// ── Dedup check: same category + exact or similar title → merge ──
 	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID)
@@ -365,6 +368,14 @@ func (fs *FileStore) updateNoteLocked(note *models.Note) error {
 			return fmt.Errorf("note not found: %s", note.ID)
 		}
 		return fmt.Errorf("failed to query note: %w", err)
+	}
+	// a tag the stored note already carries stays allowed, so an old note keeps its tags editable
+	var storedTags []string
+	if stored, rerr := fs.readNoteFile(filepath.Join(fs.baseDir, oldFpath)); rerr == nil {
+		storedTags = stored.Tags
+	}
+	if err := validateNewTags(note.Tags, storedTags); err != nil {
+		return err
 	}
 
 	// Prepare new file

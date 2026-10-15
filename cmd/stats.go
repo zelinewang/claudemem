@@ -10,7 +10,7 @@ import (
 
 var (
 	statsTopAccessed bool
-	statsTags        string
+	statsTags        []string
 )
 
 var statsCmd = &cobra.Command{
@@ -23,7 +23,11 @@ With --tag, only the entries carrying all the given tags are counted, and only
 counts are printed (notes, sessions, categories, top tags): no titles, no recent
 activity and no storage size.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if required := splitTagList(statsTags); len(required) > 0 {
+		required, err := tagFlag(cmd, "tag")
+		if err != nil {
+			return err
+		}
+		if len(required) > 0 {
 			if statsTopAccessed {
 				return fmt.Errorf("--top-accessed lists titles, so it cannot be combined with --tag")
 			}
@@ -209,6 +213,6 @@ func min(a, b int) int {
 
 func init() {
 	statsCmd.Flags().BoolVar(&statsTopAccessed, "top-accessed", false, "Show most accessed entries (token economics)")
-	statsCmd.Flags().StringVar(&statsTags, "tag", "", "Count only entries carrying all these tags (comma-separated); prints counts, no titles")
+	statsCmd.Flags().StringArrayVar(&statsTags, "tag", nil, "Count only entries carrying all these tags (comma-separated or repeated); prints counts, no titles")
 	rootCmd.AddCommand(statsCmd)
 }

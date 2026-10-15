@@ -183,5 +183,35 @@ else
 fi
 
 echo ""
+echo "9. one-word tags, repeated and empty --tag, stale index rows"
+if OUT=$(B note add misc --title "Two words" --content "x" --tags "machine learning" 2>&1); then
+    fail "a tag with a space" "accepted: $OUT"
+elif grep -q 'a tag is one word, for example "machine-learning"' <<<"$OUT"; then
+    pass "note add refuses a tag with a space and names a one-word form"
+else
+    fail "a tag with a space" "$OUT"
+fi
+if OUT=$(B search tagkw --tag team --tag "" 2>&1); then
+    fail "--tag \"\"" "accepted: $OUT"
+elif grep -q "names no tag" <<<"$OUT"; then
+    pass "an empty --tag is an error, not a missing filter"
+else
+    fail "--tag \"\"" "$OUT"
+fi
+N_HAND=$(BJ note add misc --title "Hand edited" --content "handkw body" --tags "keepme" | json "d['note_id']")
+HAND_FILE=$(grep -rl "$N_HAND" "$STORE/notes")
+# a hand edit, not reindexed (python3 rather than sed -i, which differs between GNU and BSD)
+python3 -c "import sys; p = sys.argv[1]; s = open(p).read(); open(p, 'w').write(s.replace('- keepme\n', '- other\n'))" "$HAND_FILE"
+STALE_HITS=$(BJ search handkw --tag keepme | json "len(d)")
+printf '{"id": "%s", "kind": "note", "remove": ["keepme"]}\n' "$N_HAND" > "$STORE/hand.jsonl"
+OUT=$(B tag apply --file "$STORE/hand.jsonl" 2>&1)
+FIXED_HITS=$(BJ search handkw --tag other | json "len(d)")
+if [ "$STALE_HITS" = "0" ] && grep -q "1 unchanged, 0 unknown, 0 failed, 1 stale index rows refreshed" <<<"$OUT" && [ "$FIXED_HITS" = "1" ]; then
+    pass "search --tag checks the file, and tag apply refreshes a stale index row"
+else
+    fail "stale index row" "stale hits=[$STALE_HITS] apply=[$OUT] after=[$FIXED_HITS]"
+fi
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

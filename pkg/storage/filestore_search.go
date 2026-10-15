@@ -308,6 +308,7 @@ func (fs *FileStore) SearchWithOpts(opts SearchOpts) ([]SearchResult, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
+	results = fs.keepResultsWithTags(results, opts.Tags)
 
 	// Sort by chosen strategy
 	switch opts.Sort {
