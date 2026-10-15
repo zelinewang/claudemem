@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -220,5 +221,43 @@ func TestMoveEntries_TheJournalChecksTheStoreTheRecordNames(t *testing.T) {
 				t.Errorf("the target's file exists: %v, want %v", got, !here)
 			}
 		})
+	}
+}
+
+// A file the journal cannot remove (its directory refuses it) is reported, and its record stays, so
+// that a later move removes it once it can.
+func TestMoveEntries_TheJournalKeepsTheRecordOfAFileItCannotRemove(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose permissions stop a removal")
+	}
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	other := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+	rel := entryFile(t, from, note.ID)
+	moveStoppedAt(t, "after-install", from, to, note.ID)
+	dir := filepath.Join(to.baseDir, filepath.Dir(rel))
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	report := mustMove(t, from, to, false, other.ID)
+	if !exists(filepath.Join(to.baseDir, rel)) {
+		t.Fatal("the file was removed through a directory that refuses it")
+	}
+	if warnings := strings.Join(report.Warnings, "\n"); !strings.Contains(warnings, "could not remove "+rel) {
+		t.Errorf("no warning about the file it could not remove: %q", warnings)
+	}
+	if records := journalRecords(t, to); len(records) != 1 {
+		t.Fatalf("journal records %v, want the record kept", records)
+	}
+
+	os.Chmod(dir, 0700)
+	third := addTaggedNote(t, from, "infra", "Rack plan", "racks", "team")
+	mustMove(t, from, to, false, third.ID)
+	if exists(filepath.Join(to.baseDir, rel)) {
+		t.Error("a later move did not remove the file once it could")
+	}
+	if records := journalRecords(t, to); len(records) != 0 {
+		t.Errorf("journal records %v after the file went", records)
 	}
 }

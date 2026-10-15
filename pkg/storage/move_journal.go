@@ -185,22 +185,38 @@ func (m *mover) resolvePending(p pendingInstall, record string) {
 			}
 		}
 	}
-	if path, err := movePath(m.to, m.from, p.Temp); err == nil && holdsBytes(path, p.SHA256) {
-		if m.dryRun || os.Remove(path) == nil {
-			m.warn("%s %s: %s the temp file %s that a stopped move left in the target", kind, p.ID, verb, p.Temp)
-		}
-	}
-	if path, err := movePath(m.to, m.from, p.File); err == nil && !committed {
+	keep := false // the record stays while a file it names could not be checked or removed
+	remove := func(rel, what string) {
+		path, err := movePath(m.to, m.from, rel)
 		switch {
-		case holdsBytes(path, p.SHA256):
-			if m.dryRun || os.Remove(path) == nil {
-				m.warn("%s %s: %s %s, which a stopped move put into the target without its rows", kind, p.ID, verb, p.File)
+		case err != nil:
+			m.warn("%s %s: %s %s cannot be checked: %v; left as it is, and the journal keeps its record", kind, p.ID, what, rel, err)
+			keep = true
+			return
+		case !holdsBytes(path, p.SHA256):
+			if what == "the file" && frontmatterID(path) == p.ID { // this entry's file, but not the bytes the move wrote
+				m.warn("%s %s: a stopped move may have put %s into the target without its rows, and it changed since; check it by hand", kind, p.ID, rel)
 			}
-		case frontmatterID(path) == p.ID: // this entry's file, but not the bytes the move wrote
-			m.warn("%s %s: a stopped move may have put %s into the target without its rows, and it changed since; check it by hand", kind, p.ID, p.File)
+			return
+		case m.dryRun:
+		default:
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				m.warn("%s %s: could not remove %s, which a stopped move left in the target: %v; the journal keeps its record, so the next move tries again", kind, p.ID, rel, err)
+				keep = true
+				return
+			}
+		}
+		if what == "the temp file" {
+			m.warn("%s %s: %s the temp file %s that a stopped move left in the target", kind, p.ID, verb, rel)
+		} else {
+			m.warn("%s %s: %s %s, which a stopped move put into the target without its rows", kind, p.ID, verb, rel)
 		}
 	}
-	if !m.dryRun {
+	remove(p.Temp, "the temp file")
+	if !committed {
+		remove(p.File, "the file")
+	}
+	if !m.dryRun && !keep {
 		os.Remove(record)
 	}
 }
