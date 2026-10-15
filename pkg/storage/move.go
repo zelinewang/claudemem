@@ -467,6 +467,10 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	}
 	changed, aside, err := removeUnchanged(srcPath, data)
 	if err != nil {
+		if aside != "" {
+			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v%s", err, m.stillAside(aside))})
+			return
+		}
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v; run the move again", err)})
 		return
 	}

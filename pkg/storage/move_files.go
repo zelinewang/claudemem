@@ -154,7 +154,7 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 		changed, aside, err := removeUnchanged(path, data)
 		switch {
 		case err != nil:
-			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s could not be removed: %v", rel, err))
+			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s could not be removed: %v%s", rel, err, m.stillAside(aside)))
 			continue
 		case changed:
 			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s changed during the move (%s); compare it with the target's file and remove it by hand", rel, m.whereChanged(rel, aside)))
@@ -463,12 +463,17 @@ func isSetAside(name string) bool {
 	return strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".md"+setAsideSuffix)
 }
 
+// removeFile removes a file of this store that the move set aside. A variable, so that a test can make
+// it fail.
+var removeFile = os.Remove
+
 // removeUnchanged removes the file at path, in this store, if it still holds data, the bytes the
 // move put into the target. The file is first set aside under a hidden name in its directory, so that
 // a writer outside claudemem (an editor, an add-only sync) that saves it meanwhile makes a new file at
 // its name instead of writing into one about to go; only then is it compared. A file that changed is
-// put back under its name and reported as changed; when a new file took the name meanwhile, it stays
-// set aside, and aside names it. A file already gone counts as removed.
+// put back under its name and reported as changed. A file that cannot be removed is put back too and
+// the error returned. A file put back never replaces a new file that took its name meanwhile: it
+// stays set aside, and aside names it. A file already gone counts as removed.
 func removeUnchanged(path string, data []byte) (changed bool, aside string, err error) {
 	aside = path
 	if !isSetAside(filepath.Base(path)) {
@@ -492,10 +497,14 @@ func removeUnchanged(path string, data []byte) (changed bool, aside string, err 
 	}
 	held, err := os.ReadFile(aside)
 	if err == nil && bytes.Equal(held, data) {
-		if err := os.Remove(aside); err != nil {
-			if aside != path {
-				os.Rename(aside, path)
+		if err := removeFile(aside); err != nil {
+			if aside == path {
+				return false, "", err
 			}
+			if linkNoReplace(aside, path) != nil {
+				return false, aside, err // a new file took its name: it stays set aside
+			}
+			removeFile(aside)
 			return false, "", err
 		}
 		return false, "", nil
@@ -508,6 +517,19 @@ func removeUnchanged(path string, data []byte) (changed bool, aside string, err 
 	}
 	os.Remove(aside)
 	return true, "", nil
+}
+
+// stillAside says, for a report, where a file of this store that could not be removed stays set aside
+// ("" when it is back under its name).
+func (m *mover) stillAside(aside string) string {
+	if aside == "" {
+		return ""
+	}
+	asideRel, err := filepath.Rel(m.from.baseDir, aside)
+	if err != nil {
+		asideRel = aside
+	}
+	return fmt.Sprintf("; it stays set aside at %s, since a new file took its name: compare the two and keep one", asideRel)
 }
 
 // whereChanged says where a file of this store that changed during the move is now.

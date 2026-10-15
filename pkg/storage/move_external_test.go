@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -253,5 +254,53 @@ func TestMoveEntries_PutsBackAChangedFileAStoppedRunSetAside(t *testing.T) {
 	}
 	if there := string(readRelFile(t, to, entryFile(t, to, note.ID))); strings.Contains(there, savedParagraph) {
 		t.Errorf("the target's file is not the version the move read:\n%s", there)
+	}
+}
+
+// A file of this store that the move set aside and then cannot remove goes back under its name, but
+// never over a new file an editor saved at that name meanwhile: it then stays set aside, and the entry
+// is left to clean up, with this store's rows.
+func TestMoveEntries_NeverPutsAFileBackOverANewOne(t *testing.T) {
+	for _, newFile := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a new file at the name: %v", newFile), func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			path := filepath.Join(from.baseDir, rel)
+			saved, failed := removeFile, false
+			removeFile = func(p string) error {
+				if p == setAsidePath(path) && !failed {
+					failed = true
+					if newFile {
+						if err := os.WriteFile(path, []byte("a new version saved by name\n"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return &os.PathError{Op: "remove", Path: p, Err: os.ErrPermission}
+				}
+				return saved(p)
+			}
+			t.Cleanup(func() { removeFile = saved })
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "could not be removed") {
+				t.Fatalf("report %+v, want it left to clean up", report)
+			}
+			if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+				t.Error("this store's rows for it were removed")
+			}
+			here, _ := os.ReadFile(path)
+			if newFile {
+				if string(here) != "a new version saved by name\n" {
+					t.Errorf("the new file at the name was replaced: %q", here)
+				}
+				if !exists(setAsidePath(path)) || !strings.Contains(report.NeedsCleanup[0].Reason, "stays set aside") {
+					t.Errorf("the file is not reported set aside: %v, %q", exists(setAsidePath(path)), report.NeedsCleanup[0].Reason)
+				}
+				return
+			}
+			if !strings.Contains(string(here), "original text") || exists(setAsidePath(path)) {
+				t.Errorf("the file is not back under its name: %q; set aside: %v", here, exists(setAsidePath(path)))
+			}
+		})
 	}
 }
