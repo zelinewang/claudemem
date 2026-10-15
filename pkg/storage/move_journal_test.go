@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +128,97 @@ func TestMoveEntries_TheJournalKeepsACommittedFile(t *testing.T) {
 	}
 	if records := journalRecords(t, to); len(records) != 0 {
 		t.Errorf("records left in the journal: %v", records)
+	}
+}
+
+// A file a stopped move put into the target stays there when the store it came from no longer holds
+// the entry: it may be the only copy left. The record stays too, so the next run says so again.
+func TestMoveEntries_TheJournalKeepsAFileTheSourceNoLongerHolds(t *testing.T) {
+	for _, how := range []string{"note deleted here", "file gone here, then reindexed (a pull)"} {
+		t.Run(how, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "the only text", "team")
+			other := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+			rel := entryFile(t, from, note.ID)
+			moveStoppedAt(t, "after-install", from, to, note.ID)
+			switch how {
+			case "note deleted here":
+				if err := from.DeleteNote(note.ID); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := os.Remove(filepath.Join(from.baseDir, rel)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := from.Reindex(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, dryRun := range []bool{true, false} {
+				report := mustMove(t, from, to, dryRun, other.ID)
+				if !exists(filepath.Join(to.baseDir, rel)) {
+					t.Fatalf("dry run %v: the target's file, the only copy of the note, was removed; report %+v", dryRun, report)
+				}
+				if warnings := strings.Join(report.Warnings, "\n"); !strings.Contains(warnings, "no longer holds it") {
+					t.Errorf("dry run %v: warnings %q", dryRun, warnings)
+				}
+			}
+			if records := journalRecords(t, to); len(records) != 1 {
+				t.Errorf("journal records %v, want the record kept", records)
+			}
+		})
+	}
+}
+
+// The record names the store the entry came from, which may not be the store the next run moves
+// from; a record without that name is checked against the store the run moves from.
+func TestMoveEntries_TheJournalChecksTheStoreTheRecordNames(t *testing.T) {
+	for _, stillThere := range []bool{true, false} {
+		t.Run(fmt.Sprintf("another store, still holding it: %v", stillThere), func(t *testing.T) {
+			from, to := moveStores(t)
+			third := setupTestStore(t)
+			note := addTaggedNote(t, third, "ops", "Deploy runbook", "text from the third store", "team")
+			other := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+			rel := entryFile(t, third, note.ID)
+			moveStoppedAt(t, "after-install", third, to, note.ID)
+			if !stillThere {
+				if err := third.DeleteNote(note.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report := mustMove(t, from, to, false, other.ID)
+			if got := exists(filepath.Join(to.baseDir, rel)); got == stillThere {
+				t.Errorf("the target's file exists: %v, want %v; report %+v", got, !stillThere, report)
+			}
+			if records := journalRecords(t, to); (len(records) == 0) != stillThere {
+				t.Errorf("journal records %v", records)
+			}
+			if !stillThere && !strings.Contains(strings.Join(report.Warnings, "\n"), resolvedDir(third.baseDir)+" no longer holds it") {
+				t.Errorf("the warning does not name the store the note came from: %q", report.Warnings)
+			}
+		})
+	}
+
+	for _, here := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a record without the store, this store holding it: %v", here), func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+			rel := entryFile(t, from, note.ID)
+			data := readRelFile(t, from, rel)
+			writeRel(t, to, rel, data) // a file a stopped move put there, without rows
+			if err := to.recordPending(pendingInstall{ID: note.ID, File: rel, Temp: filepath.Join(filepath.Dir(rel), ".deploy-runbook.0a0b0c.tmp"), SHA256: sha256Hex(data)}); err != nil {
+				t.Fatal(err)
+			}
+			if !here {
+				if err := from.DeleteNote(note.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+			mustMove(t, from, to, false, other.ID)
+			if got := exists(filepath.Join(to.baseDir, rel)); got == here {
+				t.Errorf("the target's file exists: %v, want %v", got, !here)
+			}
+		})
 	}
 }

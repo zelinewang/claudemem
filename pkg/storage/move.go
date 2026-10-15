@@ -415,7 +415,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	moveStep("before-install")
 	linked := false
 	if install {
-		if rel, linked, err = m.installFile(kind, e.ID, rel, data); err != nil {
+		if rel, linked, err = m.installFile(kind, e.ID, rel, src.filepath, data); err != nil {
 			m.refuse(e, kind, "write the target file: %v", err)
 			return
 		}
@@ -591,7 +591,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 	if !m.dryRun {
 		linked := false
 		if install {
-			if rel, linked, err = m.installFile(kind, e.ID, rel, data); err != nil {
+			if rel, linked, err = m.installFile(kind, e.ID, rel, copies[0].rel, data); err != nil {
 				m.refuse(e, kind, "write the target file: %v", err)
 				return
 			}

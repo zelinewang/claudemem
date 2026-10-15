@@ -269,9 +269,12 @@ A run that stops half way leaves every entry whole in one store or both, and run
 again finishes it, also from a file left in the target without rows. The target keeps a journal of
 the files a move is putting into it (`.index/move-pending`): the next move into that store removes
 what a stopped run wrote there and never committed, its temp file and the entry's file while the
-target's index does not list it there, as long as they still hold what the move wrote; a rerun is
-then not refused over its own leftover, and a note that turns out to belong elsewhere leaves no copy
-in the target. A set-aside file that a stopped run left is found and handled by the next run.
+target's index does not list it there, as long as they still hold what the move wrote and the store
+the entry came from (named in the journal) still holds a file of it; a rerun is then not refused over
+its own leftover, and a note that turns out to belong elsewhere leaves no copy in the target. While
+that store no longer holds the entry, what the stopped run left in the target may be its only copy:
+it stays, with a warning on each run, until the target is reindexed or the file removed by hand. A
+set-aside file that a stopped run left is found and handled by the next run.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two

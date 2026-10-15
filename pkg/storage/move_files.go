@@ -347,8 +347,8 @@ func joinStore(fs *FileStore, rel string) string { return filepath.Join(fs.baseD
 // Each attempt is first recorded in the target's move journal (move_journal.go): a run that stops
 // before the entry's rows commit leaves the record, and the next run removes the files it names. The
 // record stays while this call returns a file it created; the caller clears it once the rows commit,
-// or the file is rolled back.
-func (m *mover) installFile(kind, id, rel string, data []byte) (string, bool, error) {
+// or the file is rolled back. fromRel is the entry's file in this store, which the record names.
+func (m *mover) installFile(kind, id, rel, fromRel string, data []byte) (string, bool, error) {
 	wanted := rel
 	sum := sha256Hex(data)
 	for attempt := 0; attempt < 10; attempt++ {
@@ -362,7 +362,9 @@ func (m *mover) installFile(kind, id, rel string, data []byte) (string, bool, er
 			return "", false, err
 		}
 		tmp := newTempPath(path)
-		if err := m.to.recordPending(pendingInstall{ID: id, File: rel, Temp: filepath.Join(filepath.Dir(rel), filepath.Base(tmp)), SHA256: sum}); err != nil {
+		record := pendingInstall{ID: id, File: rel, Temp: filepath.Join(filepath.Dir(rel), filepath.Base(tmp)), SHA256: sum,
+			From: resolvedDir(m.from.baseDir), FromFile: fromRel}
+		if err := m.to.recordPending(record); err != nil {
 			return "", false, fmt.Errorf("record the install in the target's move journal: %w", err)
 		}
 		if err := writeNewFile(tmp, data); err != nil {

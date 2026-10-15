@@ -26,6 +26,11 @@ type pendingInstall struct {
 	File   string `json:"file"`   // where the entry's file goes, relative to the store
 	Temp   string `json:"temp"`   // the temp file it is written to first, relative to the store
 	SHA256 string `json:"sha256"` // of the file's bytes
+	// From is the store the entry moves from (its directory, symlinks resolved), and FromFile the
+	// entry's file there: the journal removes what the move put into the target only while that store
+	// still holds the entry. A record without them is checked against the store a run moves from.
+	From     string `json:"from,omitempty"`
+	FromFile string `json:"from_file,omitempty"`
 }
 
 func (fs *FileStore) pendingDir() string { return filepath.Join(fs.indexDir, "move-pending") }
@@ -126,7 +131,9 @@ func writeNewFile(path string, data []byte) error {
 // there is from a move that stopped before its rows committed (a running move holds the lock from its
 // record to its commit). It removes the temp and the entry's file the record names while they still
 // hold the bytes the move wrote, unless the target's index lists the entry at that file, which means
-// its rows did commit; then the record goes. In a dry run it only says what it would remove.
+// its rows did commit; then the record goes. While the store the entry came from no longer holds it,
+// what the move put into the target may be its only copy: it stays, and so does the record. In a dry
+// run it only says what it would remove.
 func (m *mover) recoverPending() error {
 	records, paths, bad := m.to.pendingInstalls()
 	for _, name := range bad {
@@ -159,14 +166,29 @@ func (m *mover) resolvePending(p pendingInstall, record string) {
 	if m.dryRun {
 		verb = "would remove"
 	}
+	committed := false
+	if row, err := m.to.indexRow(p.ID); err == nil && row != nil && row.filepath == p.File {
+		committed = true
+	}
+	if !committed {
+		if held, from := m.sourceHolds(p); !held {
+			var left []string
+			for _, rel := range []string{p.Temp, p.File} {
+				if path, err := movePath(m.to, m.from, rel); err == nil && (holdsBytes(path, p.SHA256) || frontmatterID(path) == p.ID) {
+					left = append(left, rel)
+				}
+			}
+			if len(left) > 0 {
+				m.warn("%s %s: a stopped move put %s into the target without its rows, and %s no longer holds it: kept, since it may be its only copy; reindex the target to keep the entry there, or remove the file by hand",
+					kind, p.ID, strings.Join(left, " and "), from)
+				return
+			}
+		}
+	}
 	if path, err := movePath(m.to, m.from, p.Temp); err == nil && holdsBytes(path, p.SHA256) {
 		if m.dryRun || os.Remove(path) == nil {
 			m.warn("%s %s: %s the temp file %s that a stopped move left in the target", kind, p.ID, verb, p.Temp)
 		}
-	}
-	committed := false
-	if row, err := m.to.indexRow(p.ID); err == nil && row != nil && row.filepath == p.File {
-		committed = true
 	}
 	if path, err := movePath(m.to, m.from, p.File); err == nil && !committed {
 		switch {
@@ -181,6 +203,39 @@ func (m *mover) resolvePending(p pendingInstall, record string) {
 	if !m.dryRun {
 		os.Remove(record)
 	}
+}
+
+// sourceHolds reports whether the store that a recorded move took an entry from still holds a file
+// of it (the file named in the record, or the one its index lists, or either set aside), and names
+// that store. A file that is the target's own file (through a link) does not count.
+func (m *mover) sourceHolds(p pendingInstall) (bool, string) {
+	dir, name := p.From, p.From
+	if dir == "" || sameStoreDir(dir, m.from.baseDir) {
+		dir, name = m.from.baseDir, "this store"
+	}
+	var rels []string
+	if p.FromFile != "" {
+		rels = append(rels, p.FromFile)
+	}
+	if dir == m.from.baseDir {
+		if row, err := m.from.indexRow(p.ID); err == nil && row != nil {
+			rels = append(rels, row.filepath)
+		}
+	}
+	target := joinStore(m.to, p.File)
+	for _, rel := range rels {
+		if kindOfPath(rel) == "" {
+			continue
+		}
+		path := filepath.Join(dir, rel)
+		for _, candidate := range []string{path, setAsidePath(path)} {
+			if info, err := os.Lstat(candidate); err == nil && info.Mode().IsRegular() &&
+				!sameResolvedFile(candidate, target) && frontmatterID(candidate) == p.ID {
+				return true, name
+			}
+		}
+	}
+	return false, name
 }
 
 // holdsBytes reports whether the regular file at path holds the bytes with this SHA-256.

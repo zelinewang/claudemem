@@ -669,19 +669,19 @@ func TestMoveEntries_InstallNeverReplacesAFile(t *testing.T) {
 
 	intruder := []byte(strings.Replace(string(data), note.ID, "11111111-2222-3333-4444-555555555555", 1))
 	writeRel(t, to, rel, intruder)
-	got, linked, err := m.installFile("note", note.ID, rel, data)
+	got, linked, err := m.installFile("note", note.ID, rel, rel, data)
 	if err != nil || !linked || got != strings.TrimSuffix(rel, ".md")+"-2.md" {
 		t.Errorf("installFile = %q %v %v", got, linked, err)
 	}
 	if string(readRelFile(t, to, rel)) != string(intruder) {
 		t.Error("the file that appeared was written over")
 	}
-	if again, linked, err := m.installFile("note", note.ID, got, data); err != nil || linked || again != got {
+	if again, linked, err := m.installFile("note", note.ID, got, rel, data); err != nil || linked || again != got {
 		t.Errorf("the same file there: %q %v %v", again, linked, err)
 	}
 	other := []byte(strings.Replace(string(data), "mine", "edited", 1))
 	writeRel(t, to, "notes/ops/third.md", other)
-	if _, _, err := m.installFile("note", note.ID, "notes/ops/third.md", data); err == nil || !strings.Contains(err.Error(), "different file for this id") {
+	if _, _, err := m.installFile("note", note.ID, "notes/ops/third.md", rel, data); err == nil || !strings.Contains(err.Error(), "different file for this id") {
 		t.Errorf("a different file of this id there: %v", err)
 	}
 }
