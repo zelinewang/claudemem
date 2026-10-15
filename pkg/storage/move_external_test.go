@@ -218,3 +218,40 @@ func TestMoveEntries_RefusalsNameWhatIsWrong(t *testing.T) {
 		}
 	})
 }
+
+// A run that stopped after setting aside a file that changed during the move, before putting it back
+// under its name, leaves the newer version only under the hidden name. The next run puts it back and
+// keeps this store's rows, as an unstopped run does, instead of removing them and pointing at the
+// hidden file.
+func TestMoveEntries_PutsBackAChangedFileAStoppedRunSetAside(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+	rel := entryFile(t, from, note.ID)
+	moveStoppedAt(t, "after-target-rows", from, to, note.ID)
+	path := filepath.Join(from.baseDir, rel)
+	appendParagraph(t, path) // saved by another writer, then set aside by the stopped run
+	if err := os.Rename(path, setAsidePath(path)); err != nil {
+		t.Fatal(err)
+	}
+
+	dry := mustMove(t, from, to, true, note.ID)
+	if len(dry.Moved) != 0 || len(dry.NeedsCleanup) != 1 || !exists(setAsidePath(path)) || exists(path) {
+		t.Fatalf("dry run %+v; set aside: %v, at its name: %v", dry, exists(setAsidePath(path)), exists(path))
+	}
+	report := mustMove(t, from, to, false, note.ID)
+	if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "changed during an earlier move") {
+		t.Fatalf("report %+v, want it left to clean up", report)
+	}
+	if here, err := os.ReadFile(path); err != nil || !strings.Contains(string(here), savedParagraph) {
+		t.Errorf("the newer version is not back under its name: %v\n%s", err, here)
+	}
+	if exists(setAsidePath(path)) {
+		t.Error("the set-aside file is still there")
+	}
+	if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+		t.Error("this store's rows for it were removed")
+	}
+	if there := string(readRelFile(t, to, entryFile(t, to, note.ID))); strings.Contains(there, savedParagraph) {
+		t.Errorf("the target's file is not the version the move read:\n%s", there)
+	}
+}

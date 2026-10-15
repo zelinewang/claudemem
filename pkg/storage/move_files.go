@@ -130,6 +130,11 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 			continue
 		}
 		if !bytes.Equal(held, data) {
+			if name := filepath.Base(rel); isSetAside(name) {
+				original := filepath.Join(filepath.Dir(rel), strings.TrimSuffix(strings.TrimPrefix(name, "."), setAsideSuffix))
+				problems = append(problems, fmt.Sprintf("a different copy of its file, set aside by a stopped move, sits in this store at %s: this may be the newer version; rename it back to %s to keep it, or compare it with the target's and remove it", rel, original))
+				continue
+			}
 			problems = append(problems, fmt.Sprintf("a different copy of its file sits in this store at %s, outside the index; compare it with the target's and remove it by hand", rel))
 			continue
 		}

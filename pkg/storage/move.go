@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -378,7 +379,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	}
 	data, readErr := os.ReadFile(srcPath)
 	if os.IsNotExist(readErr) {
-		m.finishFromTarget(e, kind, src, dst, readErr)
+		m.finishFromTarget(e, kind, src, dst, srcPath, readErr)
 		return
 	}
 	if readErr != nil {
@@ -459,8 +460,10 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 
 // finishFromTarget handles an entry whose rows are here but whose file is not: an earlier run put it
 // into the target and stopped before removing the rows here. The target's file is checked and its
-// rows rebuilt from it, then the rows here are removed.
-func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, readErr error) {
+// rows rebuilt from it, then the rows here are removed. When the earlier run stopped with this store's
+// file set aside and changed (saved meanwhile by a writer outside claudemem), the file goes back
+// under its name and the rows here stay, as when a run does not stop.
+func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, srcPath string, readErr error) {
 	var rel string
 	switch {
 	case dst != nil:
@@ -507,12 +510,43 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 			return
 		}
 		m.to.removeStaleTemps(rel, data)
+	}
+	if problem := m.putBackChangedFile(e.ID, src.filepath, srcPath, data); problem != "" {
+		m.finish(e, kind, f.title, rel, "", []string{problem})
+		return
+	}
+	if !m.dryRun {
 		if err := m.from.removeEntryRows(e.ID); err != nil {
 			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
 			return
 		}
 	}
 	m.finish(e, kind, f.title, rel, "finished an earlier move", m.leftovers(e.ID, kind, data, "", rel))
+}
+
+// putBackChangedFile looks for the entry's file of this store set aside by a stopped run (at path's
+// set-aside name, while path is free) holding this entry other than data, the version in the target:
+// a writer outside claudemem saved it during that run. It puts the file back under its name, or in a
+// dry run says it would, and returns why the entry is left to clean up; "" when there is no such file.
+func (m *mover) putBackChangedFile(id, rel, path string, data []byte) string {
+	aside := setAsidePath(path)
+	info, err := os.Lstat(aside)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	held, err := os.ReadFile(aside)
+	if err != nil || bytes.Equal(held, data) || frontmatterID(aside) != id {
+		return "" // the moved file itself, which the leftovers remove, or not this entry's file
+	}
+	asideRel := filepath.Join(filepath.Dir(rel), filepath.Base(aside))
+	switch {
+	case m.dryRun:
+		return fmt.Sprintf("its file here changed during an earlier move, which stopped with it set aside at %s: it would go back to %s, and the target holds the version from before the change: compare the two and keep one", asideRel, rel)
+	case linkNoReplace(aside, path) == nil:
+		os.Remove(aside)
+		return fmt.Sprintf("its file here changed during an earlier move, which stopped with it set aside: it is back at %s, and the target holds the version from before the change: compare the two and keep one", rel)
+	}
+	return fmt.Sprintf("its file here changed during an earlier move, which stopped with it set aside at %s: this may be the newer version; rename it back to %s to keep it", asideRel, rel)
 }
 
 // alreadyInTarget handles an entry the target's index lists and this store's does not. Its file in
