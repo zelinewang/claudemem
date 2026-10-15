@@ -165,6 +165,33 @@ func TestLockStore_BoundedWaitFailsLoudly(t *testing.T) {
 	}
 }
 
+// The store lock excludes a second holder on every system, also within one process (Windows used to
+// take no lock at all): the second waits out lockTimeout and fails, and gets it once the first lets go.
+func TestLockStoreDir_ExcludesASecondHolder(t *testing.T) {
+	dir := t.TempDir()
+	saved := lockTimeout
+	lockTimeout = 150 * time.Millisecond
+	defer func() { lockTimeout = saved }()
+
+	unlock, err := LockStoreDir(dir)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	if second, err := LockStoreDir(dir); err == nil {
+		second()
+		unlock()
+		t.Fatal("a second holder took the lock while the first held it")
+	} else if !strings.Contains(err.Error(), "locked by another claudemem writer") {
+		t.Errorf("unexpected error text: %v", err)
+	}
+	unlock()
+	again, err := LockStoreDir(dir)
+	if err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+	again()
+}
+
 // Same review, item 5b: a category move picks a free filename, then renames the temp file over it
 // later — two notes with one slug moving into one category can both be told the same name is free,
 // and the second rename overwrites the first note's file (os.Rename replaces). Both notes must keep
