@@ -36,6 +36,9 @@ put into the target under the same name (or, if another file has that name
 there, the next free one), durably and never over another file, then its index
 rows; only then does it leave this store. A run that stops half way leaves each
 entry whole in one store or both, and running the same file again finishes it.
+For the whole move and its reruns, stop everything else that writes to either
+store (editors, an add-only sync, claudemem sync jobs): a program that writes
+through a file it opened before the move can lose that write.
 Two different files under one id, a file reached through a symlink or a bind
 mount between the stores, and stores that overlap (also through a bind mount)
 are refused. Notes move first, then sessions. A

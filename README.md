@@ -259,11 +259,19 @@ the version the move read, and the entry is left to clean up. A different copy o
 arrives in either store during the run (a sync pull in a long move) is found by a second walk at the
 end, and its entry is left to clean up.
 
-Every other writer of a store's files or index takes the same lock, so none runs in the middle of an
-entry: note and session writes, `reindex`, `repair`, `import`, `session repair --apply` and the git
-steps of `sync` that change files. A vector backfill or rebuild embeds without the lock and writes
-under it, leaving out the entries that left the store meanwhile and keeping the vectors another
-writer added meanwhile.
+Every claudemem writer of a store's files or index takes the same lock, so none runs in the middle
+of an entry: note and session writes, `reindex`, `repair`, `import`, `session repair --apply` and
+the git steps of `sync` that change files. A vector backfill or rebuild embeds without the lock and
+writes under it, leaving out the entries that left the store meanwhile and keeping the vectors
+another writer added meanwhile.
+
+For the whole move, and until a rerun of the same ids file reports every entry already in the
+target, stop everything else that writes to either store: editors such as Obsidian, an add-only sync
+between machines, and the cron jobs and hooks that run `claudemem sync`. The set-aside check catches
+a file saved by name while its entry moves, but not a program that keeps the file open and writes
+through it: a write that lands after the check goes into the file the move then removes, and is lost
+while the entry is reported moved. After a run that stops, run the same ids file again before
+anything else writes to either store.
 
 A run that stops half way leaves every entry whole in one store or both, and running the same file
 again finishes it, also from a file left in the target without rows. The target keeps a journal of
