@@ -243,8 +243,9 @@ The target's index rows are built from the file, as `reindex` builds them. No ve
 the target's own vectors for a moved entry are removed: a store's vectors can be older than its file
 (a `reindex`, a `sync pull` or a tag edit rebuilds the search row and keeps them), and stale ones
 would let a search find words the file no longer has. The report counts every entry that went into
-the target, and on a rerun every listed entry an earlier run put there that still has no vectors,
-and prints the command that embeds them there, `claudemem --store <target> reindex --vectors
+the target, and on a rerun every listed entry an earlier run put there that still has no vectors of
+the target's active backend and model (vectors of another backend, another machine's say, do not
+count), and prints the command that embeds them there, `claudemem --store <target> reindex --vectors
 --missing`. The access log is not carried over: it records what a person read in this store. The
 entry's access rows here are removed with it, so its read counts start over in the target (a read of
 it here while it moves can still log a row after it left; `stats --top-accessed` then lists that row

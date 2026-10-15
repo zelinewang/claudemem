@@ -123,13 +123,20 @@ func (fs *FileStore) removeEntryRows(id string) error {
 	return tx.Commit()
 }
 
-// hasVectorsFor reports whether the store's index holds a vector row for the entry, of any backend.
-func (fs *FileStore) hasVectorsFor(id string) bool {
-	if !hasVectorsByDoc(fs.db) {
+// targetHasVectors reports whether the target's index holds a vector row for the entry of the target's
+// active backend and model, as `reindex --vectors --missing` there counts them (vectors of another
+// backend, another machine's say, do not count); of any backend when those cannot be told.
+func (m *mover) targetHasVectors(id string) bool {
+	if !hasVectorsByDoc(m.to.db) {
 		return false
 	}
+	query, args := `SELECT COUNT(*) FROM vectors WHERE doc_id = ?`, []interface{}{id}
+	if m.targetBackend != "" {
+		query += ` AND backend = ? AND model = ?`
+		args = append(args, m.targetBackend, m.targetModel)
+	}
 	var n int
-	return fs.db.QueryRow(`SELECT COUNT(*) FROM vectors WHERE doc_id = ?`, id).Scan(&n) == nil && n > 0
+	return m.to.db.QueryRow(query, args...).Scan(&n) == nil && n > 0
 }
 
 // hasVectorsByDoc reports whether the store's index has a vectors table keyed by doc_id (every layout

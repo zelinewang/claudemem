@@ -81,6 +81,27 @@ func loadBackendConfig(storeDir string) (vectors.BackendConfig, error) {
 	return bc, nil
 }
 
+// activeVectorBackend is the backend and model whose vectors the store's searches and backfills use:
+// those of its vector store, or else the ones its settings name, without contacting the backend. A
+// move reads them from its target also in a dry run, which opens the target read-only: the target's
+// own settings choose its backend. ok is false when the settings cannot be read or name no backend
+// claudemem knows.
+func (fs *FileStore) activeVectorBackend() (backend, model string, ok bool) {
+	if fs.vectorStore != nil {
+		e := fs.vectorStore.Embedder()
+		return e.Name(), e.Model(), true
+	}
+	bc, err := loadBackendConfig(fs.baseDir)
+	if err != nil {
+		return "", "", false
+	}
+	e, err := vectors.BuildEmbedder(bc)
+	if err != nil {
+		return "", "", false
+	}
+	return e.Name(), e.Model(), true
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {

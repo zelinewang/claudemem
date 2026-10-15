@@ -163,6 +163,9 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 			Missing: []MoveIssue{}, Refused: []MoveIssue{}, NeedsCleanup: []MoveIssue{}, LeftTarget: []MoveIssue{}, Warnings: []string{},
 		},
 	}
+	if backend, model, ok := to.activeVectorBackend(); ok {
+		m.targetBackend, m.targetModel = backend, model
+	}
 	if !dryRun {
 		// The target's commits must be on disk before anything leaves this store.
 		if _, err := to.db.Exec(`PRAGMA synchronous=FULL`); err != nil {
@@ -305,6 +308,8 @@ type mover struct {
 	inTarget      map[string]bool     // notes in the target after this run (or, dry, that would be)
 	refusedNotes  map[string]bool     // notes this run refused or did not attempt: they stay here
 	unreadable    map[string]bool     // the unreadable files already reported, by store and path
+	targetBackend string              // the target's active vector backend and model ("" when unknown)
+	targetModel   string
 	report        *MoveReport
 }
 
@@ -637,7 +642,7 @@ func (m *mover) alreadyInTarget(e MoveID, dst *indexRow) {
 	if kind == "note" {
 		m.inTarget[e.ID] = true
 	}
-	if !m.to.hasVectorsFor(e.ID) { // an earlier run put it there; the target has not embedded it yet
+	if !m.targetHasVectors(e.ID) { // an earlier run put it there; the target has not embedded it yet
 		m.report.VectorsToEmbed++
 	}
 	if problems := m.leftovers(e.ID, kind, there, "", dst.filepath); len(problems) > 0 {

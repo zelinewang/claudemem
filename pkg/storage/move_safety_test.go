@@ -941,6 +941,7 @@ func TestMarkdownHeadingAndNoteIDForms(t *testing.T) {
 // there, so its report still prints the command that embeds them; once embedded, they no longer count.
 func TestMoveEntries_ARerunCountsToEmbedWhatIsStillNotEmbedded(t *testing.T) {
 	from, to := moveStores(t)
+	writeStoreSettings(t, to, `{"embedding.backend": "openai", "embedding.model": "test-v1", "embedding.dimensions": "4"}`)
 	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
 	if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 || report.VectorsToEmbed != 1 {
 		t.Fatalf("first run: %+v", report)
@@ -950,7 +951,29 @@ func TestMoveEntries_ARerunCountsToEmbedWhatIsStillNotEmbedded(t *testing.T) {
 			t.Errorf("rerun (dry run %v) of an entry the target has not embedded: %+v", dryRun, report)
 		}
 	}
-	addVectorRow(t, to, note.ID, "fake-cloud", "test-v1", 4) // the target embeds it
+	addVectorRow(t, to, note.ID, "openai", "test-v1", 4) // the target embeds it, with its backend
+	if report := mustMove(t, from, to, false, note.ID); len(report.AlreadyInTarget) != 1 || report.VectorsToEmbed != 0 {
+		t.Errorf("rerun after the target embedded it: %+v", report)
+	}
+}
+
+// A rerun counts to embed an entry already in the target while the target has no vectors of its
+// active backend and model for it, as `reindex --vectors --missing` there would embed it: vectors of
+// another backend (another machine's, say) do not count.
+func TestMoveEntries_CountsToEmbedByTheTargetsActiveBackend(t *testing.T) {
+	from, to := moveStores(t)
+	writeStoreSettings(t, to, `{"features.semantic_search": "true", "embedding.backend": "openai", "embedding.model": "text-embedding-3-small", "embedding.dimensions": "4"}`)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+		t.Fatalf("first run: %+v", report)
+	}
+	addVectorRow(t, to, note.ID, "ollama", "nomic-embed-text", 4) // embedded by another backend
+	for _, dryRun := range []bool{true, false} {
+		if report := mustMove(t, from, to, dryRun, note.ID); len(report.AlreadyInTarget) != 1 || report.VectorsToEmbed != 1 {
+			t.Errorf("rerun (dry run %v) with vectors of another backend only: %+v", dryRun, report)
+		}
+	}
+	addVectorRow(t, to, note.ID, "openai", "text-embedding-3-small", 4) // the target's own backend
 	if report := mustMove(t, from, to, false, note.ID); len(report.AlreadyInTarget) != 1 || report.VectorsToEmbed != 0 {
 		t.Errorf("rerun after the target embedded it: %+v", report)
 	}
