@@ -151,8 +151,12 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 			synced = true
 		}
 		moveStep("before-leftover-remove")
-		changed, aside, err := removeUnchanged(path, data)
+		changed, aside, err := removeUnchanged(path, data, id)
+		var taken *asideTakenError
 		switch {
+		case errors.As(err, &taken):
+			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s stays: %v", rel, err))
+			continue
 		case err != nil:
 			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s could not be removed: %v%s", rel, err, m.stillAside(aside)))
 			continue
@@ -473,14 +477,16 @@ var removeFile = os.Remove
 // its name instead of writing into one about to go; only then is it compared. A file that changed is
 // put back under its name and reported as changed. A file that cannot be removed is put back too and
 // the error returned. A file put back never replaces a new file that took its name meanwhile: it
-// stays set aside, and aside names it. A file already gone counts as removed.
-func removeUnchanged(path string, data []byte) (changed bool, aside string, err error) {
+// stays set aside, and aside names it. A file already gone counts as removed. A different file at the
+// set-aside name, of this entry (id) or not, is left as it is, and so is the file at path: the error
+// is an *asideTakenError.
+func removeUnchanged(path string, data []byte, id string) (changed bool, aside string, err error) {
 	aside = path
 	if !isSetAside(filepath.Base(path)) {
 		aside = setAsidePath(path)
-		if held, readErr := os.ReadFile(aside); readErr == nil { // set aside by a stopped run
+		if held, readErr := os.ReadFile(aside); readErr == nil { // set aside by a stopped run, or not a move's
 			if !bytes.Equal(held, data) {
-				return false, "", fmt.Errorf("a different copy that a stopped move set aside sits next to it (%s)", filepath.Base(aside))
+				return false, "", &asideTakenError{aside: aside, ours: frontmatterID(aside) == id}
 			}
 			if err := os.Remove(aside); err != nil {
 				return false, "", err
@@ -517,6 +523,21 @@ func removeUnchanged(path string, data []byte) (changed bool, aside string, err 
 	}
 	os.Remove(aside)
 	return true, "", nil
+}
+
+// asideTakenError is removeUnchanged's error when a different file sits at the name under which it sets
+// a file aside: a copy of the same entry that a stopped move set aside (ours), or a file the move did
+// not leave there. Running the move again does not clear either.
+type asideTakenError struct {
+	aside string
+	ours  bool
+}
+
+func (e *asideTakenError) Error() string {
+	if e.ours {
+		return fmt.Sprintf("a different copy of its file, which a stopped move set aside, sits next to it (%s): this may be the newer version; compare the two, keep one and remove the other", filepath.Base(e.aside))
+	}
+	return fmt.Sprintf("a file sits at %s, the name the move sets the file aside under, and was not left by this move; check it by hand, then run the move again", filepath.Base(e.aside))
 }
 
 // stillAside says, for a report, where a file of this store that could not be removed stays set aside

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -97,7 +98,10 @@ type MoveReport struct {
 	// NeedsCleanup lists entries that are in the target but left something in this store: rows or a
 	// file the move could not remove (running it again finishes them), or a different copy of the file.
 	NeedsCleanup []MoveIssue `json:"needs_cleanup"`
-	Warnings     []string    `json:"warnings"`
+	// LeftTarget lists entries this run put into the target (or found there) that another writer took
+	// out of it again before the run ended: a move in the other direction, or a delete.
+	LeftTarget []MoveIssue `json:"left_target"`
+	Warnings   []string    `json:"warnings"`
 	// VectorsToEmbed counts the entries this run put into the target (moved, or in the target with
 	// something left here), and those an earlier run put there that still have no vectors there: a
 	// move carries no vectors, so the target embeds each of them itself.
@@ -156,7 +160,7 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 		report: &MoveReport{
 			DryRun: dryRun, Entries: len(ids),
 			Moved: []MovedEntry{}, AlreadyInTarget: []MovedEntry{},
-			Missing: []MoveIssue{}, Refused: []MoveIssue{}, NeedsCleanup: []MoveIssue{}, Warnings: []string{},
+			Missing: []MoveIssue{}, Refused: []MoveIssue{}, NeedsCleanup: []MoveIssue{}, LeftTarget: []MoveIssue{}, Warnings: []string{},
 		},
 	}
 	if !dryRun {
@@ -219,7 +223,8 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 // recheckCopies walks both stores again after the run. A different copy of a moved entry's file that
 // arrived after the walk at the start (a sync pull or an import during a long run) is not seen by the
 // entry's own checks, and a later reindex of the target could keep it instead of the moved file. An
-// entry with such a copy in either store is reported as left to clean up instead of moved.
+// entry with such a copy in either store is reported as left to clean up instead of moved. An entry
+// that another writer took out of the target again meanwhile is reported as such.
 func (m *mover) recheckCopies(want map[string]bool) {
 	fromFiles, _, fromUnreadable := entryFilesByID(m.from.baseDir, want)
 	toFiles, _, toUnreadable := entryFilesByID(m.to.baseDir, want)
@@ -228,6 +233,10 @@ func (m *mover) recheckCopies(want map[string]bool) {
 	recheck := func(list []MovedEntry) []MovedEntry {
 		kept := []MovedEntry{}
 		for _, e := range list {
+			if reason := m.leftTarget(e); reason != "" {
+				m.report.LeftTarget = append(m.report.LeftTarget, MoveIssue{Line: e.Line, ID: e.ID, Kind: e.Kind, Reason: reason})
+				continue
+			}
 			if reason := m.differentCopyNow(e, fromFiles[e.ID], toFiles[e.ID]); reason != "" {
 				m.needsCleanup(MoveID{Line: e.Line, ID: e.ID}, e.Kind, []string{reason})
 				continue
@@ -238,6 +247,22 @@ func (m *mover) recheckCopies(want map[string]bool) {
 	}
 	m.report.Moved = recheck(m.report.Moved)
 	m.report.AlreadyInTarget = recheck(m.report.AlreadyInTarget)
+}
+
+// leftTarget returns, for an entry this run put into the target, why it is no longer there: its file
+// there is gone and the target's index no longer lists it. It returns "" while the target holds it.
+func (m *mover) leftTarget(e MovedEntry) string {
+	if _, err := os.Lstat(joinStore(m.to, e.File)); !os.IsNotExist(err) {
+		return ""
+	}
+	if row, err := m.to.indexRow(e.ID); err != nil || row != nil {
+		return ""
+	}
+	where := "neither store's index lists it now"
+	if row, err := m.from.indexRow(e.ID); err == nil && row != nil {
+		where = "this store's index lists it again"
+	}
+	return fmt.Sprintf("another writer took it out of the target before the run ended (a move in the other direction, or a delete); %s", where)
 }
 
 // differentCopyNow returns why an entry in the target must be cleaned up when either store now holds
@@ -465,7 +490,12 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 			return
 		}
 	}
-	changed, aside, err := removeUnchanged(srcPath, data)
+	changed, aside, err := removeUnchanged(srcPath, data, e.ID)
+	var taken *asideTakenError
+	if errors.As(err, &taken) {
+		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here stays: %v", err)})
+		return
+	}
 	if err != nil {
 		if aside != "" {
 			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v%s", err, m.stillAside(aside))})

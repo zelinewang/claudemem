@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -302,5 +303,77 @@ func TestMoveEntries_NeverPutsAFileBackOverANewOne(t *testing.T) {
 				t.Errorf("the file is not back under its name: %q; set aside: %v", here, exists(setAsidePath(path)))
 			}
 		})
+	}
+}
+
+// A file already at the name under which the move sets a file aside is never removed or replaced. One
+// that this move did not leave is reported as such, and a different copy of the same entry, which a
+// stopped move set aside, as possibly the newer version; neither is cleared by running the move again.
+func TestMoveEntries_AFileAtTheSetAsideName(t *testing.T) {
+	for _, variant := range []string{"another note's file", "a user's own file", "a different copy of this note"} {
+		t.Run(variant, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			other := addTaggedNote(t, from, "ops", "Other note", "other text", "team")
+			rel := entryFile(t, from, note.ID)
+			aside := setAsidePath(filepath.Join(from.baseDir, rel))
+			var content []byte
+			want := "not left by this move; check it by hand"
+			switch variant {
+			case "another note's file":
+				content = readRelFile(t, from, entryFile(t, from, other.ID))
+			case "a user's own file":
+				content = []byte("my own scratch text\n")
+			default:
+				content = []byte(strings.Replace(string(readRelFile(t, from, rel)), "original text", "edited text", 1))
+				want = "this may be the newer version"
+			}
+			if err := os.WriteFile(aside, content, 0600); err != nil {
+				t.Fatal(err)
+			}
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, want) || strings.HasSuffix(report.NeedsCleanup[0].Reason, "; run the move again") {
+				t.Errorf("report %+v, want it left to clean up: %s", report, want)
+			}
+			if after, err := os.ReadFile(aside); err != nil || string(after) != string(content) {
+				t.Errorf("the file at the set-aside name changed: %v %q", err, after)
+			}
+			if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+				t.Error("this store's rows for it were removed")
+			}
+		})
+	}
+}
+
+// An entry that this run put into the target and that another move, in the other direction, takes
+// back out before the run ends is not reported as left to clean up, since nothing of it is left: it
+// gets its own category, which says where it went.
+func TestMoveEntries_AnEntryThatLeftTheTargetDuringTheRun(t *testing.T) {
+	from, to := moveStores(t)
+	x := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	y := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+	took := false
+	report, err := MoveEntries(from, to, moveIDs(x.ID, y.ID), false, func(done, total int) {
+		if !took { // between two entries, without the locks: a move in the other direction takes x back
+			took = true
+			if back := mustMove(t, to, from, false, x.ID); len(back.Moved) != 1 {
+				t.Fatalf("the move back: %+v", back)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.NeedsCleanup) != 0 {
+		t.Errorf("left to clean up: %+v", report.NeedsCleanup)
+	}
+	out, _ := json.Marshal(report)
+	var categories map[string]json.RawMessage
+	json.Unmarshal(out, &categories)
+	if !strings.Contains(string(categories["left_target"]), x.ID) || strings.Contains(string(categories["moved"]), x.ID) {
+		t.Errorf("x is not reported as having left the target: %s", out)
+	}
+	if !strings.Contains(string(categories["moved"]), y.ID) {
+		t.Errorf("y is not reported moved: %s", out)
 	}
 }

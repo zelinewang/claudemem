@@ -53,8 +53,10 @@ neither store holds is only a warning, since that link is dead in both. Before a
 that its index matches its files.
 
 The report lists the entries moved, already in the target, missing (in neither
-store), refused (with the reason) and left to clean up (in the target, with
-something left in this store); any of the last three makes the exit code 1. With
+store), refused (with the reason), left to clean up (in the target, with
+something left in this store) and those that left the target during the run
+(another move or a delete took them out); any of the last four makes the exit
+code 1. With
 --dry-run both stores are opened read-only and no entry, file or index row changes
 in either; SQLite may still create the -wal and -shm files next to an index in
 WAL mode, as any reader does.
@@ -158,10 +160,13 @@ func runMove(cmd *cobra.Command, args []string) error {
 	} else {
 		printMoveReport(report, displayStoreName(fromDir), displayStoreName(toDir), embed)
 	}
-	if len(report.Missing) > 0 || len(report.Refused) > 0 || len(report.NeedsCleanup) > 0 {
+	if len(report.Missing) > 0 || len(report.Refused) > 0 || len(report.NeedsCleanup) > 0 || len(report.LeftTarget) > 0 {
 		msg := fmt.Sprintf("move: %d missing, %d refused", len(report.Missing), len(report.Refused))
 		if len(report.NeedsCleanup) > 0 {
 			msg += fmt.Sprintf(", %d left to clean up", len(report.NeedsCleanup))
+		}
+		if len(report.LeftTarget) > 0 {
+			msg += fmt.Sprintf(", %d left the target during the run", len(report.LeftTarget))
 		}
 		return fmt.Errorf("%s", msg)
 	}
@@ -177,6 +182,9 @@ func printMoveReport(r *storage.MoveReport, from, to, embed string) {
 		header, r.Entries, from, to, len(r.Moved), verb, len(r.AlreadyInTarget), len(r.Missing), len(r.Refused))
 	if len(r.NeedsCleanup) > 0 {
 		summary += fmt.Sprintf(", %d left to clean up", len(r.NeedsCleanup))
+	}
+	if len(r.LeftTarget) > 0 {
+		summary += fmt.Sprintf(", %d left the target during the run", len(r.LeftTarget))
 	}
 	OutputText("%s", summary)
 	for _, e := range r.Moved {
@@ -197,6 +205,9 @@ func printMoveReport(r *storage.MoveReport, from, to, embed string) {
 	}
 	for _, issue := range r.NeedsCleanup {
 		OutputText("  left to clean up, line %d: %s %s: %s", issue.Line, issue.Kind, issue.ID, issue.Reason)
+	}
+	for _, issue := range r.LeftTarget {
+		OutputText("  left the target during the run, line %d: %s %s: %s", issue.Line, issue.Kind, issue.ID, issue.Reason)
 	}
 	for _, w := range r.Warnings {
 		OutputText("  warning: %s", w)
