@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -250,5 +251,98 @@ func TestCLI_MoveNeverSuggestsANestedStore(t *testing.T) {
 	}
 	if entries, readErr := os.ReadDir(nested); readErr != nil || len(entries) != 0 {
 		t.Errorf("something was written in the nested directory: %v %v", entries, readErr)
+	}
+}
+
+// journalMode is the journal mode of a store's index.
+func journalMode(t *testing.T, dir string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, ".index", "search.db")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	return mode
+}
+
+// A dry run opens both stores read-only: it changes no file of either, leaves an index's journal mode
+// as it is, and creates nothing, not even a directory a store lacks.
+func TestCLI_MoveDryRunWritesNothing(t *testing.T) {
+	// The stores are written by child processes, so that this one holds no connection to their indexes
+	// when it switches their journal mode.
+	home, from, to := t.TempDir(), t.TempDir(), t.TempDir()
+	child := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := runCLIChild(t, home, append([]string{"--store", dir}, args...)...)
+		if err != nil {
+			t.Fatalf("claudemem %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+	var note storage.AddNoteResult
+	if out := child(from, "note", "add", "ops", "--title", "Team runbook", "--content", "drykw steps", "--format", "json"); json.Unmarshal([]byte(out), &note) != nil {
+		t.Fatalf("note add: %s", out)
+	}
+	var session storage.SaveSessionResult
+	if out := child(from, "session", "save", "--title", "Team review", "--branch", "main", "--project", "proj", "--session-id", "sid-dry",
+		"--summary", "drykw review", "--related-notes", note.NoteID+":Team runbook:ops", "--format", "json"); json.Unmarshal([]byte(out), &session) != nil {
+		t.Fatalf("session save: %s", out)
+	}
+	child(to, "stats")
+	ids := writeIDs(t, note.NoteID, session.SessionID)
+	for _, dir := range []string{from, to} {
+		db, err := sql.Open("sqlite", filepath.Join(dir, ".index", "search.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var mode string
+		err = db.QueryRow(`PRAGMA journal_mode=DELETE`).Scan(&mode)
+		db.Close()
+		if err != nil || mode != "delete" {
+			t.Fatalf("set the journal mode of %s: %q %v", dir, mode, err)
+		}
+	}
+	for _, empty := range []string{filepath.Join(to, "notes"), filepath.Join(to, "sessions")} {
+		if err := os.Remove(empty); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	before := map[string]map[string]string{from: storeFiles(t, from), to: storeFiles(t, to)}
+
+	out := mustRunCLI(t, from, "move", "--to", to, "--file", ids, "--dry-run", "--format", "json")
+	var report storage.MoveReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil || !report.DryRun || len(report.Moved) != 2 {
+		t.Fatalf("dry run report %+v (%v)", report, err)
+	}
+
+	for dir, files := range before {
+		after := storeFiles(t, dir)
+		for name, sum := range files {
+			if after[name] != sum {
+				t.Errorf("the dry run changed %s in %s", name, dir)
+			}
+		}
+		for name := range after {
+			if _, ok := files[name]; !ok {
+				t.Errorf("the dry run created %s in %s", name, dir)
+			}
+		}
+		if mode := journalMode(t, dir); mode != "delete" {
+			t.Errorf("the dry run switched the journal mode of %s to %q", dir, mode)
+		}
+		for _, side := range []string{"-wal", "-shm"} {
+			if _, err := os.Stat(filepath.Join(dir, ".index", "search.db"+side)); err == nil {
+				t.Errorf("the dry run created search.db%s in %s", side, dir)
+			}
+		}
+	}
+	for _, gone := range []string{filepath.Join(to, "notes"), filepath.Join(to, "sessions")} {
+		if _, err := os.Stat(gone); err == nil {
+			t.Errorf("the dry run created %s", gone)
+		}
 	}
 }

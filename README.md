@@ -261,7 +261,7 @@ file names its related notes by title; a line there without a note id, an id sho
 characters or one that matches several notes keeps the session where it is. A note counts as in a
 store when its index lists it or one of its note files holds it, and a note this run refused stays
 here with its sessions; a note that neither store holds is only a warning, since the link is dead in
-both. `--dry-run` changes nothing. Missing and refused entries, and entries left to clean up (in the target, with a different
+both. `--dry-run` opens both stores read-only and changes nothing in either. Missing and refused entries, and entries left to clean up (in the target, with a different
 copy of the file, or rows the move could not remove, still in this store), make the exit code 1.
 With an add-only sync between machines, a moved file can come back from another machine's copy:
 move there too, or run the move again after the next pull, which removes a copy that came back when

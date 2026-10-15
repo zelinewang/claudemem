@@ -120,7 +120,7 @@ type MoveReport struct {
 // Notes move before sessions. A session moves only if every note it lists under Related Notes is
 // in the target, or moved there in this run: a session file names its related notes by title, so it
 // never moves without them. A note in neither store is only a warning, since the link is dead in both.
-// A note may move alone. A dry run changes nothing.
+// A note may move alone. A dry run changes nothing; it also runs on stores opened read-only.
 func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(done, total int)) (*MoveReport, error) {
 	if sameStoreDir(from.baseDir, to.baseDir) {
 		return nil, fmt.Errorf("the target is this store itself")
@@ -128,7 +128,7 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	if StoresOverlap(from.baseDir, to.baseDir) {
 		return nil, fmt.Errorf("the two stores overlap: one sits inside the other")
 	}
-	if from.readOnly || to.readOnly {
+	if (from.readOnly || to.readOnly) && !dryRun {
 		return nil, fmt.Errorf("both stores must be open for writing")
 	}
 	for _, s := range []struct {

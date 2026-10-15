@@ -704,3 +704,20 @@ func TestMoveEntries_SyncsAFileItFoundInTheTargetBeforeACopyHereGoes(t *testing.
 		}
 	})
 }
+
+// A move needs both stores open for writing; a dry run also runs on stores opened read-only.
+func TestMoveEntries_ReadOnlyStoresOnlyForADryRun(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "rokw", "team")
+	ro, err := OpenReadOnly(to.baseDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ro.Close()
+	if _, err := MoveEntries(from, ro, moveIDs(note.ID), false, nil); err == nil || !strings.Contains(err.Error(), "open for writing") {
+		t.Errorf("a move into a store opened read-only: %v", err)
+	}
+	if report, err := MoveEntries(from, ro, moveIDs(note.ID), true, nil); err != nil || len(report.Moved) != 1 {
+		t.Errorf("a dry run into a store opened read-only: %+v %v", report, err)
+	}
+}

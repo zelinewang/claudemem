@@ -47,7 +47,7 @@ that its index matches its files.
 The report lists the entries moved, already in the target, missing (in neither
 store), refused (with the reason) and left to clean up (in the target, with
 something left in this store); any of the last three makes the exit code 1. With
---dry-run nothing changes.
+--dry-run both stores are opened read-only and nothing changes.
 
 Examples:
   claudemem move --to ~/team-memory --file ids.txt --dry-run
@@ -109,13 +109,18 @@ func runMove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// No vector store: a move copies vector rows as they are and never embeds.
-	from, err := storage.NewFileStore(fromDir)
+	// No vector store: a move carries no vectors and never embeds. A dry run opens both stores
+	// read-only, so it changes nothing in either (not even the journal mode of an index).
+	open := storage.NewFileStore
+	if moveDryRun {
+		open = storage.OpenReadOnly
+	}
+	from, err := open(fromDir)
 	if err != nil {
 		return fmt.Errorf("failed to open store: %w", err)
 	}
 	defer from.Close()
-	to, err := storage.NewFileStore(toDir)
+	to, err := open(toDir)
 	if err != nil {
 		return fmt.Errorf("open store %s: %w", displayStoreName(toDir), err)
 	}
