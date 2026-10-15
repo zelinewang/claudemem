@@ -241,7 +241,9 @@ rebuilds the search row and keeps them), and stale ones would let a search find 
 longer has. The report counts every entry that went into the target, and on a rerun every listed
 entry an earlier run put there that still has no vectors, and prints the command that embeds them
 there, `claudemem --store <target> reindex --vectors --missing`. The access log is not
-carried over: it records what a person read. The ids file has one full id per line; blank lines and
+carried over: it records what a person read in this store. The entry's access rows here are removed
+with it, so its read counts start over in the target (a read of it here while it moves can still log
+a row after it left; `stats --top-accessed` then lists that row as deleted). The ids file has one full id per line; blank lines and
 anything after a `#` are skipped, and the whole file is checked before anything moves.
 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,

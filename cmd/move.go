@@ -24,7 +24,8 @@ keeping each entry's id and its file. The target's index rows are built from the
 file. No vectors go along, and the target's own vectors for a moved entry are
 removed: the report counts the entries and prints the command that embeds them
 in the target. The access log is not carried over: it records what a person
-read.
+read in this store. The entry's access rows here are removed with it, so its
+read counts start over in the target.
 
 The file lists one full id per line; blank lines and everything after a # are
 skipped, and --file - reads standard input. The whole file is checked before

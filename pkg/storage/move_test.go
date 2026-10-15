@@ -130,8 +130,8 @@ func readRelFile(t *testing.T, store *FileStore, rel string) []byte {
 }
 
 // A moved entry keeps its id, its file (same name, same bytes) and its index rows, built from the
-// file, with the vectors of the backend the target embeds with; TF-IDF vectors and the access log
-// stay behind, and this store keeps nothing of it. A second run changes nothing.
+// file. No vectors go along and the access log is not carried over, and this store keeps nothing of
+// it, its access rows included. A second run changes nothing.
 func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	from, to := moveStores(t)
 	writeStoreSettings(t, to, `{"features.semantic_search": "true", "embedding.backend": "openai", "embedding.dimensions": "4"}`)

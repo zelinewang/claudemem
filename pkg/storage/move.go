@@ -108,8 +108,9 @@ type MoveReport struct {
 // target's index rows are built from the file, as a reindex builds them. No vectors go along, and
 // the target's own vectors for a moved entry are removed: nothing shows that a store's vectors were
 // embedded from the file as it is now, so the target embeds the moved entries itself (the report
-// counts them). The access log is not carried over: it records what a person read, and stays out
-// of the target.
+// counts them). The access log is not carried over: it records what a person read in this store.
+// The entry's access rows here are removed with its other rows, so its read counts start over in
+// the target.
 //
 // Each entry moves on its own, under the write locks of both stores (taken in one order, so two
 // moves in opposite directions cannot deadlock): the file is put into the target first, durably and
