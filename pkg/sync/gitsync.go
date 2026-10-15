@@ -27,14 +27,19 @@ type GitSync struct {
 	// LockWrites, when set, takes the store's write lock. GitSync holds it around every git step that
 	// writes the working tree (the merge or rebase of a pull, the reset that adopts a remote's history,
 	// the rebase after a refused push), so that no claudemem writer, a move above all, works on files
-	// that git is changing. The steps that only read the tree or talk to the remote (add, commit,
-	// fetch, push) run without it: a slow remote must not hold up every writer of the store.
+	// that git is changing, and around the add and the commit of a push, so that none changes the
+	// files git reads for the commit. The steps that talk to the remote (fetch, push) run without it:
+	// a slow remote must not hold up every writer of the store.
 	LockWrites func() (unlock func(), err error)
 }
 
 // fetchedRef is where a pull, or the rebase after a refused push, fetches the remote's HEAD to
 // before it merges or rebases onto it under the lock.
 const fetchedRef = "refs/claudemem/fetched"
+
+// setAsideSuffix ends the name of a file that a claudemem move set aside while it checked it
+// (.<name>.md.moving, see the storage package): never committed.
+const setAsideSuffix = ".moving"
 
 // fetch fetches the remote's HEAD into fetchedRef. It talks to the network and writes only .git, so
 // it runs without the store lock.
@@ -174,6 +179,7 @@ func copyDir(src, dst string) error {
 //	config.json          — per-machine embedding backend choice
 //	.sync_auto_pull      — per-machine auto-sync toggle
 //	.sync_auto_push      — per-machine auto-sync toggle
+//	.*.moving            — a file a move set aside (a stopped move can leave one)
 //	.bak, .tmp, .swp     — editor temp files
 func (g *GitSync) writeGitignore() error {
 	content := `# claudemem memory sync — per-machine files excluded
@@ -187,6 +193,10 @@ config.json
 # (e.g. legacy .claudemem -> /home/*/.claudemem left by older installs)
 .claudemem
 .git.*-residue-*
+
+# a file a claudemem move set aside while it checked it; one a stopped move left belongs to this
+# machine until it is renamed back or removed
+.*.moving
 
 # backup archives — per-machine snapshots, never sync
 *.tar
@@ -246,31 +256,41 @@ func (g *GitSync) Push(message string) error {
 	if !g.IsInitialized() {
 		return fmt.Errorf("not a git repo; run `claudemem sync init <remote>` first")
 	}
-	// Stage ONLY the content paths that actually exist. git add with
-	// multiple pathspecs treats a missing one as a hard error which
-	// prevents the OTHER paths from being staged — so iterate per-path.
-	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore", ".gitattributes"} {
-		if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
-			continue // not present — skip
+	// The add and the commit run under the store lock: no claudemem writer changes the files in
+	// between, so a move never leaves half an entry in a commit.
+	hasChanges := false
+	if err := g.underLock(func() error {
+		// Stage ONLY the content paths that actually exist. git add with
+		// multiple pathspecs treats a missing one as a hard error which
+		// prevents the OTHER paths from being staged — so iterate per-path.
+		// A file a move set aside stays out also where the .gitignore
+		// predates the rule for it.
+		for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore", ".gitattributes"} {
+			if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
+				continue // not present — skip
+			}
+			if err := g.git("add", "--", p, ":(exclude)*"+setAsideSuffix); err != nil {
+				return fmt.Errorf("git add %s: %w", p, err)
+			}
 		}
-		if err := g.git("add", p); err != nil {
-			return fmt.Errorf("git add %s: %w", p, err)
-		}
-	}
 
-	// Check if anything is actually staged. `git diff --cached --quiet`
-	// exits 0 when nothing is staged, 1 when there are staged changes.
-	// We use that exit code rather than trying to parse the generic
-	// "exit status 1" we get back from the commit command.
-	hasChanges := g.hasStagedChanges()
-	if hasChanges {
-		msg := message
-		if msg == "" {
-			msg = "memory: sync from " + hostname()
+		// Check if anything is actually staged. `git diff --cached --quiet`
+		// exits 0 when nothing is staged, 1 when there are staged changes.
+		// We use that exit code rather than trying to parse the generic
+		// "exit status 1" we get back from the commit command.
+		hasChanges = g.hasStagedChanges()
+		if hasChanges {
+			msg := message
+			if msg == "" {
+				msg = "memory: sync from " + hostname()
+			}
+			if err := g.git("commit", "-m", msg); err != nil {
+				return fmt.Errorf("git commit: %w", err)
+			}
 		}
-		if err := g.git("commit", "-m", msg); err != nil {
-			return fmt.Errorf("git commit: %w", err)
-		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	if g.RemoteURL() == "" {

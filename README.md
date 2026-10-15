@@ -261,12 +261,13 @@ arrives in either store during the run (a sync pull in a long move) is found by 
 end, and its entry is left to clean up.
 
 Every claudemem writer of a store's files or index takes the same lock, so none runs in the middle
-of an entry: note and session writes, `reindex`, `repair`, `import`, `session repair --apply` and
-the git steps of `sync` that change files. A vector backfill or rebuild embeds without the lock and
-writes under it, leaving out the entries that left the store meanwhile and keeping the vectors
-another writer added meanwhile. Every vector write inserts vectors only for an entry the index
-lists, checked in the transaction that writes them: an entry that left gets none, also when a copy
-of its file comes back.
+of an entry: note and session writes, `reindex`, `repair`, `import`, `session repair --apply`, the
+git steps of `sync` that change files, and the add and commit of `sync push` (which never commits a
+set-aside `.moving` file; the push to the remote runs without the lock). A vector backfill or
+rebuild embeds without the lock and writes under it, leaving out the entries that left the store
+meanwhile and keeping the vectors another writer added meanwhile. Every vector write inserts vectors
+only for an entry the index lists, checked in the transaction that writes them: an entry that left
+gets none, also when a copy of its file comes back.
 
 For the whole move, and until a rerun of the same ids file reports every entry already in the
 target, stop everything else that writes to either store: editors such as Obsidian, an add-only sync

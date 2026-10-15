@@ -1,10 +1,12 @@
 package sync
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -98,14 +100,17 @@ func TestGitSync_WritesTheTreeOnlyUnderLockWrites(t *testing.T) {
 	}
 	pull.check(t, "pull", 1)
 
-	// a push the remote accepts
+	// a push the remote accepts: it writes no file of the tree, and takes the lock once, for its add
+	// and commit (TestGitSync_PushCommitsUnderTheLock)
 	writeNote(t, dirB, "from-b.md")
 	plain := &lockProbe{path: filepath.Join(dirB, "notes", "ops", "from-b.md")}
 	gB.LockWrites = plain.lock
 	if err := gB.Push("from b"); err != nil {
 		t.Fatalf("B push: %v", err)
 	}
-	plain.check(t, "an accepted push", 0)
+	if plain.calls != 1 {
+		t.Errorf("an accepted push took the store lock %d times, want 1", plain.calls)
+	}
 
 	// a push the remote refuses, then the rebase that brings the other machine's note in
 	gA.LockWrites = (&lockProbe{}).lock
@@ -122,7 +127,7 @@ func TestGitSync_WritesTheTreeOnlyUnderLockWrites(t *testing.T) {
 	if err := gB.Push("second from b"); err != nil {
 		t.Fatalf("B push after the remote moved on: %v", err)
 	}
-	rebase.check(t, "the rebase after a refused push", 1)
+	rebase.check(t, "the commit, then the rebase after a refused push", 2)
 }
 
 // slowRemote points origin at an ssh URL whose ssh command waits, then fails: a remote that hangs on
@@ -223,5 +228,82 @@ func TestGitSync_PullRebasesLocalCommitsOntoTheRemote(t *testing.T) {
 	probe.check(t, "a diverged pull", 1)
 	if !fileExists(filepath.Join(dirB, "notes", "ops", "from-b.md")) {
 		t.Error("the local note is gone after the rebase")
+	}
+}
+
+// A push adds and commits the store's files while it holds the store lock, so that no claudemem
+// writer, a move above all, changes them in between; the push to the remote runs without it.
+func TestGitSync_PushCommitsUnderTheLock(t *testing.T) {
+	requireGit(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	remote := setupLocalBare(t)
+	dir, g := newSyncedStore(t, remote, "seed.md")
+	writeNote(t, dir, "new.md")
+	head := func() string {
+		cmd := exec.Command("git", "rev-parse", "HEAD")
+		cmd.Dir = dir
+		out, _ := cmd.Output()
+		return strings.TrimSpace(string(out))
+	}
+	calls := 0
+	var atLock, atUnlock string
+	g.LockWrites = func() (func(), error) {
+		calls++
+		atLock = head()
+		return func() { atUnlock = head() }, nil
+	}
+	if err := g.Push("new"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || atLock == atUnlock || atUnlock != head() {
+		t.Errorf("the push took the lock %d times; HEAD when locked %s, when released %s, now %s: want the commit made under one lock", calls, atLock, atUnlock, head())
+	}
+}
+
+// A file a move set aside (.<name>.md.moving), which a stopped move can leave, is never committed: new
+// stores ignore it, and a push leaves it out also in a store whose .gitignore predates that rule.
+func TestGitSync_NeverCommitsAFileAMoveSetAside(t *testing.T) {
+	requireGit(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	remote := setupLocalBare(t)
+	for _, oldIgnore := range []bool{false, true} {
+		t.Run(fmt.Sprintf("a .gitignore from before the rule: %v", oldIgnore), func(t *testing.T) {
+			dir, g := newSyncedStore(t, remote, fmt.Sprintf("seed-%v.md", oldIgnore))
+			ignore := filepath.Join(dir, ".gitignore")
+			if oldIgnore {
+				data, err := os.ReadFile(ignore)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var kept []string
+				for _, line := range strings.Split(string(data), "\n") {
+					if !strings.Contains(line, ".moving") {
+						kept = append(kept, line)
+					}
+				}
+				if err := os.WriteFile(ignore, []byte(strings.Join(kept, "\n")), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			aside := filepath.Join("notes", "ops", fmt.Sprintf(".runbook-%v.md.moving", oldIgnore))
+			if err := os.WriteFile(filepath.Join(dir, aside), []byte("set aside by a stopped move\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			writeNote(t, dir, fmt.Sprintf("next-%v.md", oldIgnore))
+			if err := g.Push("with a set-aside file"); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("git", "ls-files")
+			cmd.Dir = dir
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(out), ".moving") || !strings.Contains(string(out), "next-") {
+				t.Errorf("tracked files:\n%s", out)
+			}
+		})
 	}
 }
