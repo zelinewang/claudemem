@@ -222,6 +222,12 @@ func extractArchive(tr *tar.Reader, dir string) (int, error) {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
 				return fileCount, fmt.Errorf("import %s: %w", header.Name, err)
 			}
+			// A symlink at the file's place is never written through, also when it dangles: the
+			// check above resolves only the part of the path that exists.
+			if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				fmt.Fprintf(os.Stderr, "warning: import skipped %s: a symlink sits at its place in the store\n", header.Name)
+				continue
+			}
 			if err := writeArchiveFile(targetPath, tr); err != nil {
 				return fileCount, fmt.Errorf("import %s: %w", header.Name, err)
 			}
@@ -231,15 +237,31 @@ func extractArchive(tr *tar.Reader, dir string) (int, error) {
 	return fileCount, nil
 }
 
-// writeArchiveFile writes the current file of an archive to path, replacing what is there.
+// writeArchiveFile writes the current file of an archive to path, replacing what is there: it writes a
+// temp file next to it and renames that over path, so the file at path is replaced, never written into
+// (a hard link to a file elsewhere keeps that file as it was, and a symlink that appears at path is
+// replaced, not followed). A file there that cannot be written is not replaced either.
 func writeArchiveFile(path string, r io.Reader) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		f.Close()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(f, r)
-	if cerr := f.Close(); err == nil {
+	_, err = io.Copy(tmp, r)
+	if cerr := tmp.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
 	}
 	return err
 }
