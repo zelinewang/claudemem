@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -45,6 +46,7 @@ func init() {
 
 type contextPayload struct {
 	Tags           []string       `json:"tags,omitempty"`
+	Stores         []string       `json:"stores,omitempty"` // the stores read, when more than one
 	RecentNotes    []compactEntry `json:"recent_notes"`
 	RecentSessions []compactEntry `json:"recent_sessions"`
 	Stats          contextStats   `json:"stats"`
@@ -56,6 +58,7 @@ type compactEntry struct {
 	Category string `json:"category,omitempty"`
 	Date     string `json:"date,omitempty"`
 	Preview  string `json:"preview,omitempty"`
+	Store    string `json:"store,omitempty"`
 }
 
 type contextStats struct {
@@ -68,37 +71,84 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	store, err := getUnifiedStore()
+	stores, err := openReadStores()
 	if err != nil {
 		return err
 	}
+	defer closeReadStores(stores)
 
-	// Gather recent notes
-	notes, err := store.ListNotesWithTags("", required)
-	if err != nil {
-		return fmt.Errorf("failed to list notes: %w", err)
-	}
-
-	// Gather recent sessions
 	sessOpts := storage.SessionListOpts{
 		Limit:   injectLimit,
 		Project: injectProject,
 		Tags:    required,
 	}
-	sessions, err := store.ListSessions(sessOpts)
-	if err != nil {
-		return fmt.Errorf("failed to list sessions: %w", err)
+	type noteFrom struct {
+		note  *models.Note
+		store string
+	}
+	var notes []noteFrom
+	var sessions []listedSession
+	var totals contextStats
+	for i, rs := range stores {
+		// Gather recent notes
+		found, err := rs.Store.ListNotesWithTags("", required)
+		if err != nil {
+			return fmt.Errorf("failed to list notes: %w", err)
+		}
+		for _, n := range found {
+			notes = append(notes, noteFrom{note: n, store: storeLabel(stores, i)})
+		}
+
+		// Gather recent sessions
+		listed, err := rs.Store.ListSessions(sessOpts)
+		if err != nil {
+			return fmt.Errorf("failed to list sessions: %w", err)
+		}
+		for _, s := range listed {
+			sessions = append(sessions, listedSession{session: s, store: storeLabel(stores, i)})
+		}
+
+		// Get stats for context: with --tag, the counts of the tagged set only
+		if len(required) == 0 {
+			stats, err := rs.Store.Stats()
+			if err != nil {
+				return fmt.Errorf("failed to get stats: %w", err)
+			}
+			totals.TotalNotes += stats.TotalNotes
+			totals.TotalSessions += stats.TotalSessions
+		} else {
+			stats, err := rs.Store.TaggedStats(required)
+			if err != nil {
+				return fmt.Errorf("failed to get stats: %w", err)
+			}
+			totals.TotalNotes += stats.TotalNotes
+			totals.TotalSessions += stats.TotalSessions
+		}
 	}
 
-	// Sort notes by updated time (most recent first) and take top N
-	sortNotesByRecent(notes)
+	// Sort notes by updated time (most recent first, ties in store order) and take top N
+	sort.SliceStable(notes, func(i, j int) bool { return notes[i].note.Updated.After(notes[j].note.Updated) })
 	if len(notes) > injectLimit {
 		notes = notes[:injectLimit]
+	}
+	// Sessions come newest first from each store; with several stores, merge them the same way
+	if len(stores) > 1 {
+		sort.SliceStable(sessions, func(i, j int) bool {
+			a, b := sessions[i].session, sessions[j].session
+			if a.Date != b.Date {
+				return a.Date > b.Date
+			}
+			return a.Created.After(b.Created)
+		})
+		if len(sessions) > injectLimit {
+			sessions = sessions[:injectLimit]
+		}
 	}
 
 	// Build compact entries
 	recentNotes := make([]compactEntry, 0, len(notes))
-	for _, n := range notes {
+	for _, nf := range notes {
+		n := nf.note
 		preview := n.Content
 		if len(preview) > 120 {
 			preview = preview[:117] + "..."
@@ -111,11 +161,13 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 			Category: n.Category,
 			Date:     n.Updated.Format("2006-01-02"),
 			Preview:  preview,
+			Store:    nf.store,
 		})
 	}
 
 	recentSessions := make([]compactEntry, 0, len(sessions))
-	for _, s := range sessions {
+	for _, ls := range sessions {
+		s := ls.session
 		preview := s.Summary
 		if len(preview) > 120 {
 			preview = preview[:117] + "..."
@@ -127,23 +179,8 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 			Title:   s.Title,
 			Date:    s.Date,
 			Preview: preview,
+			Store:   ls.store,
 		})
-	}
-
-	// Get stats for context: with --tag, the counts of the tagged set only
-	var totals contextStats
-	if len(required) == 0 {
-		stats, err := store.Stats()
-		if err != nil {
-			return fmt.Errorf("failed to get stats: %w", err)
-		}
-		totals = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
-	} else {
-		stats, err := store.TaggedStats(required)
-		if err != nil {
-			return fmt.Errorf("failed to get stats: %w", err)
-		}
-		totals = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
 	}
 
 	payload := contextPayload{
@@ -152,23 +189,32 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 		RecentSessions: recentSessions,
 		Stats:          totals,
 	}
+	if len(stores) > 1 {
+		for _, rs := range stores {
+			payload.Stores = append(payload.Stores, rs.Name)
+		}
+	}
 
 	if outputFormat == "json" {
 		return OutputJSON(payload)
 	}
 
 	// Text output: concise markdown for Claude context
+	inStores := ""
+	if len(stores) > 1 {
+		inStores = fmt.Sprintf(" in %d stores", len(stores))
+	}
 	if len(required) == 0 {
-		OutputText("claudemem context (%d notes, %d sessions)", totals.TotalNotes, totals.TotalSessions)
+		OutputText("claudemem context (%d notes, %d sessions%s)", totals.TotalNotes, totals.TotalSessions, inStores)
 	} else {
-		OutputText("claudemem context (%d notes, %d sessions tagged %s)", totals.TotalNotes, totals.TotalSessions, strings.Join(required, ", "))
+		OutputText("claudemem context (%d notes, %d sessions tagged %s%s)", totals.TotalNotes, totals.TotalSessions, strings.Join(required, ", "), inStores)
 	}
 	OutputText("")
 
 	if len(recentNotes) > 0 {
 		OutputText("Recent Notes:")
 		for _, n := range recentNotes {
-			OutputText("  - [%s] %s (%s) %s", n.ID[:8], n.Title, n.Category, n.Date)
+			OutputText("  - [%s] %s (%s) %s%s", n.ID[:8], n.Title, n.Category, n.Date, storeSuffix(n.Store))
 		}
 		OutputText("")
 	}
@@ -176,7 +222,7 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	if len(recentSessions) > 0 {
 		OutputText("Recent Sessions:")
 		for _, s := range recentSessions {
-			OutputText("  - [%s] %s (%s)", s.ID[:8], s.Title, s.Date)
+			OutputText("  - [%s] %s (%s)%s", s.ID[:8], s.Title, s.Date, storeSuffix(s.Store))
 			if s.Preview != "" {
 				OutputText("    %s", s.Preview)
 			}
@@ -189,11 +235,10 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// sortNotesByRecent sorts notes by Updated time, most recent first
-func sortNotesByRecent(notes []*models.Note) {
-	for i := 1; i < len(notes); i++ {
-		for j := i; j > 0 && notes[j].Updated.After(notes[j-1].Updated); j-- {
-			notes[j], notes[j-1] = notes[j-1], notes[j]
-		}
+// storeSuffix is " [store]" for an entry from a named store, else nothing.
+func storeSuffix(store string) string {
+	if store == "" {
+		return ""
 	}
+	return " [" + store + "]"
 }

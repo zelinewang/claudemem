@@ -2,7 +2,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 LDFLAGS := -s -w -X github.com/zelinewang/claudemem/cmd.Version=$(VERSION)
 BINARY  := claudemem
 
-.PHONY: build install test feature-test e2e-test tag-test clean test-all
+.PHONY: build install test feature-test e2e-test tag-test stores-test clean test-all
 
 # Build a single static binary (pure Go, no CGO). Network calls are
 # opt-in at runtime via `claudemem setup` — default is zero network.
@@ -39,9 +39,13 @@ e2e-test: build
 feature-test: build
 	@bash tests/feature_test.sh
 
-# Tag filters, tag edits and bulk tag apply (the filtered-view contract)
+# Tag filters, tag edits and bulk tag apply
 tag-test: build
 	@bash tests/tag_filters_test.sh
+
+# A store that reads other stores
+stores-test: build
+	@bash tests/stores_test.sh
 
 # Run ALL tests: unit + smoke + e2e + feature
 test-all: build
@@ -59,6 +63,9 @@ test-all: build
 	@echo ""
 	@echo "=== Tag Filter Tests ==="
 	@bash tests/tag_filters_test.sh
+	@echo ""
+	@echo "=== Several-Store Tests ==="
+	@bash tests/stores_test.sh
 
 clean:
 	rm -f $(BINARY)

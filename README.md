@@ -149,6 +149,10 @@ claudemem context inject --tag project-x    # only entries carrying every listed
 claudemem stats --tag project-x             # counts of the tagged set, no titles
 claudemem tag apply --file tags.jsonl [--dry-run]   # bulk add/remove, see below
 
+# Several stores
+claudemem config set stores.read "~/team-memory"   # reads also return the entries of ~/team-memory
+claudemem search "query" --read-stores ""          # this store alone, for one call
+
 # Embedding backend (pick one; no silent fallback)
 claudemem setup                              # interactive wizard: Local / Gemini / Voyage / OpenAI / TF-IDF
 claudemem health                             # I1-I3 parity check (markdown ↔ FTS ↔ vectors, <100ms)
@@ -196,6 +200,25 @@ The whole file is validated before anything changes; each entry is then applied 
 under the store lock, unknown ids are listed (exit 1), and a second run of the same file
 changes nothing. An entry whose file already has the requested tags but whose index rows do
 not is reported as a stale index row and its rows are rebuilt from the file.
+
+### Several stores
+
+A store can read other stores, for example a private one that also reads a team's: list them,
+comma-separated, in its `stores.read` setting (absolute paths or `~/`). Its read commands then
+return the entries of all of them, and when more than one store is read each entry names its
+store: `search`, `note search|list|get|categories|tags`, `session list|get|search`,
+`context inject` and `stats`. Ranked lists are merged by rank (each store ranks against its own
+index, so scores from two stores are not compared), date-sorted lists by date, and counts are
+added up. Writes go to `--store` alone; a write command given an id that sits only in a store this
+one reads says so and names the `--store` to use.
+
+`--read-stores` replaces the setting for one call, and `--read-stores ""` reads `--store` alone.
+Only the setting of `--store` counts (the stores it names are not followed further), a store
+listed twice or reached by a symlink is read once, a listed store that does not exist is skipped
+with a warning, and with a single store the output is what it always was. Ids are uuids, so an
+entry lives in one store; if a copy sits in two, `get` shows the one met first (`--store`, then
+the listed order) and warns. The other commands (`graph`, `health`, `sync`, `export`,
+`reindex`, ...) work on `--store` alone.
 
 ## Search Backends
 

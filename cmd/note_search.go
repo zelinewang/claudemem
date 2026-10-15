@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 var (
@@ -19,7 +20,8 @@ var noteSearchCmd = &cobra.Command{
 	Long: `Search for notes matching the given query.
 
 The search looks in note titles and content. You can optionally filter
-by category and tags.
+by category and tags. When the store reads other stores (stores.read), they
+are searched too, and each note names its store.
 
 Examples:
   claudemem note search "meeting"
@@ -34,19 +36,39 @@ Examples:
 			return err
 		}
 
-		// Get store and search
-		store, err := getStore()
+		stores, err := openReadStores()
 		if err != nil {
 			return err
 		}
+		defer closeReadStores(stores)
 
-		notes, err := store.SearchNotes(query, searchCategory, tags)
-		if err != nil {
-			return fmt.Errorf("failed to search notes: %w", err)
+		// Search every store; the ranked lists are merged by rank
+		lists := make([][]noteInStore, 0, len(stores))
+		for i, rs := range stores {
+			found, err := rs.Store.SearchNotes(query, searchCategory, tags)
+			if err != nil {
+				return fmt.Errorf("failed to search notes: %w", err)
+			}
+			list := make([]noteInStore, len(found))
+			for j, n := range found {
+				list[j] = noteInStore{Note: n, Store: storeLabel(stores, i)}
+			}
+			lists = append(lists, list)
+		}
+		listed := interleave(lists)
+		if len(listed) > maxNoteSearchResults {
+			listed = listed[:maxNoteSearchResults]
+		}
+		notes := make([]*models.Note, len(listed))
+		for i, l := range listed {
+			notes[i] = l.Note
 		}
 
 		// Output results
 		if outputFormat == "json" {
+			if len(stores) > 1 {
+				return OutputJSON(listed)
+			}
 			return OutputJSON(notes)
 		}
 
@@ -56,7 +78,7 @@ Examples:
 		}
 
 		OutputText("Found %d note(s) matching \"%s\":\n", len(notes), query)
-		for _, note := range notes {
+		for i, note := range notes {
 			idShort := note.ID
 			if len(idShort) > 8 {
 				idShort = idShort[:8]
@@ -69,7 +91,7 @@ Examples:
 			}
 			preview = strings.ReplaceAll(preview, "\n", " ")
 
-			OutputText("  %s [%s] %s", idShort, note.Category, note.Title)
+			OutputText("  %s [%s] %s%s", idShort, note.Category, note.Title, storeSuffix(listed[i].Store))
 			OutputText("    %s", preview)
 			if len(note.Tags) > 0 {
 				OutputText("    Tags: %s", strings.Join(note.Tags, ", "))
@@ -80,6 +102,10 @@ Examples:
 		return nil
 	},
 }
+
+// maxNoteSearchResults is what SearchNotes returns from one store; merged results from several
+// stores are cut to the same number.
+const maxNoteSearchResults = 50
 
 func init() {
 	noteCmd.AddCommand(noteSearchCmd)

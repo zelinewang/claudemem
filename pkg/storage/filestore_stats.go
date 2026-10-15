@@ -9,8 +9,25 @@ import (
 	"strings"
 )
 
+// topTagsShown is how many tags Stats and TaggedStats list.
+const topTagsShown = 10
+
+// recentEntriesShown is how many entries Stats lists as recent activity.
+const recentEntriesShown = 5
+
 // Stats returns statistics about the store
 func (fs *FileStore) Stats() (*StoreStats, error) {
+	return fs.stats(topTagsShown)
+}
+
+// StatsAllTags is Stats with every tag listed, so MergeStats can add up the tags of several stores
+// exactly.
+func (fs *FileStore) StatsAllTags() (*StoreStats, error) {
+	return fs.stats(0)
+}
+
+// stats lists the tagLimit most used tags, or every tag when tagLimit is 0.
+func (fs *FileStore) stats(tagLimit int) (*StoreStats, error) {
 	if fs.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -86,8 +103,8 @@ func (fs *FileStore) Stats() (*StoreStats, error) {
 	sort.Slice(stats.TopTags, func(i, j int) bool {
 		return stats.TopTags[i].Count > stats.TopTags[j].Count
 	})
-	if len(stats.TopTags) > 10 {
-		stats.TopTags = stats.TopTags[:10]
+	if tagLimit > 0 && len(stats.TopTags) > tagLimit {
+		stats.TopTags = stats.TopTags[:tagLimit]
 	}
 
 	// Get recent entries
@@ -97,8 +114,8 @@ func (fs *FileStore) Stats() (*StoreStats, error) {
 			date_str, branch, project
 		FROM entries
 		ORDER BY created DESC
-		LIMIT 5`
-	rows, err = fs.db.Query(recentQuery)
+		LIMIT ?`
+	rows, err = fs.db.Query(recentQuery, recentEntriesShown)
 	if err != nil {
 		return nil, fmt.Errorf("get recent entries failed: %w", err)
 	}
@@ -167,10 +184,19 @@ func (fs *FileStore) Stats() (*StoreStats, error) {
 }
 
 // TaggedStats counts only the entries carrying every required tag: notes, sessions, the notes'
-// categories and the ten most used tags among them. It prints no titles and reads no file, so a
-// filtered wrapper can report the size of its view without showing anything outside it. Ties sort
-// by name, so the output is stable.
+// categories and the ten most used tags among them. Counts only: no titles and no file reads. Ties
+// sort by name, so the output is stable.
 func (fs *FileStore) TaggedStats(required []string) (*TaggedStats, error) {
+	return fs.taggedStats(required, topTagsShown)
+}
+
+// TaggedStatsAllTags is TaggedStats with every tag listed, for MergeTaggedStats.
+func (fs *FileStore) TaggedStatsAllTags(required []string) (*TaggedStats, error) {
+	return fs.taggedStats(required, 0)
+}
+
+// taggedStats lists the tagLimit most used tags, or every tag when tagLimit is 0.
+func (fs *FileStore) taggedStats(required []string, tagLimit int) (*TaggedStats, error) {
 	if fs.db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -218,8 +244,86 @@ func (fs *FileStore) TaggedStats(required []string) (*TaggedStats, error) {
 		a, b := stats.TopTags[i], stats.TopTags[j]
 		return a.Count > b.Count || (a.Count == b.Count && a.Name < b.Name)
 	})
-	if len(stats.TopTags) > 10 {
-		stats.TopTags = stats.TopTags[:10]
+	if tagLimit > 0 && len(stats.TopTags) > tagLimit {
+		stats.TopTags = stats.TopTags[:tagLimit]
 	}
 	return stats, nil
+}
+
+// MergeStats adds up the stats of several stores: the counts and storage sizes, the categories and
+// tags by name (the ten most used tags), and the five newest entries of all the stores, newest first.
+// The parts should come from StatsAllTags, so that the tags are counted exactly; each part's recent
+// entries keep their Store field.
+func MergeStats(parts []*StoreStats) *StoreStats {
+	merged := &StoreStats{Categories: []CategoryInfo{}, TopTags: []TagInfo{}, RecentEntries: []SearchResult{}}
+	categories := make(map[string]int)
+	tags := make(map[string]int)
+	for _, part := range parts {
+		merged.TotalNotes += part.TotalNotes
+		merged.TotalSessions += part.TotalSessions
+		merged.StorageSize += part.StorageSize
+		for _, c := range part.Categories {
+			categories[c.Name] += c.Count
+		}
+		for _, t := range part.TopTags {
+			tags[t.Name] += t.Count
+		}
+		merged.RecentEntries = append(merged.RecentEntries, part.RecentEntries...)
+	}
+	merged.Categories = countsByName(categories)
+	for _, c := range countsByName(tags) {
+		merged.TopTags = append(merged.TopTags, TagInfo(c))
+	}
+	if len(merged.TopTags) > topTagsShown {
+		merged.TopTags = merged.TopTags[:topTagsShown]
+	}
+	sort.SliceStable(merged.RecentEntries, func(i, j int) bool {
+		return merged.RecentEntries[i].Created.After(merged.RecentEntries[j].Created)
+	})
+	if len(merged.RecentEntries) > recentEntriesShown {
+		merged.RecentEntries = merged.RecentEntries[:recentEntriesShown]
+	}
+	return merged
+}
+
+// MergeTaggedStats adds up the tagged stats of several stores, as MergeStats does. The parts should
+// come from TaggedStatsAllTags, with the same tags.
+func MergeTaggedStats(parts []*TaggedStats) *TaggedStats {
+	merged := &TaggedStats{Categories: []CategoryInfo{}, TopTags: []TagInfo{}}
+	categories := make(map[string]int)
+	tags := make(map[string]int)
+	for _, part := range parts {
+		if merged.Tags == nil {
+			merged.Tags = part.Tags
+		}
+		merged.TotalNotes += part.TotalNotes
+		merged.TotalSessions += part.TotalSessions
+		for _, c := range part.Categories {
+			categories[c.Name] += c.Count
+		}
+		for _, t := range part.TopTags {
+			tags[t.Name] += t.Count
+		}
+	}
+	merged.Categories = countsByName(categories)
+	for _, c := range countsByName(tags) {
+		merged.TopTags = append(merged.TopTags, TagInfo(c))
+	}
+	if len(merged.TopTags) > topTagsShown {
+		merged.TopTags = merged.TopTags[:topTagsShown]
+	}
+	return merged
+}
+
+// countsByName turns name counts into a list, most counted first and ties by name.
+func countsByName(counts map[string]int) []CategoryInfo {
+	list := make([]CategoryInfo, 0, len(counts))
+	for name, count := range counts {
+		list = append(list, CategoryInfo{Name: name, Count: count})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		a, b := list[i], list[j]
+		return a.Count > b.Count || (a.Count == b.Count && a.Name < b.Name)
+	})
+	return list
 }

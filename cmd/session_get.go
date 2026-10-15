@@ -2,10 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/zelinewang/claudemem/pkg/storage"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 var sessionGetCmd = &cobra.Command{
@@ -43,25 +44,43 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	store, err := getSessionStore()
+	stores, err := openReadStores()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeReadStores(stores)
 
-	// Get session
-	session, err := store.GetSessionWithTags(id, required)
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+	// Get session: the primary store first, then the stores it reads
+	var session *models.Session
+	where := -1
+	var firstErr error
+	for i, rs := range stores {
+		s, err := rs.Store.GetSessionWithTags(id, required)
+		if err != nil {
+			if i == 0 {
+				firstErr = err
+			}
+			continue
+		}
+		if session == nil {
+			session, where = s, i
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "warning: %s also matches a session in %s; showing the one in %s\n", id, rs.Name, stores[where].Name)
+	}
+	if session == nil {
+		return fmt.Errorf("failed to get session: %w", firstErr)
 	}
 
 	// Log access (non-blocking, best-effort)
-	if fs, ok := store.(*storage.FileStore); ok {
-		fs.LogAccess(session.ID, "get")
-	}
+	stores[where].Store.LogAccess(session.ID, "get")
+	label := storeLabel(stores, where)
 
 	// Output result
 	if outputFormat == "json" {
+		if label != "" {
+			return OutputJSON(sessionInStore{Session: session, Store: label})
+		}
 		return OutputJSON(session)
 	} else {
 		// Text format - display full session
@@ -74,6 +93,9 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 		OutputText(fmt.Sprintf("Session: %s", session.Title))
 		OutputText(strings.Repeat("-", 80))
 		OutputText(fmt.Sprintf("ID:         %s", idPrefix))
+		if label != "" {
+			OutputText(fmt.Sprintf("Store:      %s", label))
+		}
 		OutputText(fmt.Sprintf("Date:       %s", session.Date))
 		OutputText(fmt.Sprintf("Branch:     %s", session.Branch))
 		OutputText(fmt.Sprintf("Project:    %s", session.Project))
@@ -132,4 +154,11 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// sessionInStore is a session with the store it came from, for JSON output when several stores are
+// read.
+type sessionInStore struct {
+	*models.Session
+	Store string `json:"store,omitempty"`
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,6 +15,9 @@ var noteListCmd = &cobra.Command{
 	Short: "List notes",
 	Long: `List all notes or notes in a specific category.
 
+When the store reads other stores (stores.read), their notes are listed too,
+each naming its store.
+
 Examples:
   claudemem note list              # List all notes
   claudemem note list work         # List notes in work category`,
@@ -24,19 +28,42 @@ Examples:
 			category = args[0]
 		}
 
-		// Get store and list notes
-		store, err := getStore()
+		stores, err := openReadStores()
 		if err != nil {
 			return err
 		}
+		defer closeReadStores(stores)
 
-		notes, err := store.ListNotes(category)
-		if err != nil {
-			return fmt.Errorf("failed to list notes: %w", err)
+		// List every store, by category and title across them
+		var listed []noteInStore
+		for i, rs := range stores {
+			found, err := rs.Store.ListNotes(category)
+			if err != nil {
+				return fmt.Errorf("failed to list notes: %w", err)
+			}
+			for _, n := range found {
+				listed = append(listed, noteInStore{Note: n, Store: storeLabel(stores, i)})
+			}
+		}
+		if len(stores) > 1 {
+			sort.SliceStable(listed, func(i, j int) bool {
+				a, b := listed[i].Note, listed[j].Note
+				if a.Category != b.Category {
+					return a.Category < b.Category
+				}
+				return a.Title < b.Title
+			})
+		}
+		notes := make([]*models.Note, len(listed))
+		for i, l := range listed {
+			notes[i] = l.Note
 		}
 
 		// Output results
 		if outputFormat == "json" {
+			if len(stores) > 1 {
+				return OutputJSON(listed)
+			}
 			return OutputJSON(notes)
 		}
 
@@ -50,9 +77,9 @@ Examples:
 		}
 
 		// Group by category for text output
-		byCategory := make(map[string][]*models.Note)
-		for _, note := range notes {
-			byCategory[note.Category] = append(byCategory[note.Category], note)
+		byCategory := make(map[string][]noteInStore)
+		for _, l := range listed {
+			byCategory[l.Note.Category] = append(byCategory[l.Note.Category], l)
 		}
 
 		// Sort categories
@@ -71,12 +98,13 @@ Examples:
 		// Display notes
 		for _, cat := range categories {
 			OutputText("\n%s:", cat)
-			for _, note := range byCategory[cat] {
+			for _, l := range byCategory[cat] {
+				note := l.Note
 				idShort := note.ID
 				if len(idShort) > 8 {
 					idShort = idShort[:8]
 				}
-				OutputText("  [%s] %s", idShort, note.Title)
+				OutputText("  [%s] %s%s", idShort, note.Title, storeSuffix(l.Store))
 				if len(note.Tags) > 0 {
 					OutputText("        Tags: %s", strings.Join(note.Tags, ", "))
 				}

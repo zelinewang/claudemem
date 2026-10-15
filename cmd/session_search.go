@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/models"
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
@@ -61,11 +62,11 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	store, err := getSessionStore()
+	stores, err := openReadStores()
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer closeReadStores(stores)
 
 	// Build options
 	opts := storage.SessionListOpts{
@@ -93,10 +94,26 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Search sessions
-	sessions, err := store.SearchSessions(query, opts)
-	if err != nil {
-		return fmt.Errorf("failed to search sessions: %w", err)
+	// Search sessions in every store; the ranked lists are merged by rank
+	lists := make([][]listedSession, 0, len(stores))
+	for i, rs := range stores {
+		found, err := rs.Store.SearchSessions(query, opts)
+		if err != nil {
+			return fmt.Errorf("failed to search sessions: %w", err)
+		}
+		list := make([]listedSession, len(found))
+		for j, s := range found {
+			list[j] = listedSession{session: s, store: storeLabel(stores, i)}
+		}
+		lists = append(lists, list)
+	}
+	listed := interleave(lists)
+	if len(listed) > maxSessionSearchResults {
+		listed = listed[:maxSessionSearchResults]
+	}
+	sessions := make([]*models.Session, len(listed))
+	for i, l := range listed {
+		sessions[i] = l.session
 	}
 
 	if len(sessions) == 0 {
@@ -106,7 +123,14 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 
 	// Output results
 	if outputFormat == "json" {
-		return OutputJSON(sessions)
+		if len(stores) < 2 {
+			return OutputJSON(sessions)
+		}
+		labelled := make([]sessionInStore, len(listed))
+		for i, l := range listed {
+			labelled[i] = sessionInStore{Session: l.session, Store: l.store}
+		}
+		return OutputJSON(labelled)
 	} else {
 		// Text format
 		OutputText(fmt.Sprintf("Found %d sessions matching \"%s\":\n", len(sessions), query))
@@ -127,8 +151,13 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 			}
 			preview = strings.ReplaceAll(preview, "\n", " ")
 
-			OutputText(fmt.Sprintf("%d. [%s] %s (%s, %s)",
-				i+1, idPrefix, session.Title, session.Date, session.Branch))
+			if listed[i].store != "" {
+				OutputText(fmt.Sprintf("%d. [%s] %s (%s, %s) [%s]",
+					i+1, idPrefix, session.Title, session.Date, session.Branch, listed[i].store))
+			} else {
+				OutputText(fmt.Sprintf("%d. [%s] %s (%s, %s)",
+					i+1, idPrefix, session.Title, session.Date, session.Branch))
+			}
 			if preview != "" {
 				OutputText(fmt.Sprintf("   %s", preview))
 			}
@@ -141,3 +170,7 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 
 	return nil
 }
+
+// maxSessionSearchResults is what SearchSessions returns from one store; merged results from several
+// stores are cut to the same number.
+const maxSessionSearchResults = 50

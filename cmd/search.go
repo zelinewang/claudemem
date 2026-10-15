@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -52,49 +53,6 @@ Examples:
 			return err
 		}
 
-		// Get file store (concrete type for vector access)
-		fileStore, err := getFileStore()
-		if err != nil {
-			return err
-		}
-
-		// Auto-enable hybrid search when feature flag is on
-		useHybrid := searchSemantic
-		cfg, cfgErr := config.Load(getStoreDir())
-		if cfgErr == nil && cfg.GetBool("features.semantic_search") {
-			useHybrid = true
-		}
-		if searchSemantic && !useHybrid {
-			return fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true && claudemem reindex --vectors")
-		}
-		// --fts-only is an explicit per-query opt-out. Honored before init
-		// so we don't even try to reach the configured backend.
-		if searchFTSOnly {
-			useHybrid = false
-		}
-		if useHybrid {
-			if err := fileStore.InitVectorStore(); err != nil {
-				// P4 "no silent fallback": surface the failure to the user.
-				// Fail loud in non-TTY; offer interactive recovery in TTY.
-				choice, cerr := handleBackendFailure(err, useHybrid)
-				if cerr != nil {
-					return cerr
-				}
-				switch choice {
-				case recoveryRetry:
-					if err2 := fileStore.InitVectorStore(); err2 != nil {
-						return fmt.Errorf("retry failed: %w", err2)
-					}
-				case recoveryFTSOnly:
-					useHybrid = false
-				case recoverySetup:
-					return fmt.Errorf("run `claudemem setup` to reconfigure, then retry")
-				case recoveryExit:
-					return fmt.Errorf("aborted")
-				}
-			}
-		}
-
 		opts := storage.SearchOpts{
 			Query:    query,
 			Type:     searchType,
@@ -106,30 +64,26 @@ Examples:
 			Limit:    searchLimit,
 		}
 
-		// Choose search mode: hybrid (FTS5 + vectors) when available, FTS5 otherwise
-		var results []storage.SearchResult
-		if useHybrid && fileStore.HasVectorStore() {
-			results, err = fileStore.HybridSearch(query, opts)
-			// HybridSearch may fail at embed time (backend went down between
-			// init and query). Surface as a recovery prompt. If the user
-			// accepts --fts-only, retry with keyword search; otherwise bail.
-			if err != nil && vectors.IsBackendUnavailable(err) {
-				choice, cerr := handleBackendFailure(err, true)
-				if cerr != nil {
-					return cerr
-				}
-				if choice == recoveryFTSOnly {
-					results, err = fileStore.SearchWithOpts(opts)
-				} else {
-					return fmt.Errorf("search aborted: %w", err)
-				}
-			}
-		} else {
-			results, err = fileStore.SearchWithOpts(opts)
-		}
+		stores, err := openReadStores()
 		if err != nil {
-			return fmt.Errorf("search failed: %w", err)
+			return err
 		}
+		defer closeReadStores(stores)
+
+		// Each store is searched with its own settings (semantic search, embedding backend); the
+		// result lists are then merged by rank, or by date with --sort date.
+		lists := make([][]storage.SearchResult, 0, len(stores))
+		for i, rs := range stores {
+			found, err := searchOneStore(rs, query, opts)
+			if err != nil {
+				return err
+			}
+			for j := range found {
+				found[j].Store = storeLabel(stores, i)
+			}
+			lists = append(lists, found)
+		}
+		results := mergeSearchResults(lists, opts)
 
 		if len(results) == 0 {
 			if outputFormat == "json" {
@@ -147,6 +101,7 @@ Examples:
 					Type  string  `json:"type"`
 					Title string  `json:"title"`
 					Score float64 `json:"score"`
+					Store string  `json:"store,omitempty"`
 				}
 				compact := make([]CompactResult, len(results))
 				for i, r := range results {
@@ -155,6 +110,7 @@ Examples:
 						Type:  r.Type,
 						Title: r.Title,
 						Score: r.Score,
+						Store: r.Store,
 					}
 				}
 				return OutputJSON(compact)
@@ -168,6 +124,10 @@ Examples:
 				idShort := r.ID
 				if len(idShort) > 8 {
 					idShort = idShort[:8]
+				}
+				if r.Store != "" {
+					OutputText("%d. %s %s — %s (%.2f) [%s]", i+1, icon, idShort, r.Title, r.Score, r.Store)
+					continue
 				}
 				OutputText("%d. %s %s — %s (%.2f)", i+1, icon, idShort, r.Title, r.Score)
 			}
@@ -202,6 +162,9 @@ Examples:
 			if len(r.Tags) > 0 {
 				metadata = append(metadata, fmt.Sprintf("tags: %s", strings.Join(r.Tags, ", ")))
 			}
+			if r.Store != "" {
+				metadata = append(metadata, fmt.Sprintf("store: %s", r.Store))
+			}
 
 			// Output entry
 			OutputText("%d. %s [%s] %s", i+1, icon, r.Type, r.Title)
@@ -219,6 +182,99 @@ Examples:
 
 		return nil
 	},
+}
+
+// searchOneStore runs the search in one store with that store's own semantic-search setting, the
+// way the command always searched its single store: --semantic forces hybrid search, the store's
+// features.semantic_search turns it on, --fts-only turns it off.
+func searchOneStore(rs readStore, query string, opts storage.SearchOpts) ([]storage.SearchResult, error) {
+	fileStore := rs.Store
+
+	// Auto-enable hybrid search when feature flag is on
+	useHybrid := searchSemantic
+	cfg, cfgErr := config.Load(rs.Dir)
+	if cfgErr == nil && cfg.GetBool("features.semantic_search") {
+		useHybrid = true
+	}
+	// --fts-only is an explicit per-query opt-out. Honored before init
+	// so we don't even try to reach the configured backend.
+	if searchFTSOnly {
+		useHybrid = false
+	}
+	if useHybrid {
+		if err := fileStore.InitVectorStore(); err != nil {
+			// P4 "no silent fallback": surface the failure to the user.
+			// Fail loud in non-TTY; offer interactive recovery in TTY.
+			choice, cerr := handleBackendFailure(err, useHybrid)
+			if cerr != nil {
+				return nil, cerr
+			}
+			switch choice {
+			case recoveryRetry:
+				if err2 := fileStore.InitVectorStore(); err2 != nil {
+					return nil, fmt.Errorf("retry failed: %w", err2)
+				}
+			case recoveryFTSOnly:
+				useHybrid = false
+			case recoverySetup:
+				return nil, fmt.Errorf("run `claudemem setup` to reconfigure, then retry")
+			case recoveryExit:
+				return nil, fmt.Errorf("aborted")
+			}
+		}
+	}
+
+	// Choose search mode: hybrid (FTS5 + vectors) when available, FTS5 otherwise
+	var results []storage.SearchResult
+	var err error
+	if useHybrid && fileStore.HasVectorStore() {
+		results, err = fileStore.HybridSearch(query, opts)
+		// HybridSearch may fail at embed time (backend went down between
+		// init and query). Surface as a recovery prompt. If the user
+		// accepts --fts-only, retry with keyword search; otherwise bail.
+		if err != nil && vectors.IsBackendUnavailable(err) {
+			choice, cerr := handleBackendFailure(err, true)
+			if cerr != nil {
+				return nil, cerr
+			}
+			if choice == recoveryFTSOnly {
+				results, err = fileStore.SearchWithOpts(opts)
+			} else {
+				return nil, fmt.Errorf("search aborted: %w", err)
+			}
+		}
+	} else {
+		results, err = fileStore.SearchWithOpts(opts)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+	return results, nil
+}
+
+// mergeSearchResults merges the result lists of several stores: by date with --sort date, else by
+// rank within each store (see interleave), then cut to the limit. One list is returned as it is.
+func mergeSearchResults(lists [][]storage.SearchResult, opts storage.SearchOpts) []storage.SearchResult {
+	if len(lists) == 1 {
+		return lists[0]
+	}
+	var merged []storage.SearchResult
+	if opts.Sort == "date" {
+		for _, list := range lists {
+			merged = append(merged, list...)
+		}
+		sort.SliceStable(merged, func(i, j int) bool { return merged[i].Created.After(merged[j].Created) })
+	} else {
+		merged = interleave(lists)
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
 }
 
 func getUnifiedStore() (storage.UnifiedStore, error) {

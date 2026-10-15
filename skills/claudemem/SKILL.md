@@ -57,14 +57,19 @@ claudemem session update <id> --add-tag X --remove-tag Y
 claudemem search "query" [--type note|session] [--limit N]
 claudemem search "query" --compact              # IDs + titles only
 claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, all required; --tag repeatable)
+claudemem search "query" --after 2025-01-01     # Date range
+claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
+claudemem search "query" --semantic             # Force semantic even if feature flag off
 
 # Tags
 claudemem context inject --tag project-x  # inject only entries carrying the tag
 claudemem stats --tag project-x           # counts of the tagged set, no titles
 claudemem tag apply --file tags.jsonl [--dry-run]   # bulk: {"id","kind":"note|session","add":[],"remove":[]} per line
-claudemem search "query" --after 2025-01-01     # Date range
-claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
-claudemem search "query" --semantic             # Force semantic even if feature flag off
+
+# Several stores
+claudemem config set stores.read "~/team-memory"  # reads also return ~/team-memory's entries, each naming its store
+claudemem search "query" --read-stores ""         # this store alone, for one call
+claudemem --store ~/team-memory note append <id> "..."   # writes go to --store only: write where the entry lives
 
 # Context
 claudemem context inject [--limit N] [--project path] [--tag X]  # Recent notes + sessions overview

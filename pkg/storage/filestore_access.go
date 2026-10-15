@@ -13,13 +13,20 @@ type AccessStat struct {
 	Type         string `json:"type"`
 	AccessCount  int    `json:"access_count"`
 	LastAccessed string `json:"last_accessed"`
+	Store        string `json:"store,omitempty"` // set by the CLI when several stores are read
+}
+
+// DisableAccessLog makes LogAccess record nothing. The CLI calls it for a store it only reads, so that
+// reading another store writes nothing there.
+func (fs *FileStore) DisableAccessLog() {
+	fs.noAccessLog = true
 }
 
 // LogAccess records an access event for an entry. Non-blocking: errors are
 // logged to stderr but never returned to the caller so that access tracking
 // does not interfere with normal operations.
 func (fs *FileStore) LogAccess(entryID, accessType string) {
-	if fs.db == nil {
+	if fs.db == nil || fs.noAccessLog {
 		return
 	}
 

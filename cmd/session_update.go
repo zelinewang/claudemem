@@ -60,7 +60,7 @@ func runSessionUpdate(cmd *cobra.Command, args []string) error {
 
 	session, err := store.GetSession(args[0])
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return readStoreHint(fmt.Errorf("failed to get session: %w", err), "session", args[0])
 	}
 	res, err := store.EditTags("session", session.ID, addTags, removeTags, false)
 	if err != nil {

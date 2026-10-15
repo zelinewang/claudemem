@@ -19,6 +19,7 @@ type FileStore struct {
 	indexDir    string
 	db          *sql.DB
 	vectorStore *vectors.VectorStore // nil when semantic search is disabled
+	noAccessLog bool                 // set by DisableAccessLog
 }
 
 // NewFileStore creates a new file-based store

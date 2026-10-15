@@ -98,6 +98,7 @@ type SearchResult struct {
 	Score    float64   `json:"score"`
 	Preview  string    `json:"preview"`
 	Created  time.Time `json:"created"`
+	Store    string    `json:"store,omitempty"` // the store it came from, set when a command reads several
 }
 
 // StoreStats provides statistics about the store
