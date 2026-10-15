@@ -375,9 +375,6 @@ func TestMoveEntries_ReadsRelatedNotesFromTheFile(t *testing.T) {
 		{"a ref that names two notes", "matches several notes", func(private, shared *models.Note) string {
 			return "## Related Notes\n- `abcdef12` — \"Twins\" (ops)"
 		}},
-		{"a note in neither store", "in neither store", func(private, shared *models.Note) string {
-			return "## Related Notes\n- `eeeeeeee-0000-0000-0000-000000000000` — \"Deleted\" (ops)"
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			from, to := moveStores(t)

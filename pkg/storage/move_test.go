@@ -507,17 +507,13 @@ func TestMoveEntries_SessionsMoveWithTheirRelatedNotes(t *testing.T) {
 		}
 	})
 
-	t.Run("a related note already in the target moves the session; one in neither store does not", func(t *testing.T) {
+	t.Run("a related note already in the target, or in neither store", func(t *testing.T) {
 		from, to := moveStores(t)
 		there := addTaggedNote(t, to, "ops", "Already there", "x", "team")
-		session := newSession(t, from, "Review", link(there, there.ID))
-		if report := mustMove(t, from, to, false, session.ID); len(report.Moved) != 1 {
-			t.Fatalf("report %+v", report)
-		}
 		gone := &models.Note{ID: "eeeeeeee-0000-0000-0000-000000000000", Title: "Deleted note", Category: "ops"}
-		other := newSession(t, from, "Second review", link(there, there.ID), link(gone, gone.ID))
-		report := mustMove(t, from, to, false, other.ID)
-		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "in neither store") {
+		session := newSession(t, from, "Review", link(there, there.ID), link(gone, gone.ID))
+		report := mustMove(t, from, to, false, session.ID)
+		if len(report.Moved) != 1 || len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "in neither store") {
 			t.Fatalf("report %+v", report)
 		}
 	})

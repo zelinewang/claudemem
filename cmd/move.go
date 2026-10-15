@@ -36,7 +36,8 @@ entry whole in one store or both, and running the same file again finishes it.
 Two different files under one id, a file reached through a symlink between the
 stores, and stores that overlap are refused. Notes move first, then sessions. A
 session moves only when every note it lists under Related Notes is in the target
-or moves in the same run, since a session file names its related notes by title.
+or moves in the same run, since a session file names its related notes by title;
+a note in neither store is only a warning, since that link is dead in both.
 
 The report lists the entries moved, already in the target, missing (in neither
 store), refused (with the reason) and left to clean up (in the target, with

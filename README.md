@@ -252,7 +252,8 @@ between the two stores, a stale row in the target, stores that overlap and an in
 newer claudemem are refused. Notes move before sessions, and a session moves only when every note it
 lists under its Related Notes sections is in the target or moves in the same run, since a session
 file names its related notes by title; a line there without a note id, an id shorter than 8
-characters or one that matches several notes keeps the session where it is. `--dry-run` changes
+characters or one that matches several notes keeps the session where it is, while a note that is in
+neither store is only a warning, since the link is dead in both. `--dry-run` changes
 nothing. Missing and refused entries, and entries left to clean up (in the target, with a different
 copy of the file, or rows the move could not remove, still in this store), make the exit code 1.
 With an add-only sync between machines, a moved file can come back from another machine's copy:

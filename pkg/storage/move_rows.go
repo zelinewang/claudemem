@@ -291,9 +291,9 @@ func hasChunkedVectors(db *sql.DB) bool {
 
 // relatedNotesStay checks the notes a session file lists under its Related Notes sections, read
 // from the file's text (the parsed session keeps only the last such section, and drops a line without
-// an id). It returns why the session must stay, or "" when every listed note is in the target, or
-// moves there in this run.
-func (m *mover) relatedNotesStay(data []byte) string {
+// an id). It returns why the session must stay, or "" when every listed note is in the target, moves
+// there in this run, or is in neither store (a dead link in both, so only a warning).
+func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 	items, bad := relatedNoteItems(data)
 	if bad != "" {
 		return fmt.Sprintf("its Related Notes section has a line that names no note as claudemem writes it (- `id` — \"title\"): %q; fix or remove the line first", bad)
@@ -320,7 +320,8 @@ func (m *mover) relatedNotesStay(data []byte) string {
 		}
 		switch {
 		case len(ids) == 0:
-			return fmt.Sprintf("it lists the related note %s (%q), which is in neither store; take the link out first", rn.ID, rn.Title)
+			m.warn("session %s lists the related note %s (%q), which is in neither store", sessionID, rn.ID, rn.Title)
+			continue
 		case len(ids) > 1:
 			return fmt.Sprintf("it lists the related note %s (%q), which matches several notes; write its full id", rn.ID, rn.Title)
 		}

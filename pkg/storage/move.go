@@ -119,7 +119,8 @@ type MoveReport struct {
 //
 // Notes move before sessions. A session moves only if every note it lists under Related Notes is
 // in the target, or moved there in this run: a session file names its related notes by title, so it
-// never moves without them. A note may move alone. A dry run changes nothing.
+// never moves without them. A note in neither store is only a warning, since the link is dead in both.
+// A note may move alone. A dry run changes nothing.
 func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(done, total int)) (*MoveReport, error) {
 	if sameStoreDir(from.baseDir, to.baseDir) {
 		return nil, fmt.Errorf("the target is this store itself")
@@ -333,7 +334,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		return
 	}
 	if kind == "session" {
-		if reason := m.relatedNotesStay(data); reason != "" {
+		if reason := m.relatedNotesStay(e.ID, data); reason != "" {
 			m.refuse(e, kind, "%s", reason)
 			return
 		}
@@ -498,7 +499,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 		return
 	}
 	if kind == "session" {
-		if reason := m.relatedNotesStay(data); reason != "" {
+		if reason := m.relatedNotesStay(e.ID, data); reason != "" {
 			m.refuse(e, kind, "%s", reason)
 			return
 		}
