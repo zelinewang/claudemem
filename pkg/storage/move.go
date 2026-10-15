@@ -98,7 +98,8 @@ type MoveReport struct {
 	NeedsCleanup []MoveIssue `json:"needs_cleanup"`
 	Warnings     []string    `json:"warnings"`
 	// VectorsToEmbed counts the entries this run put into the target (moved, or in the target with
-	// something left here): a move carries no vectors, so the target embeds each of them itself.
+	// something left here), and those an earlier run put there that still have no vectors there: a
+	// move carries no vectors, so the target embeds each of them itself.
 	VectorsToEmbed int `json:"vectors_to_embed"`
 }
 
@@ -538,6 +539,9 @@ func (m *mover) alreadyInTarget(e MoveID, dst *indexRow) {
 	}
 	if kind == "note" {
 		m.inTarget[e.ID] = true
+	}
+	if !m.to.hasVectorsFor(e.ID) { // an earlier run put it there; the target has not embedded it yet
+		m.report.VectorsToEmbed++
 	}
 	if problems := m.leftovers(e.ID, kind, there, "", dst.filepath); len(problems) > 0 {
 		m.needsCleanup(e, kind, problems)

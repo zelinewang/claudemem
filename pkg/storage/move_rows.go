@@ -122,6 +122,15 @@ func (fs *FileStore) removeEntryRows(id string) error {
 	return tx.Commit()
 }
 
+// hasVectorsFor reports whether the store's index holds a vector row for the entry, of any backend.
+func (fs *FileStore) hasVectorsFor(id string) bool {
+	if !hasVectorsByDoc(fs.db) {
+		return false
+	}
+	var n int
+	return fs.db.QueryRow(`SELECT COUNT(*) FROM vectors WHERE doc_id = ?`, id).Scan(&n) == nil && n > 0
+}
+
 // hasVectorsByDoc reports whether the store's index has a vectors table keyed by doc_id (every layout
 // since v22; a v21 table has none and is migrated on its next open with semantic search).
 func hasVectorsByDoc(db *sql.DB) bool {

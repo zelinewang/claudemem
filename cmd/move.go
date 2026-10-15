@@ -195,9 +195,9 @@ func printMoveReport(r *storage.MoveReport, from, to, embed string) {
 	}
 	switch {
 	case r.VectorsToEmbed > 0 && r.DryRun:
-		OutputText("  %d entries would go into %s without vectors (a move carries none); afterwards embed them with: %s", r.VectorsToEmbed, to, embed)
+		OutputText("  %d entries would be in %s without vectors (a move carries none); afterwards embed them with: %s", r.VectorsToEmbed, to, embed)
 	case r.VectorsToEmbed > 0:
-		OutputText("  %d entries went into %s without vectors (a move carries none); embed them with: %s", r.VectorsToEmbed, to, embed)
+		OutputText("  %d entries are in %s without vectors (a move carries none); embed them with: %s", r.VectorsToEmbed, to, embed)
 	}
 }
 

@@ -839,3 +839,22 @@ func TestMarkdownHeadingAndNoteIDForms(t *testing.T) {
 		}
 	}
 }
+
+// A rerun counts to embed the entries an earlier run put into the target that still have no vectors
+// there, so its report still prints the command that embeds them; once embedded, they no longer count.
+func TestMoveEntries_ARerunCountsToEmbedWhatIsStillNotEmbedded(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 || report.VectorsToEmbed != 1 {
+		t.Fatalf("first run: %+v", report)
+	}
+	for _, dryRun := range []bool{true, false} {
+		if report := mustMove(t, from, to, dryRun, note.ID); len(report.AlreadyInTarget) != 1 || report.VectorsToEmbed != 1 {
+			t.Errorf("rerun (dry run %v) of an entry the target has not embedded: %+v", dryRun, report)
+		}
+	}
+	addVectorRow(t, to, note.ID, "fake-cloud", "test-v1", 4) // the target embeds it
+	if report := mustMove(t, from, to, false, note.ID); len(report.AlreadyInTarget) != 1 || report.VectorsToEmbed != 0 {
+		t.Errorf("rerun after the target embedded it: %+v", report)
+	}
+}

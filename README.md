@@ -238,8 +238,9 @@ another existing store, keeping each entry's id and its file (under the same nam
 `reindex` builds them. No vectors go along, and the target's own vectors for a moved entry are
 removed: a store's vectors can be older than its file (a `reindex`, a `sync pull` or a tag edit
 rebuilds the search row and keeps them), and stale ones would let a search find words the file no
-longer has. The report counts every entry that went into the target and prints the command that
-embeds them there, `claudemem --store <target> reindex --vectors --missing`. The access log is not
+longer has. The report counts every entry that went into the target, and on a rerun every listed
+entry an earlier run put there that still has no vectors, and prints the command that embeds them
+there, `claudemem --store <target> reindex --vectors --missing`. The access log is not
 carried over: it records what a person read. The ids file has one full id per line; blank lines and
 anything after a `#` are skipped, and the whole file is checked before anything moves.
 
