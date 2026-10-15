@@ -291,9 +291,9 @@ found and handled by the next run.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two
-paths), a stale row in the target, stores that overlap (also through a bind mount) and an index
-written by a newer claudemem are refused; a hard link in another directory is allowed, since
-removing one name leaves the other.
+paths), a stale row in the target, stores that overlap (also through a bind mount, of a store or of
+a directory inside it) and an index written by a newer claudemem are refused; a hard link in another
+directory is allowed, since removing one name leaves the other.
 
 Notes move before sessions, and a session moves only when every note it lists under its Related
 Notes sections is in the target or moves in the same run, since a session file names its related

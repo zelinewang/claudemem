@@ -40,8 +40,8 @@ For the whole move and its reruns, stop everything else that writes to either
 store (editors, an add-only sync, claudemem sync jobs): a program that writes
 through a file it opened before the move can lose that write.
 Two different files under one id, a file reached through a symlink or a bind
-mount between the stores, and stores that overlap (also through a bind mount)
-are refused. Notes move first, then sessions. A
+mount between the stores, and stores that overlap (also through a bind mount,
+of a store or of a directory inside it) are refused. Notes move first, then sessions. A
 session moves only when every note it lists under Related Notes (a heading with
 that title at any level, in any case, with or without a colon) is in the target
 or moves in the same run, since a session file names its related notes by title;

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -729,6 +730,28 @@ func StoresOverlap(a, b string) bool {
 	}
 	ra, rb := resolvedDir(a), resolvedDir(b)
 	return isWithin(ra, rb) || isWithin(rb, ra) || insideByInode(ra, b) || insideByInode(rb, a)
+}
+
+// holdsAliasOf reports whether a directory under dir is the directory other (same device and inode):
+// other sits inside dir through a bind mount of one of dir's directories, which neither path shows.
+// It walks every directory under dir, without following symlinks.
+func holdsAliasOf(dir, other string) bool {
+	oi, err := os.Stat(other)
+	if err != nil {
+		return false
+	}
+	found := false
+	filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && os.SameFile(info, oi) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // insideByInode reports whether dir or one of its ancestors is the directory other (same device and

@@ -74,3 +74,48 @@ func TestStoresOverlap_ThroughABindMount(t *testing.T) {
 	}
 	runUnderBindMount(t, store, alias, marker, "CM_TEST_STORE="+store, "CM_TEST_ALIAS="+alias)
 }
+
+// A target store that is a bind mount of a directory inside this store sits inside it, though neither
+// path shows it: the move is refused, in both directions, as for a store nested by its path.
+func TestMoveEntries_RefusesAStoreBoundToADirectoryOfTheOther(t *testing.T) {
+	const marker = "nested bind-mount checks ran"
+	if os.Getenv(bindMountEnv) == "1" {
+		from, err := NewFileStore(os.Getenv("CM_TEST_STORE"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer from.Close()
+		to, err := NewFileStore(os.Getenv("CM_TEST_ALIAS"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer to.Close()
+		for _, pair := range [][2]*FileStore{{from, to}, {to, from}} {
+			if _, err := MoveEntries(pair[0], pair[1], moveIDs(os.Getenv("CM_TEST_NOTE")), false, nil); err == nil || !strings.Contains(err.Error(), "overlap") {
+				t.Errorf("a move from %s to %s: %v, want the stores refused as overlapping", pair[0].baseDir, pair[1].baseDir, err)
+			}
+		}
+		if _, err := from.GetNote(os.Getenv("CM_TEST_NOTE")); err != nil {
+			t.Errorf("the note left this store: %v", err)
+		}
+		fmt.Println(marker)
+		return
+	}
+	root := t.TempDir()
+	store, alias := filepath.Join(root, "store"), filepath.Join(root, "team")
+	from, err := NewFileStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	from.Close()
+	inner, err := NewFileStore(filepath.Join(store, "inner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner.Close()
+	if err := os.MkdirAll(alias, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runUnderBindMount(t, filepath.Join(store, "inner"), alias, marker, "CM_TEST_STORE="+store, "CM_TEST_ALIAS="+alias, "CM_TEST_NOTE="+note.ID)
+}

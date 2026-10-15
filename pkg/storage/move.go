@@ -132,6 +132,9 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	if StoresOverlap(from.baseDir, to.baseDir) {
 		return nil, fmt.Errorf("the two stores overlap: one sits inside the other")
 	}
+	if holdsAliasOf(from.baseDir, to.baseDir) || holdsAliasOf(to.baseDir, from.baseDir) {
+		return nil, fmt.Errorf("the two stores overlap: one sits inside the other through a bind mount of one of its directories")
+	}
 	if (from.readOnly || to.readOnly) && !dryRun {
 		return nil, fmt.Errorf("both stores must be open for writing")
 	}
