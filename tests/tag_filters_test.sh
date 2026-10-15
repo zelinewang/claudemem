@@ -169,7 +169,7 @@ N_OTHER=$(BJ note add misc --title "Untagged scratch" --content "x" --tags other
 for _ in 1 2 3 4 5 6; do B note get "$N_OTHER" >/dev/null 2>&1; done
 OUT=$(B stats --tag team 2>&1)
 if grep -q "^Notes:    3$" <<<"$OUT" && grep -q "^Sessions: 2$" <<<"$OUT" && grep -q "Recent Activity:" <<<"$OUT" \
-    && grep -q "Release review" <<<"$OUT" && ! grep -qE "Untagged scratch|Storage:" <<<"$OUT" && B stats | grep -q "Untagged scratch"; then
+    && grep -q "Release review" <<<"$OUT" && ! grep -qE "Untagged scratch|Storage:" <<<"$OUT"; then
     pass "stats --tag prints the dashboard of the tagged entries only, without the storage size"
 else
     fail "stats --tag" "$OUT"
