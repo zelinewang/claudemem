@@ -275,12 +275,17 @@ func (fs *FileStore) RepairIntegrity() (int, error) {
 
 	removed := 0
 	for _, orphan := range result.OrphanedEntries {
-		tx.Exec("DELETE FROM entries WHERE id = ?", orphan.ID)
-		tx.Exec("DELETE FROM memory_fts WHERE id = ?", orphan.ID)
+		for _, stmt := range []string{"DELETE FROM entries WHERE id = ?", "DELETE FROM memory_fts WHERE id = ?"} {
+			if _, err := tx.Exec(stmt, orphan.ID); err != nil {
+				return 0, fmt.Errorf("remove the rows of orphaned entry %s: %w", orphan.ID, err)
+			}
+		}
 		removed++
 	}
-
-	return removed, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
 // VerifyResult holds integrity check results

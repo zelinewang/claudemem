@@ -1195,6 +1195,28 @@ func TestRepairIntegrity_RemovesOrphan(t *testing.T) {
 	}
 }
 
+// A delete that fails is an error, not a removed orphan: the repair said it removed rows that stayed.
+func TestRepairIntegrity_ReportsADeleteThatFails(t *testing.T) {
+	store := setupTestStore(t)
+	if _, err := store.DB().Exec(
+		`INSERT INTO entries (id, type, title, category, tags, filepath, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"orphan-id-99999", "note", "Orphan Note", "misc", "", "notes/misc/orphan-id-99999.md", 0, 0,
+	); err != nil {
+		t.Fatalf("direct DB insert failed: %v", err)
+	}
+	if _, err := store.DB().Exec(`CREATE TRIGGER keep_entries BEFORE DELETE ON entries BEGIN SELECT RAISE(ABORT, 'deletes refused'); END`); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := store.RepairIntegrity()
+	if err == nil || removed != 0 {
+		t.Errorf("RepairIntegrity() = %d, %v; want an error and nothing removed", removed, err)
+	}
+	var n int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM entries WHERE id = 'orphan-id-99999'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("the orphan's row: %d (%v)", n, err)
+	}
+}
+
 // ─── Session merge helpers ───────────────────────────────────────────────────
 
 func TestMergeFileChanges_Basic(t *testing.T) {
