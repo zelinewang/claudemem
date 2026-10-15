@@ -18,14 +18,19 @@ import (
 // whether the file must be written (false when the target already holds this very file). Every copy
 // of this id that the target holds, indexed or not, must be this file; a different one is refused,
 // since a later reindex of the target could pick it instead. The place is checked as movePath checks
-// it, so a dry run refuses what the move would.
-func (m *mover) placeInTarget(kind, id, srcRel string, dst *indexRow, data []byte) (string, string, bool, error) {
+// it, so a dry run refuses what the move would, and it must not resolve to srcPath, the file this
+// store gives up.
+func (m *mover) placeInTarget(kind, id, srcRel, srcPath string, dst *indexRow, data []byte) (string, string, bool, error) {
 	rel, note, install, err := m.choosePlace(kind, id, srcRel, dst, data)
 	if err != nil {
 		return "", "", false, err
 	}
-	if _, err := movePath(m.to, m.from, rel); err != nil {
+	targetPath, err := movePath(m.to, m.from, rel)
+	if err != nil {
 		return "", "", false, fmt.Errorf("the target's file: %v", err)
+	}
+	if sameResolvedFile(srcPath, targetPath) {
+		return "", "", false, fmt.Errorf("the target's file %s is this store's file (through a link); move it by hand", rel)
 	}
 	return rel, note, install, nil
 }
@@ -89,8 +94,9 @@ func (m *mover) differentCopy(store *FileStore, kind, id string, data []byte, re
 
 // leftovers removes the copies of the entry's file that this store still holds outside its index
 // (other than except, which the move itself handled), when they are the moved file itself, and
-// returns what it could not remove: a different copy, or one it failed to remove.
-func (m *mover) leftovers(id, kind string, data []byte, except string) []string {
+// returns what it could not remove: a different copy, or one it failed to remove. targetRel is the
+// entry's file in the target, which a copy here must not resolve to.
+func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string) []string {
 	var problems []string
 	for _, rel := range m.fromFiles[id] {
 		if rel == except {
@@ -99,6 +105,10 @@ func (m *mover) leftovers(id, kind string, data []byte, except string) []string 
 		path, err := movePath(m.from, m.to, rel)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("a copy of its file at %s is left here: %v", rel, err))
+			continue
+		}
+		if sameResolvedFile(path, joinStore(m.to, targetRel)) {
+			problems = append(problems, fmt.Sprintf("the copy of its file at %s is the target's file (through a link); left as it is", rel))
 			continue
 		}
 		held, err := os.ReadFile(path)
@@ -229,6 +239,27 @@ func movePath(store, other *FileStore, rel string) (string, error) {
 		return "", fmt.Errorf("%s is reached through a symlink that leads out of its store; move it by hand", rel)
 	}
 	return path, nil
+}
+
+// sameResolvedFile reports whether two paths name one file once symlinks are resolved (hard links
+// are two names, and removing one leaves the other).
+func sameResolvedFile(a, b string) bool { return resolvedPath(a) == resolvedPath(b) }
+
+// resolvedPath is path, absolute, with symlinks resolved, also when it does not exist yet: its
+// closest existing ancestor resolved, with the rest appended.
+func resolvedPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	base := nearestExisting(filepath.Dir(path))
+	rest, err := filepath.Rel(base, path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(resolvedDir(base), rest)
 }
 
 // nearestExisting is dir, or its closest ancestor that exists.

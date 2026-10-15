@@ -69,21 +69,23 @@ func runMove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("--to: %w", err)
 	}
-	if info, statErr := os.Stat(toDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("--to: store %s not found; it must be an existing store", displayStoreName(toDir))
-	}
-	if !storage.IsStoreDir(toDir) {
-		return fmt.Errorf("--to: %s is not a claudemem store (no .index/search.db); to start one there, run any command with --store %s first", displayStoreName(toDir), displayStoreName(toDir))
-	}
 	fromDir, err := primaryStoreDir()
 	if err != nil {
 		return err
 	}
+	// Before anything about the target: a directory inside this store (or holding it) is never a
+	// target, and nothing below suggests making a store there.
 	if sameDirKey(fromDir) == sameDirKey(toDir) {
 		return fmt.Errorf("--to is this store itself (%s)", displayStoreName(fromDir))
 	}
 	if storage.StoresOverlap(fromDir, toDir) {
-		return fmt.Errorf("--to %s and this store %s overlap: one sits inside the other", displayStoreName(toDir), displayStoreName(fromDir))
+		return fmt.Errorf("--to %s and this store %s overlap: one sits inside the other; a move needs two separate stores", displayStoreName(toDir), displayStoreName(fromDir))
+	}
+	if info, statErr := os.Stat(toDir); statErr != nil || !info.IsDir() {
+		return fmt.Errorf("--to: store %s not found; it must be an existing store", displayStoreName(toDir))
+	}
+	if !storage.IsStoreDir(toDir) {
+		return fmt.Errorf("--to: %s is not a claudemem store (no .index/search.db); a move needs an existing store as its target", displayStoreName(toDir))
 	}
 	if !storage.IsStoreDir(fromDir) {
 		return fmt.Errorf("--store %s is not a claudemem store (no .index/search.db)", displayStoreName(fromDir))

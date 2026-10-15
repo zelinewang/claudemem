@@ -340,7 +340,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		}
 	}
 
-	rel, note, install, err := m.placeInTarget(kind, e.ID, src.filepath, dst, data)
+	rel, note, install, err := m.placeInTarget(kind, e.ID, src.filepath, srcPath, dst, data)
 	if err != nil {
 		m.refuse(e, kind, "%v", err)
 		return
@@ -351,7 +351,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		return
 	}
 	if m.dryRun {
-		m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath))
+		m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath, rel))
 		return
 	}
 
@@ -374,6 +374,10 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 
 	// 2. Out of this store: the file, then the rows. A stop between the two leaves rows without a
 	// file here, which the next run finishes.
+	if sameResolvedFile(srcPath, joinStore(m.to, rel)) { // checked before writing; never delete the target's file
+		m.needsCleanup(e, kind, []string{fmt.Sprintf("its file here is the target's file %s (through a link); left as it is", rel)})
+		return
+	}
 	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v; run the move again", err)})
 		return
@@ -382,7 +386,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
 		return
 	}
-	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath))
+	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath, rel))
 }
 
 // finishFromTarget handles an entry whose rows are here but whose file is not: an earlier run put it
@@ -437,7 +441,7 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 			return
 		}
 	}
-	m.finish(e, kind, f.title, rel, "finished an earlier move", plan, m.leftovers(e.ID, kind, data, ""))
+	m.finish(e, kind, f.title, rel, "finished an earlier move", plan, m.leftovers(e.ID, kind, data, "", rel))
 }
 
 // alreadyInTarget handles an entry the target's index lists and this store's does not. Its file in
@@ -471,7 +475,7 @@ func (m *mover) alreadyInTarget(e MoveID, dst *indexRow) {
 	if kind == "note" {
 		m.inTarget[e.ID] = true
 	}
-	if problems := m.leftovers(e.ID, kind, there, ""); len(problems) > 0 {
+	if problems := m.leftovers(e.ID, kind, there, "", dst.filepath); len(problems) > 0 {
 		m.needsCleanup(e, kind, problems)
 		return
 	}
@@ -504,7 +508,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 			return
 		}
 	}
-	rel, _, install, err := m.placeInTarget(kind, e.ID, dst.filepath, dst, data)
+	rel, _, install, err := m.placeInTarget(kind, e.ID, dst.filepath, joinStore(m.from, copies[0].rel), dst, data)
 	if err != nil {
 		m.refuse(e, kind, "%v", err)
 		return
@@ -532,7 +536,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 		}
 		m.to.removeStaleTemps(kind, e.ID, rel)
 	}
-	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, ""))
+	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, "", rel))
 }
 
 // finish reports an entry that is now in the target: moved, or left to clean up when something of

@@ -234,3 +234,21 @@ func TestCLI_MoveChecks(t *testing.T) {
 		t.Errorf("a different copy left here: %v\n%s", err, out)
 	}
 }
+
+// A --to inside this store is refused for overlapping before anything else, so the errors never
+// suggest making a store there, and nothing is created there.
+func TestCLI_MoveNeverSuggestsANestedStore(t *testing.T) {
+	from := t.TempDir()
+	note := addNoteCLI(t, from, "ops", "Nested check", "x", "team")
+	nested := filepath.Join(from, "notes", "team")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runCLI(t, from, "move", "--to", nested, "--file", writeIDs(t, note))
+	if err == nil || !strings.Contains(err.Error(), "overlap") || strings.Contains(err.Error(), "--store") {
+		t.Errorf("--to a directory inside this store: %v", err)
+	}
+	if entries, readErr := os.ReadDir(nested); readErr != nil || len(entries) != 0 {
+		t.Errorf("something was written in the nested directory: %v %v", entries, readErr)
+	}
+}

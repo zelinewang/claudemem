@@ -562,3 +562,18 @@ func TestMoveEntries_InstallNeverReplacesAFile(t *testing.T) {
 		t.Errorf("a different file of this id there: %v", err)
 	}
 }
+
+// The target's file must never be the file this store gives up, even when the path checks pass.
+func TestMoveEntries_TargetFileIsNeverTheSourceFile(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "samekw", "team")
+	rel := entryFile(t, from, note.ID)
+	data := readRelFile(t, from, rel)
+	m := &mover{from: from, to: to}
+	if _, _, _, err := m.placeInTarget("note", note.ID, rel, filepath.Join(to.baseDir, rel), nil, data); err == nil || !strings.Contains(err.Error(), "is this store's file") {
+		t.Errorf("a source file that is the target's file: %v", err)
+	}
+	if _, _, _, err := m.placeInTarget("note", note.ID, rel, filepath.Join(from.baseDir, rel), nil, data); err != nil {
+		t.Errorf("an ordinary source file: %v", err)
+	}
+}
