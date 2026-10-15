@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // openFileDB opens an index file the way a store does: one connection, WAL, a busy timeout.
@@ -47,5 +48,51 @@ func TestNewVectorStore_OpeningACurrentIndexWritesNothing(t *testing.T) {
 	}
 	if after := dataVersion(t, watcher); after != before {
 		t.Errorf("opening a current index committed a write (data_version %d -> %d)", before, after)
+	}
+}
+
+// A rebuild's write waits for another process's write instead of failing busy: here a second
+// connection commits while the rebuild reads the rows it replaces.
+func TestRebuildIndexGated_WaitsForAnotherWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "search.db")
+	db, other := openFileDB(t, path), openFileDB(t, path)
+	emb := &fakeEmbedder{name: "fake", model: "v1", dim: 2}
+	vs, err := NewVectorStore(db, emb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRow(t, db, "elsewhere", emb.Name(), emb.Model()) // not rebuilt: the rebuild asks the gate about it as it reads
+
+	var otherErr error
+	done := make(chan struct{})
+	asked := false
+	gate := func(write func(present func(string) bool) error) error {
+		return write(func(id string) bool {
+			if id == "elsewhere" && !asked {
+				asked = true
+				go func() { // another process logs a search
+					defer close(done)
+					_, otherErr = other.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('probe', 'x')`)
+				}()
+				select { // let it commit, if the rebuild lets it
+				case <-done:
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			return true
+		})
+	}
+	if _, err := vs.RebuildIndexGated([]Document{{ID: "doc", Text: "some text"}}, gate); err != nil {
+		t.Fatalf("the rebuild failed while another connection wrote: %v", err)
+	}
+	<-done
+	if !asked {
+		t.Fatal("the gate was not asked about the row the rebuild reads")
+	}
+	if otherErr != nil {
+		t.Errorf("the other writer failed: %v", otherErr)
+	}
+	if n := docRows(t, db, "doc"); n != 1 {
+		t.Errorf("the rebuilt document has %d rows, want 1", n)
 	}
 }

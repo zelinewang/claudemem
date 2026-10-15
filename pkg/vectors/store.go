@@ -1,6 +1,7 @@
 package vectors
 
 import (
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -609,21 +610,34 @@ func (vs *VectorStore) RebuildIndexGated(documents []Document, gate Gate) (int, 
 
 // writeRebuild replaces the active backend's rows in one transaction: all of them when clearAll is
 // set, otherwise those of the documents for which replaced holds; then it inserts the vectors of
-// the documents present.
+// the documents present. The transaction takes the write lock as it begins (BEGIN IMMEDIATE),
+// waiting out busy_timeout while another writer holds it: a deferred one reads the active rows
+// first, and fails busy at its first write when another process (a search logging its access, say)
+// committed in between.
 func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bool, replaced, present func(string) bool) error {
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
-	tx, err := vs.db.Begin()
+	ctx := context.Background()
+	conn, err := vs.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
 
 	if clearAll {
-		if _, err := tx.Exec(`DELETE FROM vectors WHERE backend = ? AND model = ?`, backend, model); err != nil {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM vectors WHERE backend = ? AND model = ?`, backend, model); err != nil {
 			return fmt.Errorf("clear active backend rows: %w", err)
 		}
 	} else {
-		rows, err := tx.Query(`SELECT DISTINCT doc_id FROM vectors WHERE backend = ? AND model = ?`, backend, model)
+		rows, err := conn.QueryContext(ctx, `SELECT DISTINCT doc_id FROM vectors WHERE backend = ? AND model = ?`, backend, model)
 		if err != nil {
 			return fmt.Errorf("list active backend rows: %w", err)
 		}
@@ -643,14 +657,14 @@ func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bo
 			return err
 		}
 		for _, id := range clear {
-			if _, err := tx.Exec(`DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`, id, backend, model); err != nil {
+			if _, err := conn.ExecContext(ctx, `DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`, id, backend, model); err != nil {
 				return fmt.Errorf("clear active backend rows of %s: %w", shortID(id), err)
 			}
 		}
 	}
 
 	if len(indexed) > 0 {
-		stmt, err := tx.Prepare(`
+		stmt, err := conn.PrepareContext(ctx, `
 			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
@@ -663,15 +677,16 @@ func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bo
 			if !present(doc.docID) {
 				continue
 			}
-			if _, err := stmt.Exec(doc.docID, doc.chunk, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
+			if _, err := stmt.ExecContext(ctx, doc.docID, doc.chunk, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
 				return fmt.Errorf("insert vector for %s chunk %d: %w", doc.docID, doc.chunk, err)
 			}
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	committed = true
 	return nil
 }
 
