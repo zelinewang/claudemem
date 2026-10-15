@@ -259,9 +259,24 @@ func movePath(store, other *FileStore, rel string) (string, error) {
 	return path, nil
 }
 
-// sameResolvedFile reports whether two paths name one file once symlinks are resolved (hard links
-// are two names, and removing one leaves the other).
-func sameResolvedFile(a, b string) bool { return resolvedPath(a) == resolvedPath(b) }
+// sameResolvedFile reports whether two paths may name one file, so that nothing is removed through
+// either: they are one path once symlinks are resolved, or they are one file in one directory reached
+// by paths that resolve apart (a bind mount, or another alias the symlink check cannot see; the two
+// stores then share that directory). Hard links in two directories are two names, and removing one
+// leaves the other.
+func sameResolvedFile(a, b string) bool {
+	if resolvedPath(a) == resolvedPath(b) {
+		return true
+	}
+	return sameInode(a, b) && sameInode(filepath.Dir(a), filepath.Dir(b))
+}
+
+// sameInode reports whether two paths, followed, are one existing file or directory.
+func sameInode(a, b string) bool {
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
+}
 
 // resolvedPath is path, absolute, with symlinks resolved, also when it does not exist yet: its
 // closest existing ancestor resolved, with the rest appended.

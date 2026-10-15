@@ -110,6 +110,51 @@ func TestMoveEntries_RefusesFilesReachedThroughALinkBetweenTheStores(t *testing.
 	})
 }
 
+// sameResolvedFile decides whether a removal through one path could take the file the other names.
+func TestSameResolvedFile(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel string) string {
+		t.Helper()
+		path := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(rel), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	note, other := write("a/note.md"), write("b/other.md")
+	link := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.Link(note, path); err != nil {
+			t.Skipf("hard links: %v", err)
+		}
+		return path
+	}
+	hardElsewhere := link("b/hard.md")
+	// One directory reached by two paths is what a bind mount makes, and only root can make one; a
+	// second name for the file in its own directory looks the same to the check.
+	sameDir := link("a/alias.md")
+	symlinkOrSkip(t, filepath.Join(dir, "a"), filepath.Join(dir, "link"))
+	for _, c := range []struct {
+		name, x, y string
+		want       bool
+	}{
+		{"the same path", note, note, true},
+		{"through a symlinked directory", note, filepath.Join(dir, "link", "note.md"), true},
+		{"one file in one directory, by two paths", note, sameDir, true},
+		{"a hard link in another directory", note, hardElsewhere, false},
+		{"two files", note, other, false},
+		{"a file that does not exist yet", note, filepath.Join(dir, "b", "none.md"), false},
+	} {
+		if got := sameResolvedFile(c.x, c.y); got != c.want {
+			t.Errorf("%s: sameResolvedFile = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // The target's rows are built from the moved file, as a reindex builds them: never from rows a stopped
 // run left there, nor from this store's rows when the file was edited by hand.
 func TestMoveEntries_BuildsTheTargetRowsFromTheFile(t *testing.T) {

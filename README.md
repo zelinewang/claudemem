@@ -252,8 +252,9 @@ embeds without the lock and writes under it, leaving out the entries that left t
 keeping the vectors another writer added meanwhile. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
 rows. Two different files under one id (anywhere in the target), a file reached through a symlink
-between the two stores, a stale row in the target, stores that overlap and an index written by a
-newer claudemem are refused. Notes move before sessions, and a session moves only when every note it
+or another alias between the two stores (a bind mount: one file in one directory, reached by two
+paths), a stale row in the target, stores that overlap and an index written by a newer claudemem are
+refused; a hard link in another directory is allowed, since removing one name leaves the other. Notes move before sessions, and a session moves only when every note it
 lists under its Related Notes sections is in the target or moves in the same run, since a session
 file names its related notes by title; a line there without a note id, an id shorter than 8
 characters or one that matches several notes keeps the session where it is. A note counts as in a
