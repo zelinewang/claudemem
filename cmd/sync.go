@@ -103,6 +103,7 @@ var syncPullCmd = &cobra.Command{
 		}
 		defer store.Close()
 
+		warnPendingMove(store)
 		ftsCount, err := store.Reindex()
 		if err != nil {
 			return fmt.Errorf("FTS rebuild post-pull: %w", err)

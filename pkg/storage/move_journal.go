@@ -100,6 +100,14 @@ func (fs *FileStore) pendingInstalls() (records []pendingInstall, paths []string
 	return records, paths, bad
 }
 
+// PendingMoveRecords counts the records in the store's move journal: each is a file that a move into
+// this store put here before it stopped, without its rows (or a record that cannot be read). A reindex
+// lists such files; the next move into the store resolves them first.
+func (fs *FileStore) PendingMoveRecords() int {
+	records, _, bad := fs.pendingInstalls()
+	return len(records) + len(bad)
+}
+
 // newTempPath is a fresh temp name next to path: hidden, not ending in .md, so a reindex never reads
 // it, and in the same form as the temps of the store's other writers.
 func newTempPath(path string) string {

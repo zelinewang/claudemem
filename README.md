@@ -290,8 +290,9 @@ copy: it stays, with a warning on each run, until the target is reindexed or the
 hand. A file the journal cannot remove (its directory refuses it, say) is reported, and its record
 stays for the next move to try again. A dry run only says what it would remove, and only while no
 writer holds the target's lock: a record it finds while one does may be that of a move still
-running, so it says so and leaves the journal alone. A set-aside file that a stopped run left is
-found and handled by the next run.
+running, so it says so and leaves the journal alone. `reindex` and `sync pull` warn while the
+journal holds records, since a reindex then lists the files the stopped run put there: run the same
+move again first. A set-aside file that a stopped run left is found and handled by the next run.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two

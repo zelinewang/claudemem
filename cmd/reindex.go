@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/config"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var (
@@ -45,6 +47,7 @@ Examples:
 		doVectors := reindexVectors || reindexAll
 
 		if doFTS {
+			warnPendingMove(store)
 			count, err := store.Reindex()
 			if err != nil {
 				return fmt.Errorf("FTS reindex failed: %w", err)
@@ -92,6 +95,15 @@ func init() {
 	reindexCmd.Flags().BoolVar(&reindexAll, "all", false, "Rebuild both FTS5 and vector indexes")
 	reindexCmd.Flags().BoolVar(&reindexMissing, "missing", false, "With --vectors: embed only documents that have no vector yet (incremental backfill)")
 	rootCmd.AddCommand(reindexCmd)
+}
+
+// warnPendingMove warns before a reindex while the store's move journal holds records: a move into the
+// store stopped before the rows of what it put here were written, and the reindex lists those files.
+// The same move run again first finishes or clears them.
+func warnPendingMove(store *storage.FileStore) {
+	if n := store.PendingMoveRecords(); n > 0 {
+		fmt.Fprintf(os.Stderr, "warning: .index/move-pending holds %d records of a move into this store that stopped before their rows were written; this reindex lists the files that move put here: run that move again (the same ids file) first, which finishes or clears them\n", n)
+	}
 }
 
 // validateReindexFlags rejects --missing without a vector mode: --missing is a
