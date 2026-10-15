@@ -365,6 +365,17 @@ func TestCLI_ReadStores_Settings(t *testing.T) {
 		t.Errorf("reading created the missing store: %v", statErr)
 	}
 
+	// a directory that is not a store is skipped with a warning, and left as it is
+	plain := t.TempDir()
+	mustRunCLI(t, primary, "config", "set", readStoresKey, plain+","+other)
+	out, err = runCLIChild(t, t.TempDir(), "--store", primary, "search", "setkw", "--format", "json")
+	if err != nil || !strings.Contains(out, "warning: "+plain+" ("+readStoresKey+") is not a claudemem store") || !strings.Contains(out, `"store"`) {
+		t.Errorf("a directory that is not a store: %v\n%s", err, out)
+	}
+	if entries, readErr := os.ReadDir(plain); readErr != nil || len(entries) != 0 {
+		t.Errorf("reading wrote into a directory that is not a store: %v %v", entries, readErr)
+	}
+
 	// ~/ is the home directory, and names show the home as ~
 	home := t.TempDir()
 	if out, err := runCLIChild(t, home, "--store", filepath.Join(home, "shared"), "note", "add", "c", "--title", "Home note", "--content", "setkw"); err != nil {

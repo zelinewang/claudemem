@@ -215,8 +215,9 @@ one reads says so and names the `--store` to use.
 
 `--read-stores` replaces the setting for one call, and `--read-stores ""` reads `--store` alone.
 Only the setting of `--store` counts (the stores it names are not followed further), a store
-listed twice or reached by a symlink is read once, a listed store that does not exist is skipped
-with a warning, and with a single store the output is what it always was. Ids are uuids, so an
+listed twice or reached by a symlink is read once, a listed path that does not exist or is not a
+claudemem store (it has no `.index/search.db`) is skipped with a warning and left as it is, and with
+a single store the output is what it always was. Ids are uuids, so an
 entry lives in one store; if a copy sits in two, `get` shows the one met first (`--store`, then
 the listed order) and warns. The other commands (`graph`, `health`, `sync`, `export`,
 `reindex`, ...) work on `--store` alone.

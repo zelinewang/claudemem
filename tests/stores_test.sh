@@ -15,7 +15,7 @@ WORK=$(mktemp -d)
 FAKE_HOME="$WORK/home"
 P="$WORK/primary"
 S="$WORK/shared"
-mkdir -p "$FAKE_HOME" "$P" "$S"
+mkdir -p "$FAKE_HOME" "$P" "$S" "$WORK/plain"
 PASS=0; FAIL=0
 
 pass() { PASS=$((PASS+1)); echo "  [PASS] $1"; }
@@ -127,6 +127,13 @@ if grep -qF "warning: store $WORK/gone (stores.read) not found" "$WORK/err" && [
 else
     fail "missing store" "out=[$OUT] err=[$(cat "$WORK/err")]"
 fi
+CP config set stores.read "$WORK/plain,$S" >/dev/null
+OUT=$(CP search bbkw --type note --format json 2>"$WORK/err")
+if grep -qF "warning: $WORK/plain (stores.read) is not a claudemem store" "$WORK/err" && [ "$(json "len(d)" <<<"$OUT")" = "2" ] && [ -z "$(ls -A "$WORK/plain")" ]; then
+    pass "a listed directory that is not a store is skipped with a warning, and left as it is"
+else
+    fail "directory that is not a store" "out=[$OUT] err=[$(cat "$WORK/err")]"
+fi
 CP config set stores.read "relative/dir" >/dev/null
 if OUT=$(CP search bbkw 2>&1); then
     fail "relative path" "accepted: $OUT"
@@ -147,14 +154,22 @@ echo ""
 echo "7. move"
 MF="$WORK/move-from"
 MT="$WORK/move-to"
-mkdir -p "$MF" "$MT"
+mkdir -p "$MF" "$MT" "$WORK/plain"
 CF() { C --store "$MF" "$@"; }
 CT() { C --store "$MT" "$@"; }
+CT stats >/dev/null  # an empty store: a directory a command has run in
 M_TEAM=$(CF note add ops --title "Team runbook" --content "mvkw steps" --tags team --format json | json "d['note_id']")
 M_KEEP=$(CF note add life --title "Holiday plan" --content "mvkw beach" --tags personal --format json | json "d['note_id']")
 M_SESS=$(CF session save --title "Team review" --branch main --project p --session-id sid-mv --summary "mvkw review" --related-notes "$M_TEAM:Team runbook:ops" --format json | json "d['session_id']")
 M_MIXED=$(CF session save --title "Mixed review" --branch main --project p --session-id sid-mx --summary "mvkw mixed" --related-notes "${M_KEEP:0:8}:Holiday plan:life" --format json | json "d['session_id']")
 printf '# entries for the target\n%s  # Team review\n%s\n%s\n' "$M_SESS" "$M_TEAM" "$M_MIXED" > "$WORK/move-ids.txt"
+if OUT=$(CF move --to "$WORK/plain" --file "$WORK/move-ids.txt" 2>&1); then
+    fail "move to a directory that is not a store" "accepted: $OUT"
+elif grep -q "is not a claudemem store" <<<"$OUT" && [ -z "$(ls -A "$WORK/plain")" ]; then
+    pass "move refuses a target that is not a claudemem store, and leaves it as it is"
+else
+    fail "move to a directory that is not a store" "$OUT"
+fi
 FILES_BEFORE=$(find "$MF" "$MT" -type f -name '*.md' | sort)
 OUT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" --dry-run --format json 2>/dev/null)
 GOT=$(json "'%d moved, %d refused, dry run %s' % (len(d['moved']), len(d['refused']), d['dry_run'])" <<<"$OUT")

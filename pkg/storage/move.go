@@ -508,7 +508,7 @@ func (m *mover) copyRows(src *indexRow, rel string, fields *entryFields) (bool, 
 	}
 
 	// Asked before Begin: the store has one connection, which the transaction then holds.
-	targetVectors := hasVectorsTable(m.to.db)
+	targetVectors := hasVectorsByDoc(m.to.db)
 	tx, err := m.to.db.Begin()
 	if err != nil {
 		return false, err
@@ -557,7 +557,7 @@ func (m *mover) hasCopyableVectors(id string) bool {
 // removeEntryRows removes an entry's rows from this store in one transaction: the entries row, the
 // search rows, the access log and the vectors.
 func (fs *FileStore) removeEntryRows(id string) error {
-	vectors := hasVectorsTable(fs.db) // before Begin: the transaction holds the store's one connection
+	vectors := hasVectorsByDoc(fs.db) // before Begin: the transaction holds the store's one connection
 	tx, err := fs.db.Begin()
 	if err != nil {
 		return err
@@ -701,10 +701,11 @@ func resolvedDir(dir string) string {
 	return filepath.Clean(dir)
 }
 
-// hasVectorsTable reports whether the store's index has a vectors table.
-func hasVectorsTable(db *sql.DB) bool {
-	var name string
-	return db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vectors'`).Scan(&name) == nil
+// hasVectorsByDoc reports whether the store's index has a vectors table keyed by doc_id (every layout
+// since v22; a v21 table has none and is migrated on its next open with semantic search).
+func hasVectorsByDoc(db *sql.DB) bool {
+	var n int
+	return db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('vectors') WHERE name = 'doc_id'`).Scan(&n) == nil && n == 1
 }
 
 // hasChunkedVectors reports whether the store's vectors table has the current layout, with a chunk

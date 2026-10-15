@@ -113,7 +113,8 @@ func sameDirKey(dir string) string {
 }
 
 // openReadStores opens the primary store and then each store it reads, in that order. A store it
-// reads that does not exist is skipped with a warning on stderr: read commands go on with the rest.
+// reads that does not exist, or is not a claudemem store, is skipped with a warning on stderr (and
+// left as it is): read commands go on with the rest.
 // The stores it reads record no access log, so reading them writes nothing there. Vector search is
 // not set up here; search does that per store.
 func openReadStores() ([]readStore, error) {
@@ -133,6 +134,10 @@ func openReadStores() ([]readStore, error) {
 	for _, dir := range others {
 		if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
 			fmt.Fprintf(os.Stderr, "warning: store %s (%s) not found; reading without it\n", displayStoreName(dir), readStoresKey)
+			continue
+		}
+		if !storage.IsStoreDir(dir) {
+			fmt.Fprintf(os.Stderr, "warning: %s (%s) is not a claudemem store (no .index/search.db); reading without it\n", displayStoreName(dir), readStoresKey)
 			continue
 		}
 		fs, err := storage.NewFileStore(dir)
@@ -168,7 +173,7 @@ func readStoreHint(err error, kind, id string) error {
 		return err
 	}
 	for _, dir := range dirs {
-		if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		if !storage.IsStoreDir(dir) {
 			continue
 		}
 		fs, openErr := storage.NewFileStore(dir)

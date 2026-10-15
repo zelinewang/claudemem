@@ -32,8 +32,16 @@ func saveSessionWithRelatedCLI(t *testing.T, storePath, title, sessionID, relate
 	return res.SessionID
 }
 
+// newStoreDir is an empty store: a directory that a command has run in once.
+func newStoreDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustRunCLI(t, dir, "stats")
+	return dir
+}
+
 func TestCLI_Move(t *testing.T) {
-	from, to := t.TempDir(), t.TempDir()
+	from, to := t.TempDir(), newStoreDir(t)
 	note := addNoteCLI(t, from, "ops", "Team runbook", "movekw steps", "team")
 	keep := addNoteCLI(t, from, "life", "Holiday plan", "movekw beach", "personal")
 	session := saveSessionWithRelatedCLI(t, from, "Team review", "sid-team", note+":Team runbook:ops")
@@ -109,7 +117,7 @@ func TestCLI_Move(t *testing.T) {
 }
 
 func TestCLI_MoveRefusals(t *testing.T) {
-	from, to := t.TempDir(), t.TempDir()
+	from, to := t.TempDir(), newStoreDir(t)
 	note := addNoteCLI(t, from, "life", "Private detail", "x", "personal")
 	session := saveSessionWithRelatedCLI(t, from, "Mixed review", "sid-mixed", note[:8]+":Private detail:life")
 
@@ -123,12 +131,14 @@ func TestCLI_MoveRefusals(t *testing.T) {
 	}
 
 	ids := writeIDs(t, note)
+	plain := t.TempDir() // a directory, not a store
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
 		{[]string{"move", "--to", from, "--file", ids}, "this store itself"},
 		{[]string{"move", "--to", filepath.Join(to, "nope"), "--file", ids}, "not found"},
+		{[]string{"move", "--to", plain, "--file", ids}, "is not a claudemem store"},
 		{[]string{"move", "--to", "relative/dir", "--file", ids}, "must be absolute"},
 		{[]string{"move", "--file", ids}, "needs --to"},
 		{[]string{"move", "--to", to}, "needs --to"},
@@ -144,6 +154,9 @@ func TestCLI_MoveRefusals(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(to, "nope")); !os.IsNotExist(err) {
 		t.Errorf("a missing target was created: %v", err)
 	}
+	if entries, err := os.ReadDir(plain); err != nil || len(entries) != 0 {
+		t.Errorf("a directory that is not a store was written to: %v %v", entries, err)
+	}
 }
 
 func TestCLI_MoveReadsStdinAndHomePaths(t *testing.T) {
@@ -155,9 +168,9 @@ func TestCLI_MoveReadsStdinAndHomePaths(t *testing.T) {
 	}
 	w.WriteString(note + "\n")
 	w.Close()
+	to := newStoreDir(t)
 	orig := os.Stdin
 	os.Stdin = r
-	to := t.TempDir()
 	out := mustRunCLI(t, from, "move", "--to", to, "--file", "-")
 	os.Stdin = orig
 	if !strings.Contains(out, "1 moved") {
@@ -166,8 +179,8 @@ func TestCLI_MoveReadsStdinAndHomePaths(t *testing.T) {
 
 	// --to takes a ~/ path (a child process, for its own home)
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, "team"), 0700); err != nil {
-		t.Fatal(err)
+	if out, err := runCLIChild(t, home, "--store", filepath.Join(home, "team"), "stats"); err != nil {
+		t.Fatalf("start ~/team: %v\n%s", err, out)
 	}
 	other := addNoteCLI(t, from, "ops", "Home note", "y", "team")
 	out, err = runCLIChild(t, home, "--store", from, "move", "--to", "~/team", "--file", writeIDs(t, other))

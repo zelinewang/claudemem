@@ -134,6 +134,14 @@ func (fs *FileStore) initSchema() error {
 	return nil
 }
 
+// IsStoreDir reports whether dir is a claudemem store: it has an index, which every command creates
+// on its first run there. Commands that open a store named by a setting check this first, so that a
+// mistyped path is reported instead of turned into a new store.
+func IsStoreDir(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, ".index", "search.db"))
+	return err == nil && info.Mode().IsRegular()
+}
+
 // Close closes the database connection
 func (fs *FileStore) Close() error {
 	if fs.db != nil {

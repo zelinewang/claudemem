@@ -18,7 +18,7 @@ var (
 var moveCmd = &cobra.Command{
 	Use:   "move --to <store> --file <ids>",
 	Short: "Move entries to another store, keeping their ids",
-	Long: `Move the listed notes and sessions from this store (--store) to another store,
+	Long: `Move the listed notes and sessions from this store (--store) to another existing store,
 keeping each entry's id, its file and its index rows (the search row, the access
 log and the vectors, except TF-IDF ones, which belong to one store's corpus).
 
@@ -47,7 +47,7 @@ Examples:
 }
 
 func init() {
-	moveCmd.Flags().StringVar(&moveTo, "to", "", "the store to move the entries to (required; absolute or ~/ path, the directory must exist)")
+	moveCmd.Flags().StringVar(&moveTo, "to", "", "the store to move the entries to (required; absolute or ~/ path of an existing store)")
 	moveCmd.Flags().StringVar(&moveFile, "file", "", "file of ids to move, one per line (required; - reads standard input)")
 	moveCmd.Flags().BoolVar(&moveDryRun, "dry-run", false, "report what would move, change nothing")
 	rootCmd.AddCommand(moveCmd)
@@ -62,7 +62,10 @@ func runMove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--to: %w", err)
 	}
 	if info, statErr := os.Stat(toDir); statErr != nil || !info.IsDir() {
-		return fmt.Errorf("--to: store %s not found; it must be an existing directory", displayStoreName(toDir))
+		return fmt.Errorf("--to: store %s not found; it must be an existing store", displayStoreName(toDir))
+	}
+	if !storage.IsStoreDir(toDir) {
+		return fmt.Errorf("--to: %s is not a claudemem store (no .index/search.db); to start one there, run any command with --store %s first", displayStoreName(toDir), displayStoreName(toDir))
 	}
 	fromDir, err := primaryStoreDir()
 	if err != nil {
