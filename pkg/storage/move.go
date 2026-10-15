@@ -197,6 +197,15 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	return m.report, nil
 }
 
+// moveTestHook, when a test sets it, runs at the named steps of an entry's move.
+var moveTestHook func(step string)
+
+func moveStep(step string) {
+	if moveTestHook != nil {
+		moveTestHook(step)
+	}
+}
+
 type mover struct {
 	from, to      *FileStore
 	dryRun        bool
@@ -350,6 +359,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	}
 
 	// 1. Into the target: the file (durably, never over another file), then its rows.
+	moveStep("before-install")
 	linked := false
 	if install {
 		if rel, linked, err = m.installFile(kind, e.ID, rel, data); err != nil {
@@ -357,6 +367,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 			return
 		}
 	}
+	moveStep("after-install")
 	if err := m.writeTargetRows(f, rel); err != nil {
 		if linked {
 			os.Remove(joinStore(m.to, rel))
@@ -364,6 +375,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		m.refuse(e, kind, "write the target's index: %v", err)
 		return
 	}
+	moveStep("after-target-rows")
 	m.to.removeStaleTemps(kind, e.ID, rel)
 
 	// 2. Out of this store: the file, then the rows. A stop between the two leaves rows without a
@@ -378,8 +390,13 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 			return
 		}
 	}
-	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+	changed, aside, err := removeUnchanged(srcPath, data)
+	if err != nil {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v; run the move again", err)})
+		return
+	}
+	if changed { // saved by a writer outside claudemem while it moved
+		m.needsCleanup(e, kind, []string{fmt.Sprintf("its file here changed during the move (%s); the target holds the version from before the change: compare the two and keep one", m.whereChanged(src.filepath, aside))})
 		return
 	}
 	if err := m.from.removeEntryRows(e.ID); err != nil {

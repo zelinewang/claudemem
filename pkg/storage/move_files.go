@@ -135,8 +135,14 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 			}
 			synced = true
 		}
-		if err := os.Remove(path); err != nil {
+		moveStep("before-leftover-remove")
+		changed, aside, err := removeUnchanged(path, data)
+		switch {
+		case err != nil:
 			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s could not be removed: %v", rel, err))
+			continue
+		case changed:
+			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s changed during the move (%s); compare it with the target's file and remove it by hand", rel, m.whereChanged(rel, aside)))
 			continue
 		}
 		m.warn("%s %s: removed a leftover copy of its file from this store (%s)", kind, id, rel)
@@ -186,14 +192,18 @@ func kindOfPath(rel string) string {
 }
 
 // entryFilesByID walks a store's notes and sessions. It maps each wanted id to the files whose
-// frontmatter names it, and returns the ids of every note file, sorted: a session's related note may
-// sit in a file the index does not list.
+// frontmatter names it, also a file a stopped move set aside, and returns the ids of every note file,
+// sorted: a session's related note may sit in a file the index does not list.
 func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, []string) {
 	found := map[string][]string{}
 	var notes []string
 	for _, sub := range []string{"notes", "sessions"} {
 		filepath.Walk(filepath.Join(baseDir, sub), func(path string, info os.FileInfo, err error) error {
-			if err != nil || !info.Mode().IsRegular() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
+			if err != nil || !info.Mode().IsRegular() || strings.HasPrefix(info.Name(), "._") {
+				return nil
+			}
+			setAside := isSetAside(info.Name())
+			if !setAside && !strings.HasSuffix(info.Name(), ".md") {
 				return nil
 			}
 			id := frontmatterID(path)
@@ -201,7 +211,7 @@ func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, 
 				rel, _ := filepath.Rel(baseDir, path)
 				found[id] = append(found[id], rel)
 			}
-			if sub == "notes" && id != "" {
+			if sub == "notes" && id != "" && !setAside {
 				notes = append(notes, id)
 			}
 			return nil
@@ -363,6 +373,79 @@ func (m *mover) installFile(kind, id, rel string, data []byte) (string, bool, er
 		}
 	}
 	return "", false, fmt.Errorf("no free file name for %s in the target", wanted)
+}
+
+// setAsideSuffix ends the name under which a move sets a file of this store aside while it checks
+// that the file did not change before removing it: the file's own name, hidden, with this suffix. It
+// does not end in .md, so a reindex never reads it; one that a stopped run left is found by the next
+// run's walk and handled as a copy of the entry.
+const setAsideSuffix = ".moving"
+
+func setAsidePath(path string) string {
+	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+setAsideSuffix)
+}
+
+func isSetAside(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".md"+setAsideSuffix)
+}
+
+// removeUnchanged removes the file at path, in this store, if it still holds data, the bytes the
+// move put into the target. The file is first set aside under a hidden name in its directory, so that
+// a writer outside claudemem (an editor, an add-only sync) that saves it meanwhile makes a new file at
+// its name instead of writing into one about to go; only then is it compared. A file that changed is
+// put back under its name and reported as changed; when a new file took the name meanwhile, it stays
+// set aside, and aside names it. A file already gone counts as removed.
+func removeUnchanged(path string, data []byte) (changed bool, aside string, err error) {
+	aside = path
+	if !isSetAside(filepath.Base(path)) {
+		aside = setAsidePath(path)
+		if held, readErr := os.ReadFile(aside); readErr == nil { // set aside by a stopped run
+			if !bytes.Equal(held, data) {
+				return false, "", fmt.Errorf("a different copy that a stopped move set aside sits next to it (%s)", filepath.Base(aside))
+			}
+			if err := os.Remove(aside); err != nil {
+				return false, "", err
+			}
+		} else if !os.IsNotExist(readErr) {
+			return false, "", readErr
+		}
+		if err := os.Rename(path, aside); err != nil {
+			if os.IsNotExist(err) {
+				return false, "", nil
+			}
+			return false, "", err
+		}
+	}
+	held, err := os.ReadFile(aside)
+	if err == nil && bytes.Equal(held, data) {
+		if err := os.Remove(aside); err != nil {
+			if aside != path {
+				os.Rename(aside, path)
+			}
+			return false, "", err
+		}
+		return false, "", nil
+	}
+	if aside == path {
+		return true, "", nil
+	}
+	if err := linkNoReplace(aside, path); err != nil {
+		return true, aside, nil
+	}
+	os.Remove(aside)
+	return true, "", nil
+}
+
+// whereChanged says where a file of this store that changed during the move is now.
+func (m *mover) whereChanged(rel, aside string) string {
+	if aside == "" {
+		return "it stays at " + rel
+	}
+	asideRel, err := filepath.Rel(m.from.baseDir, aside)
+	if err != nil {
+		asideRel = aside
+	}
+	return "it is set aside at " + asideRel + ", since a new file took its name"
 }
 
 // linkNoReplace makes tmp also appear at path, failing with os.ErrExist when path exists. On a file

@@ -246,7 +246,11 @@ anything after a `#` are skipped, and the whole file is checked before anything 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,
 synced and never over another file (a copy already there, from an earlier run or a sync, is synced
 before this store's copy goes), then its index rows (committed with a full sync), and only then
-does the entry leave this store. Every other writer of a store's files or index takes the same lock,
+does the entry leave this store. An editor or an add-only sync takes no claudemem lock, so before a
+file of this store goes, the move sets it aside under a hidden name (`.<name>.moving`) and compares it
+with what went into the target: a file saved meanwhile goes back under its name, the target keeps the
+version the move read, and the entry is left to clean up. A set-aside file that a stopped run left is
+found and handled by the next run. Every other writer of a store's files or index takes the same lock,
 so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
 `session repair --apply` and the git steps of `sync` that change files. A vector backfill or rebuild
 embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
