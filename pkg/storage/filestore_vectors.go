@@ -421,8 +421,10 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	return err == nil
 }
 
-func (fs *FileStore) collectVectorDocuments() []vectors.Document {
-	var docs []vectors.Document
+// collectVectorDocuments reads the documents to embed from the store's files; files maps each id to
+// the files it was read from.
+func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document, files map[string][]string) {
+	files = make(map[string][]string)
 
 	// Collect notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
@@ -444,6 +446,7 @@ func (fs *FileStore) collectVectorDocuments() []vectors.Document {
 				ID:   note.ID,
 				Text: text,
 			})
+			files[note.ID] = append(files[note.ID], path)
 			return nil
 		})
 	}
@@ -468,11 +471,12 @@ func (fs *FileStore) collectVectorDocuments() []vectors.Document {
 				ID:   session.ID,
 				Text: text,
 			})
+			files[session.ID] = append(files[session.ID], path)
 			return nil
 		})
 	}
 
-	return docs
+	return docs, files
 }
 
 // IndexMissingVectors embeds only documents that do not yet have a vector row
@@ -487,13 +491,14 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 		return 0, 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs := fs.collectVectorDocuments()
+	docs, files := fs.collectVectorDocuments()
 	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
 		// TF-IDF needs the whole corpus; a "backfill" is always a full rebuild.
-		if err := fs.vectorStore.RebuildIndex(docs); err != nil {
+		left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate(files))
+		if err != nil {
 			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
-		return len(docs), len(docs), nil
+		return len(docs) - left, len(docs) - left, nil
 	}
 
 	ids := make([]string, 0, len(docs))
@@ -510,8 +515,8 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 			missingDocs = append(missingDocs, doc)
 		}
 	}
-	indexed, err = fs.vectorStore.UpsertDocuments(missingDocs)
-	return indexed, len(missingDocs), err
+	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate(files))
+	return indexed, len(missingDocs) - left, err
 }
 
 // ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.
@@ -521,10 +526,57 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs := fs.collectVectorDocuments()
-	if err := fs.vectorStore.RebuildIndex(docs); err != nil {
+	docs, files := fs.collectVectorDocuments()
+	left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate(files))
+	if err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}
 
-	return len(docs), nil
+	return len(docs) - left, nil
+}
+
+// vectorGate is the gate of a bulk vector write of documents read from files: it runs the write
+// under the store lock, where a document counts as present while the index lists it or one of the
+// files it was read from is still there. The documents were read and embedded without the lock
+// (embedding can take minutes), and a move or a delete may have taken some out since: their vectors
+// are not written back.
+func (fs *FileStore) vectorGate(files map[string][]string) vectors.Gate {
+	return func(write func(present func(id string) bool) error) error {
+		unlock, err := fs.lockStore()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		rows, err := fs.db.Query(`SELECT id FROM entries`)
+		if err != nil {
+			return err
+		}
+		indexed := make(map[string]bool)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			indexed[id] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		known := make(map[string]bool)
+		return write(func(id string) bool {
+			if present, ok := known[id]; ok {
+				return present
+			}
+			present := indexed[id]
+			for _, path := range files[id] {
+				if _, err := os.Stat(path); err == nil {
+					present = true
+				}
+			}
+			known[id] = present
+			return present
+		})
+	}
 }

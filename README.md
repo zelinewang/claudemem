@@ -247,7 +247,9 @@ Each entry moves on its own under both stores' write locks: its file goes into t
 synced and never over another file, then its index rows (committed with a full sync), and only then
 does the entry leave this store. Every other writer of a store's files or index takes the same lock,
 so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
-`session repair --apply` and the git steps of `sync` that change files. A run that stops half way leaves every entry whole in one store or
+`session repair --apply` and the git steps of `sync` that change files. A vector backfill or rebuild
+embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
+keeping the vectors that came in with a moved entry. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
 rows. Two different files under one id (anywhere in the target), a file reached through a symlink
 between the two stores, a stale row in the target, stores that overlap and an index written by a

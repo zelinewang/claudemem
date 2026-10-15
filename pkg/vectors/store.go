@@ -525,6 +525,20 @@ type indexedDocumentVector struct {
 	vector []float32
 }
 
+// Gate runs write while the store that owns the index holds its write lock, and gives it present,
+// which tells whether the store holds a document at that moment. The bulk writes embed outside it,
+// which can take minutes, and write their rows inside it: a move or a delete that took a document
+// out meanwhile must not see it written back.
+type Gate func(write func(present func(id string) bool) error) error
+
+// gated runs write through gate; without one, every document counts as present.
+func gated(gate Gate, write func(present func(id string) bool) error) error {
+	if gate == nil {
+		return write(func(string) bool { return true })
+	}
+	return gate(write)
+}
+
 // RebuildIndex embeds every document with the ACTIVE backend+model, tagging
 // each row accordingly. Existing rows under OTHER (backend, model) tuples
 // are preserved (cross-machine / switch-back use cases). Only rows under
@@ -534,8 +548,19 @@ type indexedDocumentVector struct {
 // It prepares all embeddings before mutating SQLite so a provider failure
 // cannot leave the active backend with a partial or empty index.
 func (vs *VectorStore) RebuildIndex(documents []Document) error {
+	_, err := vs.RebuildIndexGated(documents, nil)
+	return err
+}
+
+// RebuildIndexGated is RebuildIndex with its write run through gate. Documents the store no longer
+// holds by then are left out, and their number is returned. The rows removed are those of the
+// documents rebuilt and of documents the store no longer holds, so the vectors of a document that
+// came in while the others were embedded (a move brings its vectors along) stay; under TF-IDF every
+// row of the backend goes, as its vectors all follow the vocabulary built here. Without a gate it
+// removes every row of the active backend and model, as RebuildIndex always has.
+func (vs *VectorStore) RebuildIndexGated(documents []Document, gate Gate) (int, error) {
 	if err := vs.embedder.Available(); err != nil {
-		return err
+		return 0, err
 	}
 
 	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
@@ -548,21 +573,75 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 
 	indexed, err := vs.embedDocumentsForRebuild(documents)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
+	left := 0
+	err = gated(gate, func(present func(string) bool) error {
+		left = 0
+		rebuilt := make(map[string]bool, len(documents))
+		for _, d := range documents {
+			rebuilt[d.ID] = true
+			if !present(d.ID) {
+				left++
+			}
+		}
+		_, isTFIDF := vs.embedder.(*TFIDFEmbedder)
+		return vs.writeRebuild(indexed, gate == nil || isTFIDF, func(id string) bool { return rebuilt[id] || !present(id) }, present)
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
+		vs.saveTFIDFState(tf)
+	}
+	vs.saveIndexBackend()
+	return left, nil
+}
+
+// writeRebuild replaces the active backend's rows in one transaction: all of them when clearAll is
+// set, otherwise those of the documents for which replaced holds; then it inserts the vectors of
+// the documents present.
+func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bool, replaced, present func(string) bool) error {
+	backend, model := vs.embedder.Name(), vs.embedder.Model()
 	tx, err := vs.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM vectors WHERE backend = ? AND model = ?`,
-		vs.embedder.Name(), vs.embedder.Model()); err != nil {
-		return fmt.Errorf("clear active backend rows: %w", err)
+	if clearAll {
+		if _, err := tx.Exec(`DELETE FROM vectors WHERE backend = ? AND model = ?`, backend, model); err != nil {
+			return fmt.Errorf("clear active backend rows: %w", err)
+		}
+	} else {
+		rows, err := tx.Query(`SELECT DISTINCT doc_id FROM vectors WHERE backend = ? AND model = ?`, backend, model)
+		if err != nil {
+			return fmt.Errorf("list active backend rows: %w", err)
+		}
+		var clear []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			if replaced(id) {
+				clear = append(clear, id)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, id := range clear {
+			if _, err := tx.Exec(`DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`, id, backend, model); err != nil {
+				return fmt.Errorf("clear active backend rows of %s: %w", shortID(id), err)
+			}
+		}
 	}
 
-	backend, model := vs.embedder.Name(), vs.embedder.Model()
 	if len(indexed) > 0 {
 		stmt, err := tx.Prepare(`
 			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
@@ -574,6 +653,9 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, doc := range indexed {
+			if !present(doc.docID) {
+				continue
+			}
 			if _, err := stmt.Exec(doc.docID, doc.chunk, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
 				return fmt.Errorf("insert vector for %s chunk %d: %w", doc.docID, doc.chunk, err)
 			}
@@ -583,11 +665,6 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-
-	if tf, ok := vs.embedder.(*TFIDFEmbedder); ok {
-		vs.saveTFIDFState(tf)
-	}
-	vs.saveIndexBackend()
 	return nil
 }
 
@@ -687,17 +764,24 @@ func (vs *VectorStore) MissingDocumentIDs(ids []string) (map[string]bool, error)
 // chunked (v23); each doc is written delete-then-insert so a doc whose chunk
 // count shrank does not leave stale rows behind.
 func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
+	indexed, _, err := vs.UpsertDocumentsGated(documents, nil)
+	return indexed, err
+}
+
+// UpsertDocumentsGated is UpsertDocuments with the writes of each batch run through gate. A
+// document the store no longer holds by then is not written; it returns how many it wrote and how
+// many it left out for that reason.
+func (vs *VectorStore) UpsertDocumentsGated(documents []Document, gate Gate) (indexed, left int, err error) {
 	if len(documents) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if err := vs.embedder.Available(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	const batchSize = 50
 	now := time.Now().UTC().Format(time.RFC3339)
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
-	indexed := 0
 
 	// insertDoc replaces all of a doc's chunk rows atomically.
 	insertDoc := func(id string, vecs [][]float32) error {
@@ -719,6 +803,30 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 			}
 		}
 		return tx.Commit()
+	}
+
+	// writeBatch writes the embedded documents of one batch through the gate.
+	type embeddedDoc struct {
+		id   string
+		vecs [][]float32
+	}
+	writeBatch := func(docs []embeddedDoc) error {
+		if len(docs) == 0 {
+			return nil
+		}
+		return gated(gate, func(present func(string) bool) error {
+			for _, d := range docs {
+				if !present(d.id) {
+					left++
+					continue
+				}
+				if err := insertDoc(d.id, d.vecs); err != nil {
+					return err
+				}
+				indexed++
+			}
+			return nil
+		})
 	}
 
 	for i := 0; i < len(documents); i += batchSize {
@@ -749,6 +857,7 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 			fmt.Fprintf(os.Stderr,
 				"embed batch failed at offset %d (%s:%s): %v — retrying per-doc\n",
 				i, backend, model, err)
+			var done []embeddedDoc
 			for _, d := range batch {
 				chunks := ChunkForEmbed(d.Text)
 				vecs, singleErr := vs.embedder.EmbedBatch(chunks, InputTypeDocument)
@@ -766,10 +875,10 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 				if !ok {
 					continue
 				}
-				if err := insertDoc(d.ID, vecs); err != nil {
-					return indexed, err
-				}
-				indexed++
+				done = append(done, embeddedDoc{d.ID, vecs})
+			}
+			if err := writeBatch(done); err != nil {
+				return indexed, left, err
 			}
 			continue
 		}
@@ -790,6 +899,7 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 				perDoc[jobDoc[j]][jobChunk[j]] = vec
 			}
 		}
+		var done []embeddedDoc
 		for di, d := range batch {
 			vecs := perDoc[di]
 			full := len(vecs) > 0
@@ -803,15 +913,15 @@ func (vs *VectorStore) UpsertDocuments(documents []Document) (int, error) {
 				fmt.Fprintf(os.Stderr, "  skip %s: backend returned %d of %d chunk vectors\n", shortID(d.ID), countNonNil(vecs), len(vecs))
 				continue
 			}
-			if err := insertDoc(d.ID, vecs); err != nil {
-				return indexed, err
-			}
-			indexed++
+			done = append(done, embeddedDoc{d.ID, vecs})
+		}
+		if err := writeBatch(done); err != nil {
+			return indexed, left, err
 		}
 	}
 
 	vs.saveIndexBackend()
-	return indexed, nil
+	return indexed, left, nil
 }
 
 // Count returns the number of vector rows under the active (backend, model).
