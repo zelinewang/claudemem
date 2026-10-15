@@ -121,10 +121,17 @@ func (vs *VectorStore) initSchema() error {
 }
 
 // stampVectorsSchema records the layout this binary just created, migrated
-// to, or verified, so an older binary can refuse the store later.
+// to, or verified, so an older binary can refuse the store later. A stamp
+// that is already current is not written again: every command that opens
+// the vectors would otherwise write to the index, also a search, and its
+// commit makes a concurrent writer's transaction that read first fail busy.
 func (vs *VectorStore) stampVectorsSchema() error {
+	want := strconv.Itoa(currentVectorsSchema)
+	if readMetaOrEmpty(vs.db, vectorsSchemaKey) == want {
+		return nil
+	}
 	if _, err := vs.db.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES (?, ?)`,
-		vectorsSchemaKey, strconv.Itoa(currentVectorsSchema)); err != nil {
+		vectorsSchemaKey, want); err != nil {
 		return fmt.Errorf("stamp vectors schema: %w", err)
 	}
 	return nil
