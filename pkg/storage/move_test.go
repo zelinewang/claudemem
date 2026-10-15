@@ -130,15 +130,16 @@ func readRelFile(t *testing.T, store *FileStore, rel string) []byte {
 }
 
 // A moved entry keeps its id, its file (same name, same bytes) and its index rows, built from the
-// file; TF-IDF vectors and the access log stay behind, and this store keeps nothing of it. A second run
-// changes nothing.
+// file, with the vectors of the backend the target embeds with; TF-IDF vectors and the access log
+// stay behind, and this store keeps nothing of it. A second run changes nothing.
 func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	from, to := moveStores(t)
+	writeStoreSettings(t, to, `{"features.semantic_search": "true", "embedding.backend": "openai", "embedding.dimensions": "4"}`)
 	note := addTaggedNote(t, from, "ops", "Deploy runbook", "movekw how to deploy", "team", "ops")
 	session := saveTaggedSession(t, from, "Release review", "movekw shipped", "team")
 	from.LogAccess(note.ID, "get")
 	from.LogAccess(note.ID, "search_hit")
-	addVector(t, from, note.ID, "fake-cloud")
+	addVectorRow(t, from, note.ID, "openai", "text-embedding-3-small", 4)
 	addVector(t, from, note.ID, "tfidf")
 	stay := addTaggedNote(t, from, "life", "Holiday plan", "stays here", "personal")
 
@@ -165,7 +166,7 @@ func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	// what a person read stays out of the target, and so does the tfidf vector
 	delete(wantNote, "access_log")
 	wantNote["vectors"] = strings.Split(noteRows["vectors"], ";")[0]
-	if !strings.Contains(wantNote["vectors"], "fake-cloud") {
+	if !strings.Contains(wantNote["vectors"], "openai") {
 		t.Fatalf("vectors before the move: %q", noteRows["vectors"])
 	}
 	if got := rowsOf(t, to, note.ID); fmt.Sprint(got) != fmt.Sprint(wantNote) {
@@ -234,9 +235,10 @@ func storeSnapshot(t *testing.T, stores ...*FileStore) string {
 
 func TestMoveEntries_DryRunChangesNothing(t *testing.T) {
 	from, to := moveStores(t)
+	writeStoreSettings(t, to, `{"embedding.backend": "openai", "embedding.dimensions": "4"}`)
 	note := addTaggedNote(t, from, "ops", "Deploy runbook", "x", "team")
 	session := saveTaggedSession(t, from, "Release review", "y", "team")
-	addVector(t, from, note.ID, "fake-cloud")
+	addVectorRow(t, from, note.ID, "openai", "text-embedding-3-small", 4)
 	before := storeSnapshot(t, from, to)
 	report := mustMove(t, from, to, true, note.ID, session.ID, "no-such-id")
 	if !report.DryRun || len(report.Moved) != 2 || len(report.Missing) != 1 || report.VectorsToEmbed != 1 {

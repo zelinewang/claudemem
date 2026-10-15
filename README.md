@@ -235,11 +235,11 @@ the listed order) and warns. The other commands (`graph`, `health`, `sync`, `exp
 `claudemem move --to <store> --file <ids>` moves the listed notes and sessions from `--store` to
 another existing store, keeping each entry's id and its file (under the same name, or the next free
 `-N` name if another file holds it there). The target's index rows are built from the file, as
-`reindex` builds them; the vectors go along when this store's search row matches the file (they were
-embedded from it), except TF-IDF ones, which are built against one store's own corpus, and except
-vectors of the target's own backend and model at another size. The access log is not carried over:
-it records what a person read. The report counts the entries that the target's semantic search has
-no vectors for, to embed with `claudemem --store <target> reindex --vectors --missing`. The ids file
+`reindex` builds them; vectors go along only when this store's search row matches the file (they
+were embedded from it) and they are of the backend, model and size the target's settings embed with.
+Other vectors are dropped, TF-IDF ones always (they are built against one store's own corpus). The
+access log is not carried over: it records what a person read. The report counts the entries that the
+target has no vectors for, to embed with `claudemem --store <target> reindex --vectors --missing`. The ids file
 has one full id per line; blank lines and anything after a `#` are skipped, and the whole file is
 checked before anything moves.
 

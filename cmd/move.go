@@ -20,9 +20,10 @@ var moveCmd = &cobra.Command{
 	Short: "Move entries to another store, keeping their ids",
 	Long: `Move the listed notes and sessions from this store (--store) to another existing store,
 keeping each entry's id and its file. The target's index rows are built from the
-file; vectors go along when they were made from it (TF-IDF ones never do: they
-belong to one store's corpus). The access log is not carried over: it records
-what a person read.
+file; vectors go along when they were made from it and are of the backend, model
+and size the target's settings embed with (TF-IDF ones never do: they belong to
+one store's corpus). The access log is not carried over: it records what a
+person read.
 
 The file lists one full id per line; blank lines and everything after a # are
 skipped, and --file - reads standard input. The whole file is checked before

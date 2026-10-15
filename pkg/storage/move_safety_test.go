@@ -141,8 +141,9 @@ func TestMoveEntries_BuildsTheTargetRowsFromTheFile(t *testing.T) {
 
 	t.Run("a hand edit that was not reindexed", func(t *testing.T) {
 		from, to := moveStores(t)
+		writeStoreSettings(t, to, `{"embedding.backend": "openai", "embedding.dimensions": "4"}`)
 		note := addTaggedNote(t, from, "ops", "Steps", "Public steps. PRIVATEDETAIL my salary is 123", "team")
-		addVector(t, from, note.ID, "fake-cloud") // embedded from the old text
+		addVectorRow(t, from, note.ID, "openai", "text-embedding-3-small", 4) // embedded from the old text
 		rel := entryFile(t, from, note.ID)
 		writeRel(t, from, rel, []byte(strings.Replace(string(readRelFile(t, from, rel)), " PRIVATEDETAIL my salary is 123", "", 1)))
 		report := mustMove(t, from, to, false, note.ID)
@@ -160,8 +161,9 @@ func TestMoveEntries_BuildsTheTargetRowsFromTheFile(t *testing.T) {
 
 	t.Run("rows the target built itself", func(t *testing.T) {
 		from, to := moveStores(t)
+		writeStoreSettings(t, to, `{"embedding.backend": "openai", "embedding.dimensions": "4"}`)
 		note := addTaggedNote(t, from, "ops", "Steps", "shared body", "team")
-		addVector(t, from, note.ID, "fake-cloud")
+		addVectorRow(t, from, note.ID, "openai", "text-embedding-3-small", 4)
 		from.LogAccess(note.ID, "get")
 		rel := entryFile(t, from, note.ID)
 		writeRel(t, to, rel, readRelFile(t, from, rel))
@@ -172,7 +174,7 @@ func TestMoveEntries_BuildsTheTargetRowsFromTheFile(t *testing.T) {
 		if len(report.Moved) != 1 || report.Moved[0].Note != "finished an earlier move" || report.VectorsToEmbed != 0 {
 			t.Fatalf("report %+v", report)
 		}
-		if rows := rowsOf(t, to, note.ID); !strings.Contains(rows["vectors"], "fake-cloud") || rows["access_log"] != "" {
+		if rows := rowsOf(t, to, note.ID); !strings.Contains(rows["vectors"], "openai") || rows["access_log"] != "" {
 			t.Errorf("target rows %v, want the vector and no access log", rows)
 		}
 		if rows := rowsOf(t, from, note.ID); len(rows) != 0 {
@@ -455,8 +457,9 @@ func addVectorRow(t *testing.T, store *FileStore, id, backend, model string, dim
 	}
 }
 
-// Vectors are counted against what the target's semantic search uses, and an index stamped by a newer
-// claudemem stops the move before anything changes.
+// Only vectors of the backend, model and size the target embeds with go along; the others are
+// dropped and counted to embed. An index stamped by a newer claudemem stops the move before anything
+// changes.
 func TestMoveEntries_VectorsForTheTargetsSearch(t *testing.T) {
 	from, to := moveStores(t)
 	writeStoreSettings(t, to, `{"features.semantic_search": "true", "embedding.backend": "openai", "embedding.dimensions": "4"}`)
@@ -474,8 +477,8 @@ func TestMoveEntries_VectorsForTheTargetsSearch(t *testing.T) {
 	if rows := rowsOf(t, to, served.ID); !strings.Contains(rows["vectors"], "openai") {
 		t.Errorf("the served vector did not go along: %v", rows)
 	}
-	if rows := rowsOf(t, to, otherBackend.ID); !strings.Contains(rows["vectors"], "fake-cloud") {
-		t.Errorf("the other backend's vector did not go along: %v", rows)
+	if rows := rowsOf(t, to, otherBackend.ID); rows["vectors"] != "" {
+		t.Errorf("a vector of another backend went along: %v", rows)
 	}
 	if rows := rowsOf(t, to, otherSize.ID); rows["vectors"] != "" {
 		t.Errorf("a vector of the target's model at another size went along: %v", rows)

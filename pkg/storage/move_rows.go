@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zelinewang/claudemem/pkg/config"
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
@@ -68,13 +67,10 @@ type embeddingTuple struct {
 	dim            int
 }
 
-// targetEmbedding is what the target's semantic search embeds with, from its settings (nothing is
-// contacted and no key is read), or nil when its semantic search is off or its backend is unknown.
+// targetEmbedding is the backend, model and size the target's settings embed with (TF-IDF when they
+// name none), read without contacting anything or reading a key; nil when its settings cannot be
+// read or name an unknown backend.
 func targetEmbedding(to *FileStore) *embeddingTuple {
-	cfg, err := config.Load(to.baseDir)
-	if err != nil || !cfg.GetBool("features.semantic_search") {
-		return nil
-	}
 	bc, err := loadBackendConfig(to.baseDir)
 	if err != nil {
 		return nil
@@ -87,13 +83,9 @@ func targetEmbedding(to *FileStore) *embeddingTuple {
 	return &embeddingTuple{backend: emb.Name(), model: emb.Model(), dim: emb.Dimensions()}
 }
 
-// serves reports whether a vector row of this backend, model and size serves the target's semantic
-// search; with it off, any vector other than a TF-IDF one counts.
+// serves reports whether a vector row is of the backend, model and size the target embeds with.
 func (m *mover) serves(backend, model string, dim int) bool {
-	if m.active == nil {
-		return backend != "tfidf"
-	}
-	if backend != m.active.backend || model != m.active.model {
+	if m.active == nil || backend != m.active.backend || model != m.active.model {
 		return false
 	}
 	return backend == "tfidf" || dim == m.active.dim // TF-IDF sizes follow the corpus
@@ -115,9 +107,10 @@ type rowPlan struct {
 }
 
 // planRows decides which vectors go along with an entry whose file is f. This store's vectors go
-// along only when its search row matches the file (they were embedded from it), are not TF-IDF ones
-// (built against this store's corpus), and are not of the target's backend and model at another
-// size; the target's own vectors for it stay only when its search row matches the file too.
+// along only when its search row matches the file (they were embedded from it) and they are of the
+// backend, model and size the target embeds with; TF-IDF ones never do (they are built against this
+// store's corpus). The rest are dropped, and the entry is counted to embed. The target's own vectors
+// for it stay only when its search row matches the file too.
 func (m *mover) planRows(src *indexRow, f *parsedEntry) (*rowPlan, error) {
 	plan := &rowPlan{}
 	match, err := searchRowMatches(m.to, f)
@@ -140,10 +133,9 @@ func (m *mover) planRows(src *indexRow, f *parsedEntry) (*rowPlan, error) {
 					rows.Close()
 					return nil, err
 				}
-				if m.active != nil && v.backend == m.active.backend && v.model == m.active.model && v.dim != m.active.dim {
-					continue
+				if m.serves(v.backend, v.model, v.dim) {
+					plan.vectors = append(plan.vectors, v)
 				}
-				plan.vectors = append(plan.vectors, v)
 			}
 			rows.Close()
 			if err := rows.Err(); err != nil {
@@ -152,12 +144,7 @@ func (m *mover) planRows(src *indexRow, f *parsedEntry) (*rowPlan, error) {
 		}
 	}
 
-	plan.embed = true
-	for _, v := range plan.vectors {
-		if m.serves(v.backend, v.model, v.dim) {
-			plan.embed = false
-		}
-	}
+	plan.embed = len(plan.vectors) == 0
 	if plan.keepTarget && plan.embed && hasVectorsByDoc(m.to.db) {
 		rows, err := m.to.db.Query(`SELECT backend, model, dim FROM vectors WHERE doc_id = ?`, f.id)
 		if err != nil {

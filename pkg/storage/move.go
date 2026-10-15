@@ -97,18 +97,18 @@ type MoveReport struct {
 	// file the move could not remove (running it again finishes them), or a different copy of the file.
 	NeedsCleanup []MoveIssue `json:"needs_cleanup"`
 	Warnings     []string    `json:"warnings"`
-	// VectorsToEmbed counts the moved entries that the target's semantic search has no vectors for:
-	// TF-IDF vectors are built against one store's own corpus and are never copied, vectors of another
-	// backend, model or size do not serve the target's searches, and a store may have none. When the
-	// target's semantic search is off, it counts the entries that took no vectors along.
+	// VectorsToEmbed counts the moved entries that the target has no vectors for of the backend,
+	// model and size its settings embed with: vectors go along only when they are of those, TF-IDF
+	// vectors never (they are built against one store's own corpus), and a store may have none.
 	VectorsToEmbed int `json:"vectors_to_embed"`
 }
 
 // MoveEntries moves the listed notes and sessions from one store to another, keeping each entry's
 // id and its file (under the same name, unless another file holds that name in the target). The
-// target's index rows are built from the file, as a reindex builds them; vectors other than TF-IDF
-// ones go along when this store's search row matches the file. The access log is not carried over:
-// it records what a person read, and stays out of the target.
+// target's index rows are built from the file, as a reindex builds them; vectors go along when this
+// store's search row matches the file and they are of the backend, model and size the target's
+// settings embed with (never TF-IDF ones). The access log is not carried over: it records what a
+// person read, and stays out of the target.
 //
 // Each entry moves on its own, under the write locks of both stores (taken in one order, so two
 // moves in opposite directions cannot deadlock): the file is put into the target first, durably and
@@ -202,7 +202,7 @@ type mover struct {
 	from, to     *FileStore
 	dryRun       bool
 	vectors      bool                // both stores have the chunked vectors table, so vector rows can be copied
-	active       *embeddingTuple     // what the target's semantic search uses; nil when it is off
+	active       *embeddingTuple     // what the target's settings embed with; nil when unknown
 	fromFiles    map[string][]string // the files of each listed id in this store, from a walk at the start
 	toFiles      map[string][]string // the same in the target
 	inTarget     map[string]bool     // notes in the target after this run (or, dry, that would be)
