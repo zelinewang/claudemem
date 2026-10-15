@@ -372,6 +372,48 @@ func TestCLI_TagApply(t *testing.T) {
 	}
 }
 
+// Writes never merge across the vis-shared label: note add dedup, session save merge, session resolve.
+func TestCLI_LabelAwareWrites(t *testing.T) {
+	s := newLabelledStore(t)
+
+	// note add with a personal note's exact title, from the shared side: a new note, nothing about the other
+	out := mustRunCLI(t, s.path, "note", "add", "life", "--title", "Private holiday", "--content", "SHARED", "--tags", "vis-shared", "--format", "json")
+	var res storage.AddNoteResult
+	json.Unmarshal([]byte(out), &res)
+	if res.Action != "created" || res.NoteID == s.personalNote || strings.Contains(out, s.personalNote[:8]) {
+		t.Errorf("a shared add merged into or named the personal note: %s", out)
+	}
+	if out := mustRunCLI(t, s.path, "note", "get", s.personalNote); strings.Contains(out, "SHARED") {
+		t.Errorf("shared text reached the personal note:\n%s", out)
+	}
+
+	// session save with a personal session's session id, from the shared side: refused, nothing named
+	out, err := runCLI(t, s.path, "session", "save", "--title", "Company wrapup", "--branch", "main", "--project", "proj",
+		"--session-id", "sid-personal", "--summary", "SHARED", "--tags", "vis-shared")
+	if err == nil || !strings.Contains(err.Error(), "refusing to save") {
+		t.Fatalf("cross-label session save: %v\n%s", err, out)
+	}
+	if strings.Contains(err.Error()+out, s.personalSession[:8]) || strings.Contains(err.Error()+out, "Secret diary") {
+		t.Errorf("the refusal names the personal session: %v %s", err, out)
+	}
+
+	// session resolve resumes only a session on the caller's side of the label
+	resolve := func(args ...string) (string, bool) {
+		var r struct {
+			SessionID string `json:"session_id"`
+			Existing  bool   `json:"existing"`
+		}
+		json.Unmarshal([]byte(mustRunCLI(t, s.path, append([]string{"session", "resolve", "--project", "proj", "--format", "json"}, args...)...)), &r)
+		return r.SessionID, r.Existing
+	}
+	if id, existing := resolve("--tag", "vis-shared"); !existing || id != "sid-shared" {
+		t.Errorf("resolve --tag vis-shared = %q existing=%v, want sid-shared", id, existing)
+	}
+	if id, existing := resolve(); !existing || id != "sid-personal" {
+		t.Errorf("resolve without --tag = %q existing=%v, want sid-personal", id, existing)
+	}
+}
+
 func TestCLI_StatsTag(t *testing.T) {
 	s := newLabelledStore(t)
 	out := mustRunCLI(t, s.path, "stats", "--tag", "vis-shared", "--format", "json")

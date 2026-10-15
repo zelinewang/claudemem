@@ -44,7 +44,7 @@ type SessionStore interface {
 	GetSessionWithTags(id string, required []string) (*models.Session, error)
 	ListSessions(opts SessionListOpts) ([]*models.Session, error)
 	SearchSessions(query string, opts SessionListOpts) ([]*models.Session, error)
-	ResolveSessionID(project string, window time.Duration) (string, bool, error)
+	ResolveSessionID(project string, window time.Duration, tags []string) (string, bool, error)
 }
 
 // SearchOpts provides filtering and sorting options for unified search

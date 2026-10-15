@@ -35,26 +35,27 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 	// Dedup strategy:
 	// 1. If session_id is provided → dedup by session_id (same conversation = merge)
 	// 2. If session_id is empty → fall back to date+project+branch (backward compat)
+	// Either way only into a session on the same side of the shared label (see SharedTag).
 	var existingID, existingFpath string
 
 	if session.SessionID != "" {
 		// Primary dedup: by session_id (conversation-specific)
 		// Same session_id = same /wrapup re-run → merge
 		// Different session_id = different conversation → separate
-		fs.db.QueryRow(`
-			SELECT id, filepath FROM entries
-			WHERE type = 'session' AND session_id = ?
-			ORDER BY created DESC LIMIT 1
-		`, session.SessionID).Scan(&existingID, &existingFpath)
+		var otherLabel bool
+		existingID, existingFpath, otherLabel = fs.sessionMergeTarget(`session_id = ?`, []interface{}{session.SessionID}, session.Tags)
+		if otherLabel {
+			// One conversation id, two visibility labels: refuse rather than split or mix it. The
+			// message names neither the other session's id nor its title.
+			return nil, fmt.Errorf("refusing to save: this --session-id belongs to a session with the other visibility label (%s on one side only); save under another --session-id, or relabel that session first", SharedTag)
+		}
 	}
 
 	if existingID == "" {
-		// Fallback dedup: by date+project+branch (legacy sessions without session_id)
-		fs.db.QueryRow(`
-			SELECT id, filepath FROM entries
-			WHERE type = 'session' AND session_id = '' AND date_str = ? AND project = ? AND branch = ?
-			ORDER BY created DESC LIMIT 1
-		`, session.Date, session.Project, session.Branch).Scan(&existingID, &existingFpath)
+		// Fallback dedup: by date+project+branch (legacy sessions without session_id). A session
+		// of the other label is no candidate here: this save becomes a session of its own.
+		existingID, existingFpath, _ = fs.sessionMergeTarget(`session_id = '' AND date_str = ? AND project = ? AND branch = ?`,
+			[]interface{}{session.Date, session.Project, session.Branch}, session.Tags)
 	}
 
 	if existingID != "" {
@@ -392,6 +393,30 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 	return sessions, nil
 }
 
+// sessionMergeTarget returns the newest session matching where (a condition on entries) that is on
+// the same side of the shared label as tags. otherLabel reports that sessions match where but all
+// of them carry the other label. The file is the source of truth: an index row whose file now
+// carries the other label is no target either.
+func (fs *FileStore) sessionMergeTarget(where string, args []interface{}, tags []string) (id, fpath string, otherLabel bool) {
+	labelFilter, labelArgs := labelWhere("tags", tags)
+	queryArgs := append(append([]interface{}{}, args...), labelArgs...)
+	err := fs.db.QueryRow(`
+		SELECT id, filepath FROM entries
+		WHERE type = 'session' AND `+where+labelFilter+`
+		ORDER BY created DESC LIMIT 1
+	`, queryArgs...).Scan(&id, &fpath)
+	if err == nil {
+		existing, readErr := fs.readSessionFile(filepath.Join(fs.baseDir, fpath))
+		if readErr != nil || isShared(existing.Tags) == isShared(tags) {
+			return id, fpath, false // an unreadable file keeps the old behaviour: it is overwritten
+		}
+		return "", "", true
+	}
+	var matching int
+	fs.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE type = 'session' AND `+where, args...).Scan(&matching)
+	return "", "", matching > 0
+}
+
 // readSessionFile reads and parses a session markdown file
 func (fs *FileStore) readSessionFile(fullPath string) (*models.Session, error) {
 	data, err := os.ReadFile(fullPath)
@@ -528,20 +553,29 @@ func mergeExtraSections(existing, new []models.ExtraSection) []models.ExtraSecti
 
 // ResolveSessionID finds today's active session for a project within a time window,
 // or generates a new session ID. Returns (sessionID, isExisting, error).
-func (fs *FileStore) ResolveSessionID(project string, window time.Duration) (string, bool, error) {
+//
+// tags are the tags the caller will save with. Only a session carrying all of them, and on the same
+// side of the shared label (see SharedTag), is resumed: without tags a shared session is never
+// resumed, and with vis-shared a personal one never is.
+func (fs *FileStore) ResolveSessionID(project string, window time.Duration, tags []string) (string, bool, error) {
 	today := time.Now().Format("2006-01-02")
-	var sessionID, updatedStr string
+	labelFilter, labelArgs := labelWhere("tags", tags)
+	tagFilter, tagArgs := tagsWhere("tags", tags)
+	args := append(append([]interface{}{today, project}, labelArgs...), tagArgs...)
+	var sessionID, updatedStr, fpath string
 	err := fs.db.QueryRow(`
-		SELECT session_id, updated FROM entries
-		WHERE type = 'session' AND date_str = ? AND project = ? AND session_id != ''
+		SELECT session_id, updated, filepath FROM entries
+		WHERE type = 'session' AND date_str = ? AND project = ? AND session_id != ''`+labelFilter+tagFilter+`
 		ORDER BY updated DESC LIMIT 1
-	`, today, project).Scan(&sessionID, &updatedStr)
+	`, args...).Scan(&sessionID, &updatedStr, &fpath)
 
 	if err == nil && sessionID != "" {
 		// ParseInLocation: DB stores local time with literal "Z" suffix (not real UTC).
 		// Must parse in local timezone to match time.Now() for correct duration comparison.
 		updated, parseErr := time.ParseInLocation("2006-01-02T15:04:05Z", updatedStr, time.Local)
-		if parseErr == nil && time.Since(updated) < window {
+		existing, readErr := fs.readSessionFile(filepath.Join(fs.baseDir, fpath))
+		sameSide := readErr == nil && isShared(existing.Tags) == isShared(tags) && HasAllTags(existing.Tags, tags)
+		if parseErr == nil && time.Since(updated) < window && sameSide {
 			return sessionID, true, nil
 		}
 	}

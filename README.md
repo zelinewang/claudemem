@@ -140,6 +140,7 @@ claudemem session list [--last N] [--branch X] [--date-range 7d] [--tag t1,t2]
 claudemem session search "query" [--branch X] [--tag t1,t2]
 claudemem session get <id-or-prefix> [--tag t1,t2]
 claudemem session update <id> --add-tag t1,t2 --remove-tag t3
+claudemem session resolve --project P [--tag vis-shared]   # session id to reuse (same label only)
 
 # Search everything
 claudemem search "query" [--type note|session] [--tag t1,t2] [--limit N]
@@ -190,6 +191,14 @@ vectors stay as they are). `tag apply` reads one JSON object per line:
 The whole file is validated before anything changes; each entry is then applied atomically
 under the store lock, unknown ids are listed (exit 1), and a second run of the same file
 changes nothing.
+
+Writes never merge across the `vis-shared` label (an entry carries it, or it does not:
+`vis-personal` and unlabelled are the same side). `note add` merges a note only into a
+same-titled note on the same side, and otherwise creates a separate one; `session save`
+refuses to merge into a session id whose session is on the other side; and
+`session resolve --tag ...` resumes only a session carrying those tags on the same side
+(without `--tag`, a `vis-shared` session is never resumed). Stores that never use the label
+behave as before.
 
 ## Search Backends
 

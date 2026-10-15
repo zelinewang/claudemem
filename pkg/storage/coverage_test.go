@@ -1655,7 +1655,7 @@ func TestMergeExtraSections_Empty(t *testing.T) {
 func TestResolveSessionID_NewSession(t *testing.T) {
 	store := setupTestStore(t)
 
-	id, isExisting, err := store.ResolveSessionID("test-project", 1*time.Hour)
+	id, isExisting, err := store.ResolveSessionID("test-project", 1*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("ResolveSessionID() failed: %v", err)
 	}
@@ -1677,7 +1677,7 @@ func TestResolveSessionID_ExistingWithinWindow(t *testing.T) {
 	}
 
 	// Resolve with a large window (24h) — should find today's session
-	id, isExisting, err := store.ResolveSessionID("active-project", 24*time.Hour)
+	id, isExisting, err := store.ResolveSessionID("active-project", 24*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("ResolveSessionID() failed: %v", err)
 	}

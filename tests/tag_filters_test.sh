@@ -169,5 +169,32 @@ else
 fi
 
 echo ""
+echo "8. writes never merge across the vis-shared label"
+N_P2=$(BJ note add life --title "Garden plans" --content "PRIVATE-GARDEN" --tags "vis-personal" | json "d['note_id']")
+OUT=$(BJ note add life --title "Garden plans" --content "SHARED-GARDEN" --tags "vis-shared" 2>&1)
+ACTION=$(echo "$OUT" | json "d['action'] + ' ' + d['note_id']")
+CONTENT=$(BJ note get "$N_P2" | json "d['content']")
+if [ "${ACTION%% *}" = "created" ] && [ "${ACTION#* }" != "$N_P2" ] && ! echo "$CONTENT" | grep -q "SHARED-GARDEN"; then
+    pass "note add with a personal note's title from the shared side creates its own note"
+else
+    fail "note add across the label" "action=[$ACTION] personal content=[$CONTENT]"
+fi
+B session save --title "Diary two" --branch main --project p --session-id sid-c --summary "PRIVATE-DIARY" --tags "vis-personal" >/dev/null 2>&1
+if OUT=$(B session save --title "Company wrapup" --branch main --project p --session-id sid-c --summary "SHARED-WRAPUP" --tags "vis-shared" 2>&1); then
+    fail "session save across the label" "merged: $OUT"
+elif echo "$OUT" | grep -q "refusing to save" && ! echo "$OUT" | grep -q "Diary two"; then
+    pass "session save into a personal session id from the shared side is refused, naming nothing"
+else
+    fail "session save across the label" "$OUT"
+fi
+SHARED_RESUME=$(BJ session resolve --project p --tag vis-shared 2>/dev/null | json "d['session_id']")
+PERSONAL_RESUME=$(BJ session resolve --project p 2>/dev/null | json "d['session_id']")
+if [ "$PERSONAL_RESUME" = "sid-c" ] && [ -n "$SHARED_RESUME" ] && [ "$SHARED_RESUME" != "sid-c" ]; then
+    pass "session resolve resumes only a session on the caller's side of the label"
+else
+    fail "session resolve --tag" "shared=[$SHARED_RESUME] personal=[$PERSONAL_RESUME]"
+fi
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

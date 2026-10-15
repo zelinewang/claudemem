@@ -52,6 +52,7 @@ claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X] 
 claudemem session search "query" [--branch X] [--tag X]
 claudemem session get <id> [--tag X]
 claudemem session update <id> --add-tag X --remove-tag Y
+claudemem session resolve --project P [--tag vis-shared]   # reuse id: only a same-label session
 
 # Search
 claudemem search "query" [--type note|session] [--limit N]
@@ -62,6 +63,7 @@ claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, a
 claudemem context inject --tag vis-shared       # inject only entries carrying the tag
 claudemem stats --tag vis-shared                # counts of the tagged set, no titles
 claudemem tag apply --file labels.jsonl [--dry-run]   # bulk: {"id","kind":"note|session","add":[],"remove":[]} per line
+# Writes never merge across vis-shared: note add creates a separate note, session save refuses
 claudemem search "query" --after 2025-01-01     # Date range
 claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
 claudemem search "query" --semantic             # Force semantic even if feature flag off

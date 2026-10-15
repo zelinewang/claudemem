@@ -252,7 +252,7 @@ func TestAutoDiscovery_NoMatchingNotes_NoError(t *testing.T) {
 func TestResolveSessionID_NoExistingSession_GeneratesNew(t *testing.T) {
 	store := setupTestStore(t)
 
-	sid, existing, err := store.ResolveSessionID("new-project", 4*time.Hour)
+	sid, existing, err := store.ResolveSessionID("new-project", 4*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestResolveSessionID_ExistingSession_Reuses(t *testing.T) {
 	store.SaveSession(session)
 
 	// Resolve should find it
-	sid, existing, err := store.ResolveSessionID("my-project", 4*time.Hour)
+	sid, existing, err := store.ResolveSessionID("my-project", 4*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestResolveSessionID_ExpiredWindow_GeneratesNew(t *testing.T) {
 	store.SaveSession(session)
 
 	// Window of 0s should always expire
-	sid, existing, err := store.ResolveSessionID("proj", 0)
+	sid, existing, err := store.ResolveSessionID("proj", 0, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestResolveSessionID_DifferentProject_Separate(t *testing.T) {
 	store.SaveSession(session)
 
 	// Different project should get new ID
-	sid, existing, err := store.ResolveSessionID("project-b", 4*time.Hour)
+	sid, existing, err := store.ResolveSessionID("project-b", 4*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestResolveSessionID_EmptyProject(t *testing.T) {
 	store := setupTestStore(t)
 
 	// Should not crash with empty project
-	sid, _, err := store.ResolveSessionID("", 4*time.Hour)
+	sid, _, err := store.ResolveSessionID("", 4*time.Hour, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestResolveSessionID_TimezoneCorrect(t *testing.T) {
 	store.SaveSession(session)
 
 	// With 30-second window: should still find it (just created)
-	sid, existing, err := store.ResolveSessionID("tz-proj", 30*time.Second)
+	sid, existing, err := store.ResolveSessionID("tz-proj", 30*time.Second, nil)
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -366,8 +366,8 @@ func TestResolveSessionID_TimezoneCorrect(t *testing.T) {
 func TestResolveSessionID_GeneratesUniqueIDs(t *testing.T) {
 	store := setupTestStore(t)
 
-	sid1, _, _ := store.ResolveSessionID("unique-test", 0)
-	sid2, _, _ := store.ResolveSessionID("unique-test", 0)
+	sid1, _, _ := store.ResolveSessionID("unique-test", 0, nil)
+	sid2, _, _ := store.ResolveSessionID("unique-test", 0, nil)
 
 	if sid1 == sid2 {
 		t.Errorf("two generated IDs should differ: both %q", sid1)

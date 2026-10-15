@@ -57,6 +57,27 @@ func tagsWhere(column string, required []string) (string, []interface{}) {
 
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
+// SharedTag is the visibility label of the shared part of a store: a filtered view built on it sees
+// only the entries carrying it. Every other entry, labelled vis-personal or not labelled at all, counts
+// as not shared. A write never merges an entry into one on the other side of this label, or a merge
+// would copy personal text into a shared entry, or label a personal entry shared.
+const SharedTag = "vis-shared"
+
+// isShared reports whether tags carry SharedTag.
+func isShared(tags []string) bool {
+	return HasAllTags(tags, []string{SharedTag})
+}
+
+// labelWhere returns a WHERE fragment, starting with " AND", that keeps only the rows on the same
+// side of SharedTag as tags: the rows carrying it when tags carry it, the others when they do not.
+func labelWhere(column string, tags []string) (string, []interface{}) {
+	cond := "(' ' || " + column + " || ' ') LIKE ? ESCAPE '\\'"
+	if !isShared(tags) {
+		cond = "NOT " + cond
+	}
+	return " AND " + cond, []interface{}{"% " + likeEscaper.Replace(SharedTag) + " %"}
+}
+
 // EditTagList returns tags with every tag in remove dropped and every tag in add appended unless
 // already present, both compared case-insensitively; the tags that stay keep their order.
 func EditTagList(tags, add, remove []string) []string {

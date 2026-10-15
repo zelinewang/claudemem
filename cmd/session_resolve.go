@@ -10,6 +10,7 @@ import (
 var (
 	resolveProject string
 	resolveWindow  string
+	resolveTags    string
 )
 
 var sessionResolveCmd = &cobra.Command{
@@ -23,12 +24,19 @@ its session_id is returned for reuse. Otherwise, a new session_id is generated.
 This enables multiple wrapups in the same conversation to merge into one session
 via claudemem's existing dedup logic.
 
+Pass the tags the session will be saved with as --tag: only a session carrying
+all of them, and on the same side of the vis-shared label, is resumed. Without
+--tag a vis-shared session is never resumed; with --tag vis-shared only one is.
+
 Examples:
   # Get session ID for current project
   claudemem session resolve --project myapp
 
   # With custom time window (default: 4h)
-  claudemem session resolve --project myapp --window 6h`,
+  claudemem session resolve --project myapp --window 6h
+
+  # A session that will be saved with vis-shared
+  claudemem session resolve --project myapp --tag vis-shared`,
 	RunE: runSessionResolve,
 }
 
@@ -37,6 +45,7 @@ func init() {
 
 	sessionResolveCmd.Flags().StringVar(&resolveProject, "project", "", "Project name (required)")
 	sessionResolveCmd.Flags().StringVar(&resolveWindow, "window", "4h", "Time window for session reuse (e.g., 4h, 2h30m)")
+	sessionResolveCmd.Flags().StringVar(&resolveTags, "tag", "", "Tags the session will be saved with (comma-separated); only a matching session is resumed")
 	sessionResolveCmd.MarkFlagRequired("project")
 }
 
@@ -52,7 +61,7 @@ func runSessionResolve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid window duration %q: %w", resolveWindow, err)
 	}
 
-	sessionID, existing, err := store.ResolveSessionID(resolveProject, window)
+	sessionID, existing, err := store.ResolveSessionID(resolveProject, window, splitTagList(resolveTags))
 	if err != nil {
 		return fmt.Errorf("failed to resolve session ID: %w", err)
 	}

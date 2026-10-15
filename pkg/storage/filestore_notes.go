@@ -28,11 +28,14 @@ func (fs *FileStore) addNoteLocked(note *models.Note) (*AddNoteResult, error) {
 	}
 
 	// ── Dedup check: same category + exact or similar title → merge ──
-	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID)
+	// Only into a note on the same side of the shared label (see SharedTag); with no such note
+	// this one is created on its own, and nothing about the other note is reported.
+	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID, note.Tags)
 
 	if existingID != "" {
 		existingNote, readErr := fs.readNoteFile(filepath.Join(fs.baseDir, existingFpath))
-		if readErr == nil {
+		// the file is the source of truth: a stale index row must not lead into a merge across the label
+		if readErr == nil && isShared(existingNote.Tags) == isShared(note.Tags) {
 			// Append new content with timestamp separator (only if content differs)
 			if existingNote.Content != note.Content && note.Content != "" {
 				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
@@ -643,15 +646,18 @@ func (fs *FileStore) readNoteFile(fullPath string) (*models.Note, error) {
 }
 
 // findDedupCandidate finds an existing note to merge with.
-// First tries exact title match, then fuzzy match (>50% word overlap in same category).
-func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (string, string) {
+// First tries exact title match, then fuzzy match (>50% word overlap in same category). Only notes
+// on the same side of the shared label as tags are candidates (see SharedTag).
+func (fs *FileStore) findDedupCandidate(category, title, excludeID string, tags []string) (string, string) {
+	labelFilter, labelArgs := labelWhere("tags", tags)
+
 	// Layer 1: Exact title match
 	var id, fpath string
 	err := fs.db.QueryRow(`
 		SELECT id, filepath FROM entries
-		WHERE category = ? AND title = ? AND type = 'note'
+		WHERE category = ? AND title = ? AND type = 'note'`+labelFilter+`
 		LIMIT 1
-	`, category, title).Scan(&id, &fpath)
+	`, append([]interface{}{category, title}, labelArgs...)...).Scan(&id, &fpath)
 	if err == nil && id != excludeID {
 		return id, fpath
 	}
@@ -664,8 +670,8 @@ func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (stri
 
 	rows, err := fs.db.Query(`
 		SELECT id, title, filepath FROM entries
-		WHERE category = ? AND type = 'note'
-	`, category)
+		WHERE category = ? AND type = 'note'`+labelFilter+`
+	`, append([]interface{}{category}, labelArgs...)...)
 	if err != nil {
 		return "", ""
 	}
