@@ -25,11 +25,21 @@ type GitSync struct {
 	Dir string // ~/.claudemem
 
 	// LockWrites, when set, takes the store's write lock. GitSync holds it around every git step that
-	// writes the working tree (a pull, the reset that adopts a remote's history, the rebase after a
-	// refused push), so that no claudemem writer, a move above all, works on files that git is
-	// changing. The steps that only read the tree or talk to the remote (add, commit, fetch, push) run
-	// without it.
+	// writes the working tree (the merge or rebase of a pull, the reset that adopts a remote's history,
+	// the rebase after a refused push), so that no claudemem writer, a move above all, works on files
+	// that git is changing. The steps that only read the tree or talk to the remote (add, commit,
+	// fetch, push) run without it: a slow remote must not hold up every writer of the store.
 	LockWrites func() (unlock func(), err error)
+}
+
+// fetchedRef is where a pull, or the rebase after a refused push, fetches the remote's HEAD to
+// before it merges or rebases onto it under the lock.
+const fetchedRef = "refs/claudemem/fetched"
+
+// fetch fetches the remote's HEAD into fetchedRef. It talks to the network and writes only .git, so
+// it runs without the store lock.
+func (g *GitSync) fetch(args ...string) error {
+	return g.git(append(append([]string{"fetch"}, args...), "origin", "+HEAD:"+fetchedRef)...)
 }
 
 // underLock runs step while holding LockWrites, when one is set.
@@ -293,7 +303,10 @@ func (g *GitSync) Push(message string) error {
 		// machine. Try pull --rebase to replay our local commits on top,
 		// then push again. This auto-resolves the most common conflict:
 		// two machines each adding different files.
-		if rebaseErr := g.underLock(func() error { return g.git("pull", "--rebase", "--quiet", "origin", "HEAD") }); rebaseErr != nil {
+		if fetchErr := g.fetch("--quiet"); fetchErr != nil {
+			return fmt.Errorf("git push failed and fetching the remote failed: push=%w, fetch=%v", err, fetchErr)
+		}
+		if rebaseErr := g.underLock(func() error { return g.git("rebase", "--quiet", fetchedRef) }); rebaseErr != nil {
 			return fmt.Errorf("git push failed and auto-rebase failed: push=%w, rebase=%v — resolve manually in %s", err, rebaseErr, g.Dir)
 		}
 		if err2 := g.git("push", "-u", "origin", "HEAD"); err2 != nil {
@@ -340,21 +353,25 @@ func (g *GitSync) localAheadOfRemote() bool {
 	return strings.TrimSpace(string(out)) != "0"
 }
 
-// Pull runs `git pull --ff-only` to avoid accidental merge commits
-// inside the memory repo. If fast-forward fails, returns an error
-// suggesting manual resolution — we don't automate merge of markdown
-// because timestamps + session_id make auto-merges unsafe.
+// Pull fetches the remote's HEAD, without the store lock, then fast-forwards to it under the lock, to
+// avoid accidental merge commits inside the memory repo. When local has commits the remote lacks, it
+// rebases them onto the remote instead; if that fails too, it returns an error suggesting manual
+// resolution — we don't automate merge of markdown because timestamps + session_id make auto-merges
+// unsafe.
 func (g *GitSync) Pull() error {
 	if !g.IsInitialized() {
 		return fmt.Errorf("not a git repo; run `claudemem sync init <remote>` first")
 	}
+	if err := g.fetch(); err != nil {
+		return fmt.Errorf("git fetch: %w", err)
+	}
 	return g.underLock(func() error {
-		if err := g.git("pull", "--ff-only", "origin", "HEAD"); err != nil {
+		if err := g.git("merge", "--ff-only", fetchedRef); err != nil {
 			// ff-only failed — local has commits that remote doesn't (diverged).
 			// Try rebase to replay local commits on top of remote. This safely
 			// handles the common case of two machines adding different files.
-			if rebaseErr := g.git("pull", "--rebase", "origin", "HEAD"); rebaseErr != nil {
-				return fmt.Errorf("git pull --ff-only and --rebase both failed: %w — resolve manually in %s", rebaseErr, g.Dir)
+			if rebaseErr := g.git("rebase", fetchedRef); rebaseErr != nil {
+				return fmt.Errorf("git merge --ff-only and rebase onto the remote both failed: %w — resolve manually in %s", rebaseErr, g.Dir)
 			}
 		}
 		return nil
