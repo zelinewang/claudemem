@@ -96,3 +96,29 @@ func TestReindexVectors_KeepsTheVectorsOfAnEntryThatCameInMeanwhile(t *testing.T
 		t.Errorf("rebuilt %d documents and the old entry has %d rows, want 1 and 1", n, got)
 	}
 }
+
+// An entry that leaves while the backfill embeds it, and whose file name another note takes
+// meanwhile, gets no vectors written back: the file there now holds the other note.
+func TestIndexMissingVectors_LeavesOutAnEntryWhoseFileNameWasTaken(t *testing.T) {
+	store := setupTestStore(t)
+	moved := addTaggedNote(t, store, "ops", "Deploy runbook", "text of the moved runbook", "team")
+	rel := entryFile(t, store, moved.ID)
+	emb := attachHookEmbedder(t, store)
+	var taker string
+	emb.hook = func() {
+		if err := store.DeleteNote(moved.ID); err != nil { // as a move does to the store it leaves
+			t.Error(err)
+		}
+		taker = addTaggedNote(t, store, "ops", "Deploy runbook", "another note under the same name", "team").ID
+	}
+
+	if _, _, err := store.IndexMissingVectors(); err != nil {
+		t.Fatal(err)
+	}
+	if got := entryFile(t, store, taker); got != rel {
+		t.Fatalf("the new note is at %s, not at the old name %s", got, rel)
+	}
+	if n := vectorRowsOf(t, store, moved.ID); n != 0 {
+		t.Errorf("the entry that left has %d vector rows here, want 0", n)
+	}
+}

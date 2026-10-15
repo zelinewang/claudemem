@@ -537,7 +537,7 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 
 // vectorGate is the gate of a bulk vector write of documents read from files: it runs the write
 // under the store lock, where a document counts as present while the index lists it or one of the
-// files it was read from is still there. The documents were read and embedded without the lock
+// files it was read from still holds it (another note can take a name a moved one left). The documents were read and embedded without the lock
 // (embedding can take minutes), and a move or a delete may have taken some out since: their vectors
 // are not written back.
 func (fs *FileStore) vectorGate(files map[string][]string) vectors.Gate {
@@ -571,7 +571,7 @@ func (fs *FileStore) vectorGate(files map[string][]string) vectors.Gate {
 			}
 			present := indexed[id]
 			for _, path := range files[id] {
-				if _, err := os.Stat(path); err == nil {
+				if frontmatterID(path) == id { // the file is still there and still this document's
 					present = true
 				}
 			}
