@@ -99,6 +99,7 @@ func (m *mover) differentCopy(store *FileStore, kind, id string, data []byte, re
 // entry's file in the target, which a copy here must not resolve to.
 func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string) []string {
 	var problems []string
+	synced := false // the target's file, before the first copy here goes
 	for _, rel := range m.fromFiles[id] {
 		if rel == except {
 			continue
@@ -126,6 +127,13 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 		if m.dryRun {
 			m.warn("%s %s: a leftover copy of its file sits in this store at %s; it would be removed", kind, id, rel)
 			continue
+		}
+		if !synced {
+			if err := syncFile(joinStore(m.to, targetRel)); err != nil {
+				problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s is left here: the target's file %s could not be synced: %v", rel, targetRel, err))
+				continue
+			}
+			synced = true
 		}
 		if err := os.Remove(path); err != nil {
 			problems = append(problems, fmt.Sprintf("a leftover copy of its file at %s could not be removed: %v", rel, err))
@@ -393,6 +401,27 @@ func mkdirAllSynced(dir string) error {
 		}
 	}
 	return nil
+}
+
+// syncFile makes a file and its directory durable. The move writes the target's file itself in sync;
+// a file it finds there (left by an earlier run, a sync or another writer) is synced this way before
+// a copy of it in this store goes. A variable, so that a test can make it fail.
+var syncFile = func(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }
 
 // syncDir makes a directory's entries durable. Windows has no directory sync; its file systems keep

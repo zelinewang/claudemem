@@ -244,7 +244,8 @@ carried over: it records what a person read. The ids file has one full id per li
 anything after a `#` are skipped, and the whole file is checked before anything moves.
 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,
-synced and never over another file, then its index rows (committed with a full sync), and only then
+synced and never over another file (a copy already there, from an earlier run or a sync, is synced
+before this store's copy goes), then its index rows (committed with a full sync), and only then
 does the entry leave this store. Every other writer of a store's files or index takes the same lock,
 so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
 `session repair --apply` and the git steps of `sync` that change files. A vector backfill or rebuild

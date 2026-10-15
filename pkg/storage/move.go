@@ -372,6 +372,12 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("its file here is the target's file %s (through a link); left as it is", rel)})
 		return
 	}
+	if !linked { // a file the move found in the target, not one it wrote and synced
+		if err := syncFile(joinStore(m.to, rel)); err != nil {
+			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file there %s could not be synced: %v; its file here stays, run the move again", rel, err)})
+			return
+		}
+	}
 	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v; run the move again", err)})
 		return

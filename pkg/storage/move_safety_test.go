@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -638,4 +639,68 @@ func TestMoveEntries_CountsToEmbedAnEntryLeftToCleanUp(t *testing.T) {
 	if len(report.NeedsCleanup) != 1 || report.VectorsToEmbed != 1 {
 		t.Errorf("report %+v, want it left to clean up and counted to embed", report)
 	}
+}
+
+// failSyncFile makes syncFile fail for the rest of the test and returns the paths it was asked to
+// sync.
+func failSyncFile(t *testing.T) *[]string {
+	t.Helper()
+	var paths []string
+	real := syncFile
+	syncFile = func(path string) error {
+		paths = append(paths, path)
+		return errors.New("injected sync failure")
+	}
+	t.Cleanup(func() { syncFile = real })
+	return &paths
+}
+
+// A file the move finds in the target (left there by an earlier run, a sync or another writer) may
+// not be on disk yet: it is synced before a copy here goes, and while that fails, the copy stays.
+func TestMoveEntries_SyncsAFileItFoundInTheTargetBeforeACopyHereGoes(t *testing.T) {
+	t.Run("the entry's own file", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "foundkw", "team")
+		rel := entryFile(t, from, note.ID)
+		writeRel(t, to, rel, readRelFile(t, from, rel))
+		real := syncFile
+		synced := failSyncFile(t)
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "could not be synced") {
+			t.Fatalf("report %+v, want it left to clean up", report)
+		}
+		if !exists(filepath.Join(from.baseDir, rel)) {
+			t.Error("the file here was removed while the target's file was not synced")
+		}
+		if len(*synced) == 0 || (*synced)[0] != filepath.Join(to.baseDir, rel) {
+			t.Errorf("synced %v, want the target's file first", *synced)
+		}
+
+		syncFile = real
+		if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+			t.Fatalf("the second run: report %+v", report)
+		}
+		if exists(filepath.Join(from.baseDir, rel)) {
+			t.Error("the file here is still there after the second run")
+		}
+	})
+
+	t.Run("a leftover copy", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "copykw", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+			t.Fatalf("report %+v", report)
+		}
+		writeRel(t, from, rel, data) // a sync brings the file back
+		failSyncFile(t)
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "could not be synced") {
+			t.Fatalf("report %+v, want it left to clean up", report)
+		}
+		if !exists(filepath.Join(from.baseDir, rel)) {
+			t.Error("the copy here was removed while the target's file was not synced")
+		}
+	})
 }
