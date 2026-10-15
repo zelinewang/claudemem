@@ -416,10 +416,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	}
 	moveStep("after-install")
 	if err := m.writeTargetRows(f, rel); err != nil {
-		if linked {
-			os.Remove(joinStore(m.to, rel))
-		}
-		m.refuse(e, kind, "write the target's index: %v", err)
+		m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(linked, rel))
 		return
 	}
 	moveStep("after-target-rows")
@@ -464,8 +461,12 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 	default:
 		// the target may hold the file without rows, when an earlier run lost them
 		copies := m.to.copiesOf(kind, e.ID, m.toFiles[e.ID])
-		if len(copies) != 1 {
-			m.refuse(e, kind, "its file %s cannot be read: %v", src.filepath, readErr)
+		switch {
+		case len(copies) == 0:
+			m.refuse(e, kind, "its file %s is in neither store: %v", src.filepath, readErr)
+			return
+		case len(copies) > 1:
+			m.refuse(e, kind, "its file %s is gone from this store, and the target holds %d copies of it outside its index (%s); keep one, reindex the target, then run the move again", src.filepath, len(copies), copyList(copies))
 			return
 		}
 		rel = copies[0].rel
@@ -477,6 +478,10 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 	}
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
+		if copies := m.to.copiesOf(kind, e.ID, m.toFiles[e.ID]); dst != nil && len(copies) > 0 {
+			m.refuse(e, kind, "its file %s is gone from this store, and the target's index row for it names %s, which is gone too, while the target holds its file at %s; reindex the target, then run the move again", src.filepath, rel, copyList(copies))
+			return
+		}
 		m.refuse(e, kind, "its file is in neither store (%s here, %s there): %v", src.filepath, rel, err)
 		return
 	}
@@ -582,15 +587,33 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 			}
 		}
 		if err := m.writeTargetRows(f, rel); err != nil {
-			if linked {
-				os.Remove(joinStore(m.to, rel))
-			}
-			m.refuse(e, kind, "write the target's index: %v", err)
+			m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(linked, rel))
 			return
 		}
 		m.to.removeStaleTemps(kind, e.ID, rel)
 	}
 	m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, "", rel))
+}
+
+// rollBack removes the file a failed entry put into the target (linked: this run created it), and
+// returns what the report adds when that removal fails: the file stays there, without rows.
+func (m *mover) rollBack(linked bool, rel string) string {
+	if !linked {
+		return ""
+	}
+	if err := os.Remove(joinStore(m.to, rel)); err != nil && !os.IsNotExist(err) {
+		return fmt.Sprintf("; the file it put into the target stays there at %s, without rows, since it could not be removed: %v", rel, err)
+	}
+	return ""
+}
+
+// copyList names the files of copies, for a report.
+func copyList(copies []fileCopy) string {
+	rels := make([]string, len(copies))
+	for i, c := range copies {
+		rels[i] = c.rel
+	}
+	return strings.Join(rels, ", ")
 }
 
 // finish reports an entry that is now in the target: moved, or left to clean up when something of

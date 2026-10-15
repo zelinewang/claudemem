@@ -3,6 +3,7 @@ package storage
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -154,4 +155,66 @@ func TestMoveEntries_ReportsADifferentCopyThatArrivesDuringTheRun(t *testing.T) 
 			}
 		})
 	}
+}
+
+// A refusal names what is wrong: the target holding the file elsewhere is not "in neither store", two
+// copies in the target are not "this store's file cannot be read", and a file a failed entry left in
+// the target is reported.
+func TestMoveEntries_RefusalsNameWhatIsWrong(t *testing.T) {
+	t.Run("the target holds the file away from its row", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		writeRel(t, to, rel, data)
+		if _, err := to.Reindex(); err != nil { // the target lists it at rel
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(to.baseDir, rel)) // then a pull moved it to another category
+		elsewhere := filepath.Join("notes", "archive", filepath.Base(rel))
+		writeRel(t, to, elsewhere, data)
+		os.Remove(filepath.Join(from.baseDir, rel))
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || strings.Contains(report.Refused[0].Reason, "neither store") ||
+			!strings.Contains(report.Refused[0].Reason, elsewhere) || !strings.Contains(report.Refused[0].Reason, "reindex the target") {
+			t.Errorf("report %+v", report)
+		}
+	})
+
+	t.Run("two copies in the target, none here", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		writeRel(t, to, rel, data)
+		writeRel(t, to, filepath.Join("notes", "archive", filepath.Base(rel)), data)
+		os.Remove(filepath.Join(from.baseDir, rel))
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "holds 2 copies") {
+			t.Errorf("report %+v", report)
+		}
+	})
+
+	t.Run("a file the rollback cannot remove", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs a directory whose permissions stop a removal")
+		}
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		dir := filepath.Join(to.baseDir, filepath.Dir(rel))
+		atStep(t, "after-install", func() {
+			if _, err := to.db.Exec(`DROP TABLE memory_fts`); err != nil { // the rows write fails
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0500); err != nil { // and the file cannot be removed
+				t.Fatal(err)
+			}
+		})
+		t.Cleanup(func() { os.Chmod(dir, 0700) })
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "stays there at "+rel) {
+			t.Errorf("report %+v", report)
+		}
+	})
 }
