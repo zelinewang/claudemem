@@ -133,3 +133,25 @@ func dirNames(t *testing.T, dir string) []string {
 	}
 	return names
 }
+
+// A different copy of an entry's file that arrives after the walk at the start of the run (a sync pull
+// during a long move) is found by a walk at the end: the entry is left to clean up, not moved.
+func TestMoveEntries_ReportsADifferentCopyThatArrivesDuringTheRun(t *testing.T) {
+	for _, where := range []string{"the target", "this store"} {
+		t.Run(where, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "my version", "team")
+			rel := entryFile(t, from, note.ID)
+			theirs := []byte(strings.Replace(string(readRelFile(t, from, rel)), "my version", "their version", 1))
+			store := to
+			if where == "this store" {
+				store = from
+			}
+			atStep(t, "after-walk", func() { writeRel(t, store, filepath.Join("notes", "archive", filepath.Base(rel)), theirs) })
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "arrived in "+where) {
+				t.Fatalf("report %+v, want it left to clean up", report)
+			}
+		})
+	}
+}

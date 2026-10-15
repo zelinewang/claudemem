@@ -256,7 +256,9 @@ so none runs in the middle of an entry: note and session writes, `reindex`, `rep
 embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
 keeping the vectors another writer added meanwhile. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
-rows. Two different files under one id (anywhere in the target), a file reached through a symlink
+rows. A different copy of a moved file that arrives in either store during the run (a sync pull in a long
+move) is found by a second walk at the end, and its entry is left to clean up. Two different files
+under one id (anywhere in the target), a file reached through a symlink
 or another alias between the two stores (a bind mount: one file in one directory, reached by two
 paths), a stale row in the target, stores that overlap (also through a bind mount) and an index written by a newer claudemem are
 refused; a hard link in another directory is allowed, since removing one name leaves the other. Notes move before sessions, and a session moves only when every note it

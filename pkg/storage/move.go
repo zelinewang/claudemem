@@ -163,6 +163,7 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	}
 	m.fromFiles, m.fromNoteFiles = entryFilesByID(from.baseDir, want)
 	m.toFiles, m.toNoteFiles = entryFilesByID(to.baseDir, want)
+	moveStep("after-walk")
 
 	var notes, sessions []MoveID
 	for _, e := range ids {
@@ -194,7 +195,53 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 			progress(done, len(ids))
 		}
 	}
+	if !dryRun {
+		m.recheckCopies(want)
+	}
 	return m.report, nil
+}
+
+// recheckCopies walks both stores again after the run. A different copy of a moved entry's file that
+// arrived after the walk at the start (a sync pull or an import during a long run) is not seen by the
+// entry's own checks, and a later reindex of the target could keep it instead of the moved file. An
+// entry with such a copy in either store is reported as left to clean up instead of moved.
+func (m *mover) recheckCopies(want map[string]bool) {
+	fromFiles, _ := entryFilesByID(m.from.baseDir, want)
+	toFiles, _ := entryFilesByID(m.to.baseDir, want)
+	recheck := func(list []MovedEntry) []MovedEntry {
+		kept := []MovedEntry{}
+		for _, e := range list {
+			if reason := m.differentCopyNow(e, fromFiles[e.ID], toFiles[e.ID]); reason != "" {
+				m.needsCleanup(MoveID{Line: e.Line, ID: e.ID}, e.Kind, []string{reason})
+				continue
+			}
+			kept = append(kept, e)
+		}
+		return kept
+	}
+	m.report.Moved = recheck(m.report.Moved)
+	m.report.AlreadyInTarget = recheck(m.report.AlreadyInTarget)
+}
+
+// differentCopyNow returns why an entry in the target must be cleaned up when either store now holds
+// a copy of its file that differs from the target's file, or "".
+func (m *mover) differentCopyNow(e MovedEntry, fromRels, toRels []string) string {
+	ours, err := os.ReadFile(joinStore(m.to, e.File))
+	if err != nil {
+		return fmt.Sprintf("its file in the target, %s, cannot be read after the run: %v", e.File, err)
+	}
+	for _, s := range []struct {
+		name  string
+		store *FileStore
+		rels  []string
+	}{{"the target", m.to, toRels}, {"this store", m.from, fromRels}} {
+		for _, c := range s.store.copiesOf(e.Kind, e.ID, s.rels) {
+			if !bytes.Equal(c.data, ours) {
+				return fmt.Sprintf("a different copy of its file arrived in %s during the run, at %s; compare it with the target's file %s and remove one by hand", s.name, c.rel, e.File)
+			}
+		}
+	}
+	return ""
 }
 
 // moveTestHook, when a test sets it, runs at the named steps of an entry's move.
