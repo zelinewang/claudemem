@@ -215,19 +215,33 @@ func extractArchive(tr *tar.Reader, dir string) (int, error) {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			os.MkdirAll(targetPath, 0700)
-		case tar.TypeReg:
-			os.MkdirAll(filepath.Dir(targetPath), 0700)
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-			if err != nil {
-				continue
+			if err := os.MkdirAll(targetPath, 0700); err != nil {
+				return fileCount, fmt.Errorf("import %s: %w", header.Name, err)
 			}
-			io.Copy(outFile, tr)
-			outFile.Close()
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
+				return fileCount, fmt.Errorf("import %s: %w", header.Name, err)
+			}
+			if err := writeArchiveFile(targetPath, tr); err != nil {
+				return fileCount, fmt.Errorf("import %s: %w", header.Name, err)
+			}
 			fileCount++
 		}
 	}
 	return fileCount, nil
+}
+
+// writeArchiveFile writes the current file of an archive to path, replacing what is there.
+func writeArchiveFile(path string, r io.Reader) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, r)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func init() {

@@ -69,3 +69,19 @@ func TestExtractArchive_NeverWritesOutsideTheStore(t *testing.T) {
 		}
 	}
 }
+
+// A file of the archive that cannot be written fails the import, instead of being left out while the
+// import reports success.
+func TestExtractArchive_FailsOnAFileItCannotWrite(t *testing.T) {
+	store := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(store, "notes", "ops", "taken.md"), 0700); err != nil { // a directory where the file goes
+		t.Fatal(err)
+	}
+	n, err := extractArchive(archiveReader(t, [][2]string{
+		{"claudemem/notes/ops/first.md", "first"},
+		{"claudemem/notes/ops/taken.md", "cannot be written"},
+	}), store)
+	if err == nil || n != 1 {
+		t.Errorf("extractArchive = %d, %v; want an error after the 1 file it wrote", n, err)
+	}
+}
