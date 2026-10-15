@@ -234,53 +234,65 @@ the listed order) and warns. The other commands (`graph`, `health`, `sync`, `exp
 
 `claudemem move --to <store> --file <ids>` moves the listed notes and sessions from `--store` to
 another existing store, keeping each entry's id and its file (under the same name, or the next free
-`-N` name if another file holds it there). The target's index rows are built from the file, as
-`reindex` builds them. No vectors go along, and the target's own vectors for a moved entry are
-removed: a store's vectors can be older than its file (a `reindex`, a `sync pull` or a tag edit
-rebuilds the search row and keeps them), and stale ones would let a search find words the file no
-longer has. The report counts every entry that went into the target, and on a rerun every listed
-entry an earlier run put there that still has no vectors, and prints the command that embeds them
-there, `claudemem --store <target> reindex --vectors --missing`. The access log is not
-carried over: it records what a person read in this store. The entry's access rows here are removed
-with it, so its read counts start over in the target (a read of it here while it moves can still log
-a row after it left; `stats --top-accessed` then lists that row as deleted). The ids file has one full id per line; blank lines and
-anything after a `#` are skipped, and the whole file is checked before anything moves.
+`-N` name if another file holds it there). The ids file has one full id per line; blank lines and
+anything after a `#` are skipped, and the whole file is checked before anything moves. `--dry-run`
+opens both stores read-only and changes nothing in either.
+
+The target's index rows are built from the file, as `reindex` builds them. No vectors go along, and
+the target's own vectors for a moved entry are removed: a store's vectors can be older than its file
+(a `reindex`, a `sync pull` or a tag edit rebuilds the search row and keeps them), and stale ones
+would let a search find words the file no longer has. The report counts every entry that went into
+the target, and on a rerun every listed entry an earlier run put there that still has no vectors,
+and prints the command that embeds them there, `claudemem --store <target> reindex --vectors
+--missing`. The access log is not carried over: it records what a person read in this store. The
+entry's access rows here are removed with it, so its read counts start over in the target (a read of
+it here while it moves can still log a row after it left; `stats --top-accessed` then lists that row
+as deleted).
 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,
 synced and never over another file (a copy already there, from an earlier run or a sync, is synced
-before this store's copy goes), then its index rows (committed with a full sync), and only then
-does the entry leave this store. An editor or an add-only sync takes no claudemem lock, so before a
-file of this store goes, the move sets it aside under a hidden name (`.<name>.moving`) and compares it
-with what went into the target: a file saved meanwhile goes back under its name, the target keeps the
-version the move read, and the entry is left to clean up. A set-aside file that a stopped run left is
-found and handled by the next run. Every other writer of a store's files or index takes the same lock,
-so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
-`session repair --apply` and the git steps of `sync` that change files. A vector backfill or rebuild
-embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
-keeping the vectors another writer added meanwhile. A run that stops half way leaves every entry whole in one store or
-both, and running the same file again finishes it, also from a file left in the target without
-rows. The target keeps a journal of the files a move is putting into it
-(`.index/move-pending`): the next move into that store removes what a stopped run wrote there and never
-committed, its temp file and the entry's file while the target's index does not list it there, as long
-as they still hold what the move wrote; a rerun is then not refused over its own leftover, and a note
-that turns out to belong elsewhere leaves no copy in the target. A different copy of a moved file that arrives in either store during the run (a sync pull in a long
-move) is found by a second walk at the end, and its entry is left to clean up. Two different files
-under one id (anywhere in the target), a file reached through a symlink
-or another alias between the two stores (a bind mount: one file in one directory, reached by two
-paths), a stale row in the target, stores that overlap (also through a bind mount) and an index written by a newer claudemem are
-refused; a hard link in another directory is allowed, since removing one name leaves the other. Notes move before sessions, and a session moves only when every note it
-lists under its Related Notes sections is in the target or moves in the same run, since a session
-file names its related notes by title. A Related Notes section is one under any heading with that
-title, at any level, in any case and with or without a colon, and every id in backticks on a line
-there counts; a line without a note id, a first ref in backticks that is no note id, an id shorter
-than 8 characters or one that matches several notes keeps the session where it is. A note counts as in a
-store when its index lists it or one of its note files holds it, and a note this run refused stays
-here with its sessions; a note that neither store holds is only a warning, since the link is dead in
-both. `--dry-run` opens both stores read-only and changes nothing in either. Missing and refused entries, and entries left to clean up (in the target, with a different
-copy of the file, or rows the move could not remove, still in this store), make the exit code 1.
-With an add-only sync between machines, a moved file can come back from another machine's copy:
-move there too, or run the move again after the next pull, which removes a copy that came back when
-it is the same file.
+before this store's copy goes), then its index rows (committed with a full sync), and only then does
+the entry leave this store. An editor or an add-only sync takes no claudemem lock, so before a file
+of this store goes, the move sets it aside under a hidden name (`.<name>.moving`) and compares it
+with what went into the target: a file saved meanwhile goes back under its name, the target keeps
+the version the move read, and the entry is left to clean up. A different copy of a moved file that
+arrives in either store during the run (a sync pull in a long move) is found by a second walk at the
+end, and its entry is left to clean up.
+
+Every other writer of a store's files or index takes the same lock, so none runs in the middle of an
+entry: note and session writes, `reindex`, `repair`, `import`, `session repair --apply` and the git
+steps of `sync` that change files. A vector backfill or rebuild embeds without the lock and writes
+under it, leaving out the entries that left the store meanwhile and keeping the vectors another
+writer added meanwhile.
+
+A run that stops half way leaves every entry whole in one store or both, and running the same file
+again finishes it, also from a file left in the target without rows. The target keeps a journal of
+the files a move is putting into it (`.index/move-pending`): the next move into that store removes
+what a stopped run wrote there and never committed, its temp file and the entry's file while the
+target's index does not list it there, as long as they still hold what the move wrote; a rerun is
+then not refused over its own leftover, and a note that turns out to belong elsewhere leaves no copy
+in the target. A set-aside file that a stopped run left is found and handled by the next run.
+
+Two different files under one id (anywhere in the target), a file reached through a symlink or
+another alias between the two stores (a bind mount: one file in one directory, reached by two
+paths), a stale row in the target, stores that overlap (also through a bind mount) and an index
+written by a newer claudemem are refused; a hard link in another directory is allowed, since
+removing one name leaves the other.
+
+Notes move before sessions, and a session moves only when every note it lists under its Related
+Notes sections is in the target or moves in the same run, since a session file names its related
+notes by title. A Related Notes section is one under any heading with that title, at any level, in
+any case and with or without a colon, and every id in backticks on a line there counts; a line
+without a note id, a first ref in backticks that is no note id, an id shorter than 8 characters or
+one that matches several notes keeps the session where it is. A note counts as in a store when its
+index lists it or one of its note files holds it, and a note this run refused stays here with its
+sessions; a note that neither store holds is only a warning, since the link is dead in both.
+
+Missing and refused entries, and entries left to clean up (in the target, with a different copy of
+the file, or rows the move could not remove, still in this store), make the exit code 1. With an
+add-only sync between machines, a moved file can come back from another machine's copy: move there
+too, or run the move again after the next pull, which removes a copy that came back when it is the
+same file.
 
 Before a migration, run `claudemem --store <store> reindex` and then `claudemem --store <store>
 health` on the store the entries leave, so that its index matches its files: the move goes by the
