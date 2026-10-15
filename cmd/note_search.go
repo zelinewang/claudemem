@@ -47,7 +47,10 @@ Examples:
 		for i, rs := range stores {
 			found, err := rs.Store.SearchNotes(query, searchCategory, tags)
 			if err != nil {
-				return fmt.Errorf("failed to search notes: %w", err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to search notes: %w", err)); err != nil {
+					return err
+				}
+				continue
 			}
 			list := make([]noteInStore, len(found))
 			for j, n := range found {

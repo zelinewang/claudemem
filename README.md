@@ -213,11 +213,20 @@ index, so scores from two stores are not compared), date-sorted lists by date, a
 added up. Writes go to `--store` alone; a write command given an id that sits only in a store this
 one reads says so and names the `--store` to use.
 
+A store read is opened read-only: reading it writes nothing there, not even its access log, and
+its own settings are not used. `search` finds its entries by keyword and, when `--store` searches
+with an embedding backend other than TF-IDF, also by that store's vectors of the same backend,
+model and dimensions, matched against the query as `--store` embedded it (once for all the
+stores). A store read never chooses where a query or a key is sent.
+
 `--read-stores` replaces the setting for one call, and `--read-stores ""` reads `--store` alone.
 Only the setting of `--store` counts (the stores it names are not followed further), a store
-listed twice or reached by a symlink is read once, a listed path that does not exist or is not a
-claudemem store (it has no `.index/search.db`) is skipped with a warning and left as it is, and with
-a single store the output is what it always was. Ids are uuids, so an
+listed twice or reached by a symlink is read once, and with a single store the output is what it
+always was. A listed path that is not absolute, does not exist, is not a claudemem store (it has
+no `.index/search.db`), or sits inside `--store` or holds it, and a store that cannot be read, are
+skipped with a warning and left as they are; a `stores.read` setting that cannot be read is a
+warning too, and `--store` is read alone. In `--read-stores`, typed for one call, a path that is
+not absolute or overlaps `--store` is an error. Ids are uuids, so an
 entry lives in one store; if a copy sits in two, `get` shows the one met first (`--store`, then
 the listed order) and warns. The other commands (`graph`, `health`, `sync`, `export`,
 `reindex`, ...) work on `--store` alone.

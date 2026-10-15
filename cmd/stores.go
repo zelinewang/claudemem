@@ -72,15 +72,28 @@ func primaryStoreDir() (string, error) {
 	return filepath.Clean(dir), nil
 }
 
-// readStoreDirs returns the other stores to read besides primary: --read-stores when given, else the
-// primary's stores.read setting (only the primary's: the stores it names are not followed further).
-// The primary itself and repeats are dropped, also when two paths reach one directory by a symlink.
-func readStoreDirs(primary string) ([]string, error) {
-	list := readStoresFlag
-	if f := rootCmd.PersistentFlags().Lookup("read-stores"); f == nil || !f.Changed {
+// readStoreDirs returns the other stores to read besides primary, and where the list came from:
+// --read-stores when given, else the primary's stores.read setting (only the primary's: the stores
+// it names are not followed further). The primary itself, repeats (also through a symlink), and
+// stores that sit inside the primary or hold it are dropped. A bad --read-stores value is an error,
+// since it was typed for this call; a problem with the setting is a warning on stderr (unless quiet),
+// and the command reads what it can.
+func readStoreDirs(primary string, quiet bool) ([]string, string, error) {
+	warn := func(format string, args ...interface{}) {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+		}
+	}
+	list, source := readStoresFlag, "--read-stores"
+	fromFlag := false
+	if f := rootCmd.PersistentFlags().Lookup("read-stores"); f != nil && f.Changed {
+		fromFlag = true
+	} else {
+		source = readStoresKey
 		cfg, err := config.Load(primary)
 		if err != nil {
-			return nil, err
+			warn("cannot read %s of %s (%v); reading it alone", readStoresKey, displayStoreName(primary), err)
+			return nil, source, nil
 		}
 		list = cfg.GetString(readStoresKey)
 	}
@@ -93,14 +106,27 @@ func readStoreDirs(primary string) ([]string, error) {
 		}
 		dir, err := expandStorePath(item)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", readStoresKey, err)
+			if fromFlag {
+				return nil, source, fmt.Errorf("--read-stores: %w", err)
+			}
+			warn("%s: %v; reading without it", readStoresKey, err)
+			continue
 		}
-		if key := sameDirKey(dir); !seen[key] {
-			seen[key] = true
-			dirs = append(dirs, dir)
+		key := sameDirKey(dir)
+		if seen[key] {
+			continue
 		}
+		if storage.StoresOverlap(primary, dir) {
+			if fromFlag {
+				return nil, source, fmt.Errorf("--read-stores: %s is inside %s or holds it", displayStoreName(dir), displayStoreName(primary))
+			}
+			warn("%s (%s) is inside %s or holds it; reading without it", displayStoreName(dir), readStoresKey, displayStoreName(primary))
+			continue
+		}
+		seen[key] = true
+		dirs = append(dirs, dir)
 	}
-	return dirs, nil
+	return dirs, source, nil
 }
 
 // sameDirKey is dir with symlinks resolved, or dir itself when it cannot be resolved (for example when
@@ -112,17 +138,17 @@ func sameDirKey(dir string) string {
 	return dir
 }
 
-// openReadStores opens the primary store and then each store it reads, in that order. A store it
-// reads that does not exist, or is not a claudemem store, is skipped with a warning on stderr (and
-// left as it is): read commands go on with the rest.
-// The stores it reads record no access log, so reading them writes nothing there. Vector search is
-// not set up here; search does that per store.
+// openReadStores opens the primary store and then each store it reads, in that order. The stores it
+// reads are opened read-only (storage.OpenReadOnly): reading them writes nothing there, and they never
+// choose an embedding backend. A store read that does not exist, is not a claudemem store or cannot
+// be opened is skipped with a warning on stderr: read commands go on with the rest. Vector search is
+// not set up here; search does that.
 func openReadStores() ([]readStore, error) {
 	primary, err := primaryStoreDir()
 	if err != nil {
 		return nil, err
 	}
-	others, err := readStoreDirs(primary)
+	others, source, err := readStoreDirs(primary, false)
 	if err != nil {
 		return nil, err
 	}
@@ -133,19 +159,18 @@ func openReadStores() ([]readStore, error) {
 	stores := []readStore{{Name: displayStoreName(primary), Dir: primary, Store: first}}
 	for _, dir := range others {
 		if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
-			fmt.Fprintf(os.Stderr, "warning: store %s (%s) not found; reading without it\n", displayStoreName(dir), readStoresKey)
+			fmt.Fprintf(os.Stderr, "warning: store %s (%s) not found; reading without it\n", displayStoreName(dir), source)
 			continue
 		}
 		if !storage.IsStoreDir(dir) {
-			fmt.Fprintf(os.Stderr, "warning: %s (%s) is not a claudemem store (no .index/search.db); reading without it\n", displayStoreName(dir), readStoresKey)
+			fmt.Fprintf(os.Stderr, "warning: %s (%s) is not a claudemem store (no .index/search.db); reading without it\n", displayStoreName(dir), source)
 			continue
 		}
-		fs, err := storage.NewFileStore(dir)
+		fs, err := storage.OpenReadOnly(dir)
 		if err != nil {
-			closeReadStores(stores)
-			return nil, fmt.Errorf("open store %s: %w", displayStoreName(dir), err)
+			fmt.Fprintf(os.Stderr, "warning: store %s (%s) cannot be opened (%v); reading without it\n", displayStoreName(dir), source, err)
+			continue
 		}
-		fs.DisableAccessLog()
 		stores = append(stores, readStore{Name: displayStoreName(dir), Dir: dir, Store: fs})
 	}
 	return stores, nil
@@ -155,6 +180,16 @@ func closeReadStores(stores []readStore) {
 	for _, s := range stores {
 		s.Store.Close()
 	}
+}
+
+// readStoreFailed handles an error from store i of a read command: the primary's is returned, while a
+// store read's becomes a warning on stderr, and the command goes on without that store's part.
+func readStoreFailed(stores []readStore, i int, err error) error {
+	if i == 0 {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "warning: store %s: %v; going on without it\n", stores[i].Name, err)
+	return nil
 }
 
 // readStoreHint adds to a write command's error, when the entry is missing from the primary store
@@ -168,15 +203,12 @@ func readStoreHint(err error, kind, id string) error {
 	if perr != nil {
 		return err
 	}
-	dirs, derr := readStoreDirs(primary)
+	dirs, _, derr := readStoreDirs(primary, true)
 	if derr != nil {
 		return err
 	}
 	for _, dir := range dirs {
-		if !storage.IsStoreDir(dir) {
-			continue
-		}
-		fs, openErr := storage.NewFileStore(dir)
+		fs, openErr := storage.OpenReadOnly(dir)
 		if openErr != nil {
 			continue
 		}

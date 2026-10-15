@@ -39,7 +39,10 @@ Examples:
 		for i, rs := range stores {
 			found, err := rs.Store.ListNotes(category)
 			if err != nil {
-				return fmt.Errorf("failed to list notes: %w", err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to list notes: %w", err)); err != nil {
+					return err
+				}
+				continue
 			}
 			for _, n := range found {
 				listed = append(listed, noteInStore{Note: n, Store: storeLabel(stores, i)})

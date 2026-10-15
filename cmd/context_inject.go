@@ -90,40 +90,21 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	var sessions []listedSession
 	var totals contextStats
 	for i, rs := range stores {
-		// Gather recent notes
-		found, err := rs.Store.ListNotesWithTags("", required)
+		found, listed, counts, err := storeContext(rs.Store, required, sessOpts)
 		if err != nil {
-			return fmt.Errorf("failed to list notes: %w", err)
+			if err := readStoreFailed(stores, i, err); err != nil {
+				return err
+			}
+			continue
 		}
 		for _, n := range found {
 			notes = append(notes, noteFrom{note: n, store: storeLabel(stores, i)})
 		}
-
-		// Gather recent sessions
-		listed, err := rs.Store.ListSessions(sessOpts)
-		if err != nil {
-			return fmt.Errorf("failed to list sessions: %w", err)
-		}
 		for _, s := range listed {
 			sessions = append(sessions, listedSession{session: s, store: storeLabel(stores, i)})
 		}
-
-		// Get stats for context: with --tag, the counts of the tagged set only
-		if len(required) == 0 {
-			stats, err := rs.Store.Stats()
-			if err != nil {
-				return fmt.Errorf("failed to get stats: %w", err)
-			}
-			totals.TotalNotes += stats.TotalNotes
-			totals.TotalSessions += stats.TotalSessions
-		} else {
-			stats, err := rs.Store.TaggedStats(required)
-			if err != nil {
-				return fmt.Errorf("failed to get stats: %w", err)
-			}
-			totals.TotalNotes += stats.TotalNotes
-			totals.TotalSessions += stats.TotalSessions
-		}
+		totals.TotalNotes += counts.TotalNotes
+		totals.TotalSessions += counts.TotalSessions
 	}
 
 	// Sort notes by updated time (most recent first, ties in store order) and take top N
@@ -241,4 +222,32 @@ func storeSuffix(store string) string {
 		return ""
 	}
 	return " [" + store + "]"
+}
+
+// storeContext gathers one store's part of the context: its recent notes, its recent sessions, and its
+// counts (with tags, the counts of the tagged set only). A store gives all three or nothing.
+func storeContext(store *storage.FileStore, required []string, sessOpts storage.SessionListOpts) ([]*models.Note, []*models.Session, contextStats, error) {
+	var counts contextStats
+	found, err := store.ListNotesWithTags("", required)
+	if err != nil {
+		return nil, nil, counts, fmt.Errorf("failed to list notes: %w", err)
+	}
+	listed, err := store.ListSessions(sessOpts)
+	if err != nil {
+		return nil, nil, counts, fmt.Errorf("failed to list sessions: %w", err)
+	}
+	if len(required) == 0 {
+		stats, err := store.Stats()
+		if err != nil {
+			return nil, nil, counts, fmt.Errorf("failed to get stats: %w", err)
+		}
+		counts = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
+	} else {
+		stats, err := store.TaggedStats(required)
+		if err != nil {
+			return nil, nil, counts, fmt.Errorf("failed to get stats: %w", err)
+		}
+		counts = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
+	}
+	return found, listed, counts, nil
 }

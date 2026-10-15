@@ -90,7 +90,10 @@ Examples:
 		for i, rs := range stores {
 			notes, err := rs.Store.ListNotesWithTags(category, required)
 			if err != nil {
-				return fmt.Errorf("failed to list notes: %w", err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to list notes: %w", err)); err != nil {
+					return err
+				}
+				continue
 			}
 			for _, n := range notes {
 				if strings.Contains(strings.ToLower(n.Title), patternLower) {

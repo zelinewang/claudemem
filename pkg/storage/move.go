@@ -685,9 +685,35 @@ func lockBoth(a, b *FileStore) (func(), error) {
 	}, nil
 }
 
-// sameStoreDir reports whether two store directories are one, also when reached by a symlink.
+// sameStoreDir reports whether two store directories are one, also when reached by a symlink or a
+// bind mount.
 func sameStoreDir(a, b string) bool {
-	return resolvedDir(a) == resolvedDir(b)
+	if resolvedDir(a) == resolvedDir(b) {
+		return true
+	}
+	ia, errA := os.Stat(a)
+	ib, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(ia, ib)
+}
+
+// StoresOverlap reports whether two store directories are one, or one sits inside the other, after
+// symlinks are resolved. Such stores share files, so neither move nor a store read across them is
+// allowed.
+func StoresOverlap(a, b string) bool {
+	if sameStoreDir(a, b) {
+		return true
+	}
+	ra, rb := resolvedDir(a), resolvedDir(b)
+	return isWithin(ra, rb) || isWithin(rb, ra)
+}
+
+// isWithin reports whether path is dir or lies under it (both resolved, absolute).
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 // resolvedDir is dir as an absolute path with symlinks resolved, as far as they resolve.

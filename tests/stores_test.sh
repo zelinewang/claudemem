@@ -134,13 +134,19 @@ if grep -qF "warning: $WORK/plain (stores.read) is not a claudemem store" "$WORK
 else
     fail "directory that is not a store" "out=[$OUT] err=[$(cat "$WORK/err")]"
 fi
-CP config set stores.read "relative/dir" >/dev/null
-if OUT=$(CP search bbkw 2>&1); then
-    fail "relative path" "accepted: $OUT"
-elif grep -q "must be absolute" <<<"$OUT"; then
-    pass "a relative store path is refused"
+CP config set stores.read "relative/dir,$S" >/dev/null
+OUT=$(CP search bbkw --type note --format json 2>"$WORK/err")
+if grep -q "stores.read: store path \"relative/dir\" must be absolute" "$WORK/err" && [ "$(json "len(d)" <<<"$OUT")" = "2" ]; then
+    pass "a relative path in the setting is skipped with a warning; the other stores are read"
 else
-    fail "relative path" "$OUT"
+    fail "relative path in the setting" "out=[$OUT] err=[$(cat "$WORK/err")]"
+fi
+if OUT=$(CP --read-stores relative/dir search bbkw 2>&1); then
+    fail "relative path in --read-stores" "accepted: $OUT"
+elif grep -q "must be absolute" <<<"$OUT"; then
+    pass "a relative path in --read-stores is refused"
+else
+    fail "relative path in --read-stores" "$OUT"
 fi
 C --store "$FAKE_HOME/mem" note add misc --title "Home note" --content "homekw" >/dev/null
 CP config set stores.read "~/mem,$S,$S" >/dev/null
@@ -149,6 +155,39 @@ CNT=$(CP search bbkw --type note --format json | json "len(d)")
 [ "$GOT" = "~/mem" ] && [ "$CNT" = "2" ] && pass "~/ is the home directory, named ~; a store listed twice is read once" \
     || fail "~/ and repeats" "store=[$GOT] count=[$CNT]"
 CP config set stores.read "$S" >/dev/null
+
+echo ""
+echo "6b. a store read is only read"
+tables() { python3 -c "import sqlite3,sys; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro', uri=True); print(' '.join(r[0] for r in c.execute(\"select name from sqlite_master where type='table' order by name\")))" "$1/.index/search.db"; }
+CS config set features.semantic_search true >/dev/null
+TABLES_BEFORE=$(tables "$S")
+CP search bbkw --semantic --format json >/dev/null 2>&1; CP search bbkw >/dev/null 2>&1; CP context inject >/dev/null 2>&1
+if [ -n "$TABLES_BEFORE" ] && [ "$TABLES_BEFORE" = "$(tables "$S")" ] && ! grep -qw vectors <<<"$(tables "$S")"; then
+    pass "reading a store with semantic search on builds no vector tables in it"
+else
+    fail "store read gets vector tables" "before=[$TABLES_BEFORE] after=[$(tables "$S")]"
+fi
+CS config set features.semantic_search false >/dev/null
+cp "$P/config.json" "$WORK/primary-config.json"
+printf '{"features.semantic_search": tru' >"$P/config.json"
+OUT=$(CP context inject --format json 2>"$WORK/err"); CODE=$?
+if [ "$CODE" = "0" ] && grep -q "cannot read stores.read" "$WORK/err" \
+    && [ "$(json "sorted(n['title'] for n in d['recent_notes'] if 'runbook' in n['title'])" <<<"$OUT")" = "['Primary runbook']" ]; then
+    pass "a malformed config is a warning: context inject still runs on the primary"
+else
+    fail "malformed config" "exit=$CODE out=[$OUT] err=[$(cat "$WORK/err")]"
+fi
+cp "$WORK/primary-config.json" "$P/config.json"
+BAD="$WORK/corrupt"
+C --store "$BAD" note add ops --title "Corrupt store note" --content "bbkw corrupt" >/dev/null
+rm -f "$BAD/.index/search.db-wal" "$BAD/.index/search.db-shm"
+head -c 8192 /dev/zero | tr '\0' 'x' >"$BAD/.index/search.db"
+OUT=$(CP --read-stores "$BAD,$S" search bbkw --type note --format json 2>"$WORK/err"); CODE=$?
+if [ "$CODE" = "0" ] && grep -qF "warning: store $BAD (--read-stores) cannot be opened" "$WORK/err" && [ "$(json "len(d)" <<<"$OUT")" = "2" ]; then
+    pass "a store read that cannot be opened is skipped with a warning"
+else
+    fail "corrupt store read" "exit=$CODE out=[$OUT] err=[$(cat "$WORK/err")]"
+fi
 
 echo ""
 echo "7. move"

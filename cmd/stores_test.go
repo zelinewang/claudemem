@@ -347,9 +347,9 @@ func TestCLI_ReadStores_Settings(t *testing.T) {
 		}
 	}
 
-	// a relative path is refused
-	mustRunCLI(t, primary, "config", "set", readStoresKey, "relative/dir")
-	if _, err := runCLI(t, primary, "search", "setkw"); err == nil || !strings.Contains(err.Error(), "must be absolute") {
+	// a relative path in the setting is skipped with a warning (TestCLI_ReadStores_ProblemsAreWarnings),
+	// and refused in --read-stores
+	if _, err := runCLI(t, primary, "--read-stores", "relative/dir", "search", "setkw"); err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Errorf("a relative store path: %v", err)
 	}
 

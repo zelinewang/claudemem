@@ -169,18 +169,21 @@ func storesStats(stores []readStore) (*storage.StoreStats, []storeTotals, error)
 		stats, err := stores[0].Store.Stats()
 		return stats, nil, err
 	}
-	parts := make([]*storage.StoreStats, len(stores))
-	totals := make([]storeTotals, len(stores))
+	parts := make([]*storage.StoreStats, 0, len(stores))
+	totals := make([]storeTotals, 0, len(stores))
 	for i, rs := range stores {
 		part, err := rs.Store.StatsAllTags()
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", rs.Name, err)
+			if err := readStoreFailed(stores, i, fmt.Errorf("%s: %w", rs.Name, err)); err != nil {
+				return nil, nil, err
+			}
+			continue
 		}
 		for j := range part.RecentEntries {
 			part.RecentEntries[j].Store = rs.Name
 		}
-		parts[i] = part
-		totals[i] = storeTotals{Store: rs.Name, TotalNotes: part.TotalNotes, TotalSessions: part.TotalSessions, StorageSize: part.StorageSize}
+		parts = append(parts, part)
+		totals = append(totals, storeTotals{Store: rs.Name, TotalNotes: part.TotalNotes, TotalSessions: part.TotalSessions, StorageSize: part.StorageSize})
 	}
 	return storage.MergeStats(parts), totals, nil
 }
@@ -195,7 +198,10 @@ func storesTopAccessed(stores []readStore, limit int) ([]storage.AccessStat, err
 	for i, rs := range stores {
 		top, err := rs.Store.GetTopAccessed(limit)
 		if err != nil {
-			return nil, err
+			if err := readStoreFailed(stores, i, err); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		for j := range top {
 			top[j].Store = storeLabel(stores, i)
@@ -234,13 +240,16 @@ func runTaggedStats(stores []readStore, required []string) error {
 			return fmt.Errorf("failed to get statistics: %w", err)
 		}
 	} else {
-		parts := make([]*storage.TaggedStats, len(stores))
+		parts := make([]*storage.TaggedStats, 0, len(stores))
 		for i, rs := range stores {
 			part, err := rs.Store.TaggedStatsAllTags(required)
 			if err != nil {
-				return fmt.Errorf("failed to get statistics: %s: %w", rs.Name, err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to get statistics: %s: %w", rs.Name, err)); err != nil {
+					return err
+				}
+				continue
 			}
-			parts[i] = part
+			parts = append(parts, part)
 			totals = append(totals, storeTotals{Store: rs.Name, TotalNotes: part.TotalNotes, TotalSessions: part.TotalSessions})
 		}
 		stats = storage.MergeTaggedStats(parts)

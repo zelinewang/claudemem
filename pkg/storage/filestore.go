@@ -3,8 +3,10 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -20,6 +22,7 @@ type FileStore struct {
 	db          *sql.DB
 	vectorStore *vectors.VectorStore // nil when semantic search is disabled
 	noAccessLog bool                 // set by DisableAccessLog
+	readOnly    bool                 // opened by OpenReadOnly: no write path may run
 }
 
 // NewFileStore creates a new file-based store
@@ -133,6 +136,59 @@ func (fs *FileStore) initSchema() error {
 
 	return nil
 }
+
+// OpenReadOnly opens an existing store only to read it, for a store that another store reads. The
+// index is opened read-only, so any write fails; nothing is created, no schema is set up, migrated or
+// stamped, the journal mode is left as it is, no access is logged, and the store's write lock is
+// refused, so no write path can start. (SQLite may still create its -wal and -shm side files next to
+// a WAL database, as any reader does.)
+func OpenReadOnly(baseDir string) (*FileStore, error) {
+	if !IsStoreDir(baseDir) {
+		return nil, fmt.Errorf("not a claudemem store (no .index/search.db)")
+	}
+	fs := &FileStore{
+		baseDir:     baseDir,
+		notesDir:    filepath.Join(baseDir, "notes"),
+		sessionsDir: filepath.Join(baseDir, "sessions"),
+		indexDir:    filepath.Join(baseDir, ".index"),
+		noAccessLog: true,
+		readOnly:    true,
+	}
+	dbPath, err := filepath.Abs(filepath.Join(fs.indexDir, "search.db"))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", readOnlyDSN(dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open the index: %w", err)
+	}
+	for _, table := range []string{"entries", "memory_fts"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE name = ?`, table).Scan(&name); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("the index has no %s table (%v)", table, err)
+		}
+	}
+	fs.db = db
+	return fs, nil
+}
+
+// readOnlyDSN is the SQLite URI that opens path read-only.
+func readOnlyDSN(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // a Windows drive path: file:///C:/...
+	}
+	return (&url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro"}).String()
+}
+
+// IsReadOnly reports whether the store was opened by OpenReadOnly.
+func (fs *FileStore) IsReadOnly() bool { return fs.readOnly }
 
 // IsStoreDir reports whether dir is a claudemem store: it has an index, which every command creates
 // on its first run there. Commands that open a store named by a setting check this first, so that a

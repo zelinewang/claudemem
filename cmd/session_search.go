@@ -99,7 +99,10 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 	for i, rs := range stores {
 		found, err := rs.Store.SearchSessions(query, opts)
 		if err != nil {
-			return fmt.Errorf("failed to search sessions: %w", err)
+			if err := readStoreFailed(stores, i, fmt.Errorf("failed to search sessions: %w", err)); err != nil {
+				return err
+			}
+			continue
 		}
 		list := make([]listedSession, len(found))
 		for j, s := range found {

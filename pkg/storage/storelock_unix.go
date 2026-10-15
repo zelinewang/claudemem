@@ -36,6 +36,9 @@ var lockTimeout = 60 * time.Second
 // already hold it use the *Locked variants of the mutating methods; a re-entry fails after
 // lockTimeout with the error below instead of hanging.
 func (fs *FileStore) lockStore() (func(), error) {
+	if fs.readOnly {
+		return nil, fmt.Errorf("this store is open only for reading; writes go to --store")
+	}
 	path := filepath.Join(fs.baseDir, ".write.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

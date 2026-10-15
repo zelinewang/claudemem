@@ -22,10 +22,13 @@ var noteTagsCmd = &cobra.Command{
 		// Every tag of the stores read, once
 		var tags []string
 		seen := make(map[string]bool)
-		for _, rs := range stores {
+		for i, rs := range stores {
 			found, err := rs.Store.GetTags()
 			if err != nil {
-				return fmt.Errorf("failed to get tags: %w", err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to get tags: %w", err)); err != nil {
+					return err
+				}
+				continue
 			}
 			for _, tag := range found {
 				if !seen[tag] {

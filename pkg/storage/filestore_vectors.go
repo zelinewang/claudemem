@@ -29,6 +29,10 @@ func (fs *FileStore) InitVectorStore() error {
 	if fs.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if fs.readOnly {
+		// its settings must not choose a backend: a reader brings its own (AttachReadVectors)
+		return fmt.Errorf("a store opened read-only uses the embedder of the store that reads it")
+	}
 
 	bc, err := loadBackendConfig(fs.baseDir)
 	if err != nil {
@@ -80,6 +84,36 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// AttachReadVectors lets a store opened read-only answer vector searches with the embedder of the
+// store that reads it, over its own vectors of that embedder's backend, model and dimensions. This
+// store's embedding settings are never read: it does not choose a backend, an endpoint or a key.
+// Nothing in its index is created, migrated or stamped. A TF-IDF embedder is refused (its
+// vocabulary belongs to the other store's corpus), as is an index without current-layout vectors.
+func (fs *FileStore) AttachReadVectors(e vectors.Embedder) error {
+	vs, err := vectors.OpenForSearch(fs.db, e)
+	if err != nil {
+		return err
+	}
+	fs.vectorStore = vs
+	return nil
+}
+
+// ShareQueryEmbedder returns this store's embedder, made to embed each query once, for the stores
+// this one reads; it also uses that embedder itself from now on. nil when the store has no vector
+// search, or only TF-IDF, which cannot be shared.
+func (fs *FileStore) ShareQueryEmbedder() vectors.Embedder {
+	if fs.vectorStore == nil {
+		return nil
+	}
+	e := fs.vectorStore.Embedder()
+	if e == nil || e.Name() == "tfidf" {
+		return nil
+	}
+	cached := vectors.CacheQueryEmbeddings(e)
+	fs.vectorStore = fs.vectorStore.WithEmbedder(cached)
+	return cached
 }
 
 // HasVectorStore returns true if semantic search is initialized.

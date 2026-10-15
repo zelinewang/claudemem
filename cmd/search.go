@@ -37,6 +37,8 @@ Supports faceted filtering by category, tags, and date range.
 Results are ranked by relevance with a recency boost (recent entries score higher).
 Use --compact for token-efficient output (IDs + titles only).
 Use --semantic to require semantic (vector) search via the configured embedding backend.
+When the store reads other stores (stores.read), they are searched too: by keyword, and by their
+vectors of this store's embedding backend and model. Their own settings are never used.
 
 Examples:
   claudemem search "api rate limits"
@@ -70,13 +72,28 @@ Examples:
 		}
 		defer closeReadStores(stores)
 
-		// Each store is searched with its own settings (semantic search, embedding backend); the
-		// result lists are then merged by rank, or by date with --sort date.
+		// --store is searched with its own settings. The stores it reads never choose an embedding
+		// backend: each answers with keyword search, and, when --store searches with a non-TF-IDF
+		// embedder, also with its own vectors of that backend, model and dimensions, matched against
+		// the query as --store embedded it (once). The lists are merged by rank, or by date with
+		// --sort date.
 		lists := make([][]storage.SearchResult, 0, len(stores))
+		var shared vectors.Embedder
 		for i, rs := range stores {
-			found, err := searchOneStore(rs, query, opts)
-			if err != nil {
-				return err
+			var found []storage.SearchResult
+			if i == 0 {
+				found, shared, err = searchPrimaryStore(rs, query, opts)
+				if err != nil {
+					return err
+				}
+			} else {
+				found, err = searchReadStore(rs, opts, query, shared)
+				if err != nil {
+					if err := readStoreFailed(stores, i, err); err != nil {
+						return err
+					}
+					continue
+				}
 			}
 			for j := range found {
 				found[j].Store = storeLabel(stores, i)
@@ -184,10 +201,11 @@ Examples:
 	},
 }
 
-// searchOneStore runs the search in one store with that store's own semantic-search setting, the
-// way the command always searched its single store: --semantic forces hybrid search, the store's
-// features.semantic_search turns it on, --fts-only turns it off.
-func searchOneStore(rs readStore, query string, opts storage.SearchOpts) ([]storage.SearchResult, error) {
+// searchPrimaryStore searches --store the way the command always searched its single store, with its
+// own semantic-search setting: --semantic forces hybrid search, the store's features.semantic_search
+// turns it on, --fts-only turns it off. It also returns the store's query embedder for the stores it
+// reads (nil without hybrid search or with TF-IDF).
+func searchPrimaryStore(rs readStore, query string, opts storage.SearchOpts) ([]storage.SearchResult, vectors.Embedder, error) {
 	fileStore := rs.Store
 
 	// Auto-enable hybrid search when feature flag is on
@@ -207,27 +225,29 @@ func searchOneStore(rs readStore, query string, opts storage.SearchOpts) ([]stor
 			// Fail loud in non-TTY; offer interactive recovery in TTY.
 			choice, cerr := handleBackendFailure(err, useHybrid)
 			if cerr != nil {
-				return nil, cerr
+				return nil, nil, cerr
 			}
 			switch choice {
 			case recoveryRetry:
 				if err2 := fileStore.InitVectorStore(); err2 != nil {
-					return nil, fmt.Errorf("retry failed: %w", err2)
+					return nil, nil, fmt.Errorf("retry failed: %w", err2)
 				}
 			case recoveryFTSOnly:
 				useHybrid = false
 			case recoverySetup:
-				return nil, fmt.Errorf("run `claudemem setup` to reconfigure, then retry")
+				return nil, nil, fmt.Errorf("run `claudemem setup` to reconfigure, then retry")
 			case recoveryExit:
-				return nil, fmt.Errorf("aborted")
+				return nil, nil, fmt.Errorf("aborted")
 			}
 		}
 	}
 
 	// Choose search mode: hybrid (FTS5 + vectors) when available, FTS5 otherwise
 	var results []storage.SearchResult
+	var shared vectors.Embedder
 	var err error
 	if useHybrid && fileStore.HasVectorStore() {
+		shared = fileStore.ShareQueryEmbedder()
 		results, err = fileStore.HybridSearch(query, opts)
 		// HybridSearch may fail at embed time (backend went down between
 		// init and query). Surface as a recovery prompt. If the user
@@ -235,21 +255,33 @@ func searchOneStore(rs readStore, query string, opts storage.SearchOpts) ([]stor
 		if err != nil && vectors.IsBackendUnavailable(err) {
 			choice, cerr := handleBackendFailure(err, true)
 			if cerr != nil {
-				return nil, cerr
+				return nil, nil, cerr
 			}
 			if choice == recoveryFTSOnly {
+				shared = nil
 				results, err = fileStore.SearchWithOpts(opts)
 			} else {
-				return nil, fmt.Errorf("search aborted: %w", err)
+				return nil, nil, fmt.Errorf("search aborted: %w", err)
 			}
 		}
 	} else {
 		results, err = fileStore.SearchWithOpts(opts)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
+		return nil, nil, fmt.Errorf("search failed: %w", err)
 	}
-	return results, nil
+	return results, shared, nil
+}
+
+// searchReadStore searches a store that --store reads: keyword search, and also its own vectors when
+// --store shared a query embedder and this store holds vectors of that embedder's backend, model and
+// dimensions. This store's own embedding settings are never read: it chooses no backend, no endpoint
+// and no key.
+func searchReadStore(rs readStore, opts storage.SearchOpts, query string, shared vectors.Embedder) ([]storage.SearchResult, error) {
+	if shared != nil && rs.Store.AttachReadVectors(shared) == nil {
+		return rs.Store.HybridSearch(query, opts)
+	}
+	return rs.Store.SearchWithOpts(opts)
 }
 
 // mergeSearchResults merges the result lists of several stores: by date with --sort date, else by

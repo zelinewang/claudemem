@@ -27,10 +27,13 @@ Examples:
 		// Get categories, added up by name across the stores read
 		var categories []storage.CategoryInfo
 		counts := make(map[string]int)
-		for _, rs := range stores {
+		for i, rs := range stores {
 			found, err := rs.Store.GetCategories()
 			if err != nil {
-				return fmt.Errorf("failed to get categories: %w", err)
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to get categories: %w", err)); err != nil {
+					return err
+				}
+				continue
 			}
 			for _, cat := range found {
 				if _, seen := counts[cat.Name]; !seen {
