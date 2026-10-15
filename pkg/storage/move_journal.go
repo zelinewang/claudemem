@@ -133,13 +133,18 @@ func writeNewFile(path string, data []byte) error {
 // hold the bytes the move wrote, unless the target's index lists the entry at that file, which means
 // its rows did commit; then the record goes. While the store the entry came from no longer holds it,
 // what the move put into the target may be its only copy: it stays, and so does the record. In a dry
-// run it only says what it would remove.
+// run it only says what it would remove, and only while no writer holds the target's lock: a record
+// found then may be that of a move still running.
 func (m *mover) recoverPending() error {
 	records, paths, bad := m.to.pendingInstalls()
 	for _, name := range bad {
 		m.warn("the target's move journal holds a record that cannot be read (%s); left as it is", filepath.Join(".index", "move-pending", name))
 	}
 	if len(records) == 0 {
+		return nil
+	}
+	if m.dryRun && storeLockHeld(m.to.baseDir) {
+		m.warn("the target's move journal holds %d records while a writer holds the target's lock: another move into it is probably running, so this dry run leaves its journal alone; run the dry run again when that move is done", len(records))
 		return nil
 	}
 	if !m.dryRun {

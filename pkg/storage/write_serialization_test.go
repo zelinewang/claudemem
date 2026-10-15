@@ -192,6 +192,34 @@ func TestLockStoreDir_ExcludesASecondHolder(t *testing.T) {
 	again()
 }
 
+// storeLockHeld tells whether a writer holds the lock, without waiting, without creating the lock
+// file, and without keeping a writer that comes after it from taking the lock.
+func TestStoreLockHeld(t *testing.T) {
+	dir := t.TempDir()
+	if storeLockHeld(dir) {
+		t.Error("a store without a lock file has a holder")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".write.lock")); !os.IsNotExist(err) {
+		t.Errorf("the probe created the lock file: %v", err)
+	}
+	unlock, err := LockStoreDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !storeLockHeld(dir) {
+		t.Error("the lock is held, and the probe says it is not")
+	}
+	unlock()
+	if storeLockHeld(dir) {
+		t.Error("the lock was let go, and the probe says it is held")
+	}
+	again, err := LockStoreDir(dir)
+	if err != nil {
+		t.Fatalf("a writer after the probe: %v", err)
+	}
+	again()
+}
+
 // Same review, item 5b: a category move picks a free filename, then renames the temp file over it
 // later — two notes with one slug moving into one category can both be told the same name is free,
 // and the second rename overwrites the first note's file (os.Rename replaces). Both notes must keep

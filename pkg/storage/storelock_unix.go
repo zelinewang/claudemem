@@ -73,3 +73,19 @@ func LockStoreDir(dir string) (func(), error) {
 		_ = f.Close()
 	}, nil
 }
+
+// storeLockHeld reports whether a writer holds the write lock of the store in dir, without waiting
+// and without creating anything: a shared lock on its lock file is tried once and let go. A store
+// whose lock file does not exist has no holder.
+func storeLockHeld(dir string) bool {
+	f, err := os.Open(filepath.Join(dir, ".write.lock"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return err == syscall.EWOULDBLOCK || err == syscall.EAGAIN
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
+}

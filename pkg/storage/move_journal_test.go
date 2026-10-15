@@ -261,3 +261,27 @@ func TestMoveEntries_TheJournalKeepsTheRecordOfAFileItCannotRemove(t *testing.T)
 		t.Errorf("journal records %v after the file went", records)
 	}
 }
+
+// A dry run while another move into the target is running finds that move's record in the journal. It
+// does not take the record for a stopped move's and say it would remove the file being moved: the
+// target's lock is taken, so it says another move is running and leaves the journal unjudged.
+func TestMoveEntries_ADryRunDuringAMoveLeavesItsJournalAlone(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	second := setupTestStore(t)
+	other := addTaggedNote(t, second, "misc", "Checklist", "items", "team")
+	var dry *MoveReport
+	atStep(t, "after-install", func() { // the running move holds both locks; its record is written
+		dry = mustMove(t, second, to, true, other.ID)
+	})
+	if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+		t.Fatalf("the running move: %+v", report)
+	}
+	warnings := strings.Join(dry.Warnings, "\n")
+	if strings.Contains(warnings, "would remove") || !strings.Contains(warnings, "another move") {
+		t.Errorf("dry run warnings %q", warnings)
+	}
+	if len(dry.Moved) != 1 {
+		t.Errorf("dry run %+v", dry)
+	}
+}

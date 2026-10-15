@@ -284,8 +284,10 @@ over its own leftover, and a note that turns out to belong elsewhere leaves no c
 While that store no longer holds the entry, what the stopped run left in the target may be its only
 copy: it stays, with a warning on each run, until the target is reindexed or the file removed by
 hand. A file the journal cannot remove (its directory refuses it, say) is reported, and its record
-stays for the next move to try again. A set-aside file that a stopped run left is found and handled
-by the next run.
+stays for the next move to try again. A dry run only says what it would remove, and only while no
+writer holds the target's lock: a record it finds while one does may be that of a move still
+running, so it says so and leaves the journal alone. A set-aside file that a stopped run left is
+found and handled by the next run.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two
