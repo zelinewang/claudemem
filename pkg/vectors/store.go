@@ -555,7 +555,7 @@ func (vs *VectorStore) RebuildIndex(documents []Document) error {
 // RebuildIndexGated is RebuildIndex with its write run through gate. Documents the store no longer
 // holds by then are left out, and their number is returned. The rows removed are those of the
 // documents rebuilt and of documents the store no longer holds, so the vectors of a document that
-// came in while the others were embedded (a move brings its vectors along) stay; under TF-IDF every
+// came in while the others were embedded (a note added meanwhile is embedded as it is written) stay; under TF-IDF every
 // row of the backend goes, as its vectors all follow the vocabulary built here. Without a gate it
 // removes every row of the active backend and model, as RebuildIndex always has.
 func (vs *VectorStore) RebuildIndexGated(documents []Document, gate Gate) (int, error) {

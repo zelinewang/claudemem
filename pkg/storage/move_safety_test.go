@@ -170,12 +170,13 @@ func TestMoveEntries_BuildsTheTargetRowsFromTheFile(t *testing.T) {
 		if _, err := to.Reindex(); err != nil { // the file reached the target, which indexed it
 			t.Fatal(err)
 		}
+		addVectorRow(t, to, note.ID, "openai", "text-embedding-3-small", 4) // and embedded it, perhaps from older text
 		report := mustMove(t, from, to, false, note.ID)
-		if len(report.Moved) != 1 || report.Moved[0].Note != "finished an earlier move" || report.VectorsToEmbed != 0 {
+		if len(report.Moved) != 1 || report.Moved[0].Note != "finished an earlier move" || report.VectorsToEmbed != 1 {
 			t.Fatalf("report %+v", report)
 		}
-		if rows := rowsOf(t, to, note.ID); !strings.Contains(rows["vectors"], "openai") || rows["access_log"] != "" {
-			t.Errorf("target rows %v, want the vector and no access log", rows)
+		if rows := rowsOf(t, to, note.ID); rows["vectors"] != "" || rows["access_log"] != "" || rows["fts"] == "" {
+			t.Errorf("target rows %v, want the search row, no vectors and no access log", rows)
 		}
 		if rows := rowsOf(t, from, note.ID); len(rows) != 0 {
 			t.Errorf("rows left here: %v", rows)
@@ -457,9 +458,9 @@ func addVectorRow(t *testing.T, store *FileStore, id, backend, model string, dim
 	}
 }
 
-// Only vectors of the backend, model and size the target embeds with go along; the others are
-// dropped and counted to embed. An index stamped by a newer claudemem stops the move before anything
-// changes.
+// No vector goes along, whatever its backend, model or size, and the target's own vectors for a moved
+// entry are removed: every moved entry is counted to embed. An index stamped by a newer claudemem stops
+// the move before anything changes.
 func TestMoveEntries_VectorsForTheTargetsSearch(t *testing.T) {
 	from, to := moveStores(t)
 	writeStoreSettings(t, to, `{"features.semantic_search": "true", "embedding.backend": "openai", "embedding.dimensions": "4"}`)
@@ -469,19 +470,16 @@ func TestMoveEntries_VectorsForTheTargetsSearch(t *testing.T) {
 	addVectorRow(t, from, otherBackend.ID, "fake-cloud", "test-v1", 4)
 	otherSize := addTaggedNote(t, from, "v3", "Other size", "x", "team")
 	addVectorRow(t, from, otherSize.ID, "openai", "text-embedding-3-small", 8)
+	addVectorRow(t, to, served.ID, "openai", "text-embedding-3-small", 4) // a stale vector the target already had
 
 	report := mustMove(t, from, to, false, served.ID, otherBackend.ID, otherSize.ID)
-	if len(report.Moved) != 3 || report.VectorsToEmbed != 2 {
-		t.Errorf("report %+v, want 2 entries to embed (another backend, another size)", report)
+	if len(report.Moved) != 3 || report.VectorsToEmbed != 3 {
+		t.Errorf("report %+v, want all 3 entries to embed", report)
 	}
-	if rows := rowsOf(t, to, served.ID); !strings.Contains(rows["vectors"], "openai") {
-		t.Errorf("the served vector did not go along: %v", rows)
-	}
-	if rows := rowsOf(t, to, otherBackend.ID); rows["vectors"] != "" {
-		t.Errorf("a vector of another backend went along: %v", rows)
-	}
-	if rows := rowsOf(t, to, otherSize.ID); rows["vectors"] != "" {
-		t.Errorf("a vector of the target's model at another size went along: %v", rows)
+	for _, id := range []string{served.ID, otherBackend.ID, otherSize.ID} {
+		if rows := rowsOf(t, to, id); rows["vectors"] != "" {
+			t.Errorf("the target has vectors for a moved entry: %v", rows)
+		}
 	}
 
 	newer := addTaggedNote(t, from, "v4", "Newer", "x", "team")

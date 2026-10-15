@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/storage"
@@ -20,10 +21,10 @@ var moveCmd = &cobra.Command{
 	Short: "Move entries to another store, keeping their ids",
 	Long: `Move the listed notes and sessions from this store (--store) to another existing store,
 keeping each entry's id and its file. The target's index rows are built from the
-file; vectors go along when they were made from it and are of the backend, model
-and size the target's settings embed with (TF-IDF ones never do: they belong to
-one store's corpus). The access log is not carried over: it records what a
-person read.
+file. No vectors go along, and the target's own vectors for a moved entry are
+removed: the report counts the entries and prints the command that embeds them
+in the target. The access log is not carried over: it records what a person
+read.
 
 The file lists one full id per line; blank lines and everything after a # are
 skipped, and --file - reads standard input. The whole file is checked before
@@ -125,12 +126,19 @@ func runMove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	embed := ""
+	if report.VectorsToEmbed > 0 {
+		embed = "claudemem --store " + shellWord(displayStoreName(toDir)) + " reindex --vectors --missing"
+	}
 	if outputFormat == "json" {
-		if err := OutputJSON(report); err != nil {
+		if err := OutputJSON(struct {
+			*storage.MoveReport
+			EmbedCommand string `json:"embed_command,omitempty"` // embeds the moved entries in the target
+		}{report, embed}); err != nil {
 			return err
 		}
 	} else {
-		printMoveReport(report, displayStoreName(fromDir), displayStoreName(toDir))
+		printMoveReport(report, displayStoreName(fromDir), displayStoreName(toDir), embed)
 	}
 	if len(report.Missing) > 0 || len(report.Refused) > 0 || len(report.NeedsCleanup) > 0 {
 		msg := fmt.Sprintf("move: %d missing, %d refused", len(report.Missing), len(report.Refused))
@@ -142,7 +150,7 @@ func runMove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printMoveReport(r *storage.MoveReport, from, to string) {
+func printMoveReport(r *storage.MoveReport, from, to, embed string) {
 	header, verb := "move", "moved"
 	if r.DryRun {
 		header, verb = "move (dry run)", "to move"
@@ -175,7 +183,30 @@ func printMoveReport(r *storage.MoveReport, from, to string) {
 	for _, w := range r.Warnings {
 		OutputText("  warning: %s", w)
 	}
-	if r.VectorsToEmbed > 0 {
-		OutputText("  %d moved entries have no vectors for the target's semantic search; if %s uses it, run: claudemem --store %s reindex --vectors --missing", r.VectorsToEmbed, to, to)
+	switch {
+	case r.VectorsToEmbed > 0 && r.DryRun:
+		OutputText("  %d entries would go into %s without vectors (a move carries none); afterwards embed them with: %s", r.VectorsToEmbed, to, embed)
+	case r.VectorsToEmbed > 0:
+		OutputText("  %d entries went into %s without vectors (a move carries none); embed them with: %s", r.VectorsToEmbed, to, embed)
 	}
+}
+
+// shellWord is s as one shell word: as it is when it needs no quoting, otherwise in single quotes,
+// with a leading ~/ left outside them so the shell still expands it.
+func shellWord(s string) string {
+	safe := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_-./~+:@%=,", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	home := ""
+	if rest, ok := strings.CutPrefix(s, "~/"); ok {
+		home, s = "~/", rest
+	}
+	return home + "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

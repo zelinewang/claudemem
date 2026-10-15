@@ -152,7 +152,7 @@ func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 		len(report.Missing)+len(report.Refused)+len(report.AlreadyInTarget) != 0 {
 		t.Fatalf("report %+v", report)
 	}
-	if report.VectorsToEmbed != 1 || report.Moved[0].File != noteRel || report.Moved[0].Note != "" {
+	if report.VectorsToEmbed != 2 || report.Moved[0].File != noteRel || report.Moved[0].Note != "" {
 		t.Errorf("report %+v", report)
 	}
 
@@ -163,12 +163,12 @@ func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	if noteRows["access_log"] == "" {
 		t.Fatalf("no access log before the move: %v", noteRows)
 	}
-	// what a person read stays out of the target, and so does the tfidf vector
+	// what a person read stays out of the target, and so do the vectors: the target embeds the entry itself
 	delete(wantNote, "access_log")
-	wantNote["vectors"] = strings.Split(noteRows["vectors"], ";")[0]
-	if !strings.Contains(wantNote["vectors"], "openai") {
+	if !strings.Contains(noteRows["vectors"], "openai") {
 		t.Fatalf("vectors before the move: %q", noteRows["vectors"])
 	}
+	delete(wantNote, "vectors")
 	if got := rowsOf(t, to, note.ID); fmt.Sprint(got) != fmt.Sprint(wantNote) {
 		t.Errorf("note rows in the target:\n got %v\nwant %v", got, wantNote)
 	}
@@ -241,7 +241,7 @@ func TestMoveEntries_DryRunChangesNothing(t *testing.T) {
 	addVectorRow(t, from, note.ID, "openai", "text-embedding-3-small", 4)
 	before := storeSnapshot(t, from, to)
 	report := mustMove(t, from, to, true, note.ID, session.ID, "no-such-id")
-	if !report.DryRun || len(report.Moved) != 2 || len(report.Missing) != 1 || report.VectorsToEmbed != 1 {
+	if !report.DryRun || len(report.Moved) != 2 || len(report.Missing) != 1 || report.VectorsToEmbed != 2 {
 		t.Errorf("dry run report %+v", report)
 	}
 	if after := storeSnapshot(t, from, to); after != before {

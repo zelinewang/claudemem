@@ -5,12 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
-// The index rows of a move: what the target's rows are built from, the vectors that go along, and
-// the related-note check that keeps a session with its notes.
+// The index rows of a move: what the target's rows are built from, and the related-note check that
+// keeps a session with its notes.
 
 // indexRow is an entry's row in the entries table.
 type indexRow struct {
@@ -61,139 +59,14 @@ func parseEntry(kind string, data []byte) (*parsedEntry, error) {
 	return nil, fmt.Errorf("unknown kind %q", kind)
 }
 
-// embeddingTuple is an embedding backend, model and vector size.
-type embeddingTuple struct {
-	backend, model string
-	dim            int
-}
-
-// targetEmbedding is the backend, model and size the target's settings embed with (TF-IDF when they
-// name none), read without contacting anything or reading a key; nil when its settings cannot be
-// read or name an unknown backend.
-func targetEmbedding(to *FileStore) *embeddingTuple {
-	bc, err := loadBackendConfig(to.baseDir)
-	if err != nil {
-		return nil
-	}
-	bc.APIKey = ""
-	emb, err := vectors.BuildEmbedder(bc)
-	if err != nil {
-		return nil
-	}
-	return &embeddingTuple{backend: emb.Name(), model: emb.Model(), dim: emb.Dimensions()}
-}
-
-// serves reports whether a vector row is of the backend, model and size the target embeds with.
-func (m *mover) serves(backend, model string, dim int) bool {
-	if m.active == nil || backend != m.active.backend || model != m.active.model {
-		return false
-	}
-	return backend == "tfidf" || dim == m.active.dim // TF-IDF sizes follow the corpus
-}
-
-type vectorRow struct {
-	chunk          int
-	backend, model string
-	dim            int
-	vector         []byte
-	createdAt      string
-}
-
-// rowPlan is what writing an entry's rows into the target does with its vectors.
-type rowPlan struct {
-	vectors    []vectorRow // this store's vectors that go along
-	keepTarget bool        // the target's vectors for it stay: its search row already matches the file
-	embed      bool        // afterwards the target has no vectors for it that its semantic search uses
-}
-
-// planRows decides which vectors go along with an entry whose file is f. This store's vectors go
-// along only when its search row matches the file (they were embedded from it) and they are of the
-// backend, model and size the target embeds with; TF-IDF ones never do (they are built against this
-// store's corpus). The rest are dropped, and the entry is counted to embed. The target's own vectors
-// for it stay only when its search row matches the file too.
-func (m *mover) planRows(src *indexRow, f *parsedEntry) (*rowPlan, error) {
-	plan := &rowPlan{}
-	match, err := searchRowMatches(m.to, f)
-	if err != nil {
-		return nil, err
-	}
-	plan.keepTarget = match
-	if src != nil && m.vectors {
-		if match, err := searchRowMatches(m.from, f); err != nil {
-			return nil, err
-		} else if match {
-			rows, err := m.from.db.Query(`SELECT chunk, backend, model, dim, vector, created_at FROM vectors
-				WHERE doc_id = ? AND backend != 'tfidf' ORDER BY backend, model, chunk`, src.id)
-			if err != nil {
-				return nil, err
-			}
-			for rows.Next() {
-				var v vectorRow
-				if err := rows.Scan(&v.chunk, &v.backend, &v.model, &v.dim, &v.vector, &v.createdAt); err != nil {
-					rows.Close()
-					return nil, err
-				}
-				if m.serves(v.backend, v.model, v.dim) {
-					plan.vectors = append(plan.vectors, v)
-				}
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	plan.embed = len(plan.vectors) == 0
-	if plan.keepTarget && plan.embed && hasVectorsByDoc(m.to.db) {
-		rows, err := m.to.db.Query(`SELECT backend, model, dim FROM vectors WHERE doc_id = ?`, f.id)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var backend, model string
-			var dim int
-			if err := rows.Scan(&backend, &model, &dim); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			if m.serves(backend, model, dim) {
-				plan.embed = false
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-	}
-	return plan, nil
-}
-
-// searchRowMatches reports whether the store has exactly one search row for the entry, with the
-// file's title and content.
-func searchRowMatches(fs *FileStore, f *parsedEntry) (bool, error) {
-	rows, err := fs.db.Query(`SELECT title, content FROM memory_fts WHERE id = ?`, f.id)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	n, match := 0, false
-	for rows.Next() {
-		var title, content string
-		if err := rows.Scan(&title, &content); err != nil {
-			return false, err
-		}
-		n++
-		match = title == f.title && content == f.ftsContent
-	}
-	return n == 1 && match, rows.Err()
-}
-
 // writeTargetRows writes the entry's rows into the target in one transaction, built from its file
-// as a reindex builds them, replacing the target's entries and search rows for it; its vectors are
-// replaced by those of the plan unless the plan keeps them. The target's access log is left as it
-// is, and nothing of this store's is copied.
-func (m *mover) writeTargetRows(f *parsedEntry, rel string, plan *rowPlan) error {
+// as a reindex builds them, replacing the target's entries and search rows for it. No vectors go
+// along, and the target's own vectors for it are removed: nothing shows that any vector was
+// embedded from this file (a reindex, a pull or a tag edit rebuilds the search row and keeps the
+// vectors), and stale ones would let a search find words the file no longer has. The target embeds
+// the entry itself (`reindex --vectors --missing`). The target's access log is left as it is, and
+// nothing of this store's is copied.
+func (m *mover) writeTargetRows(f *parsedEntry, rel string) error {
 	targetVectors := hasVectorsByDoc(m.to.db) // before Begin: the transaction holds the store's one connection
 	tx, err := m.to.db.Begin()
 	if err != nil {
@@ -201,7 +74,7 @@ func (m *mover) writeTargetRows(f *parsedEntry, rel string, plan *rowPlan) error
 	}
 	defer tx.Rollback()
 	stmts := []string{`DELETE FROM entries WHERE id = ?`, `DELETE FROM memory_fts WHERE id = ?`}
-	if targetVectors && !plan.keepTarget {
+	if targetVectors {
 		stmts = append(stmts, `DELETE FROM vectors WHERE doc_id = ?`)
 	}
 	for _, stmt := range stmts {
@@ -216,12 +89,6 @@ func (m *mover) writeTargetRows(f *parsedEntry, rel string, plan *rowPlan) error
 	}
 	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`, f.id, f.title, f.ftsContent, f.tags); err != nil {
 		return err
-	}
-	for _, v := range plan.vectors {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			f.id, v.chunk, v.backend, v.model, v.dim, v.vector, v.createdAt); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }
@@ -256,24 +123,6 @@ func (fs *FileStore) removeEntryRows(id string) error {
 func hasVectorsByDoc(db *sql.DB) bool {
 	var n int
 	return db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('vectors') WHERE name = 'doc_id'`).Scan(&n) == nil && n == 1
-}
-
-// hasChunkedVectors reports whether the store's vectors table has the current layout, with a chunk
-// column, so its rows can be copied as they are.
-func hasChunkedVectors(db *sql.DB) bool {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('vectors')`)
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	cols := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if rows.Scan(&name) == nil {
-			cols[name] = true
-		}
-	}
-	return cols["doc_id"] && cols["chunk"] && cols["backend"] && cols["model"] && cols["dim"] && cols["vector"] && cols["created_at"]
 }
 
 // relatedNotesStay checks the notes a session file lists under its Related Notes sections, read

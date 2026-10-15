@@ -235,13 +235,13 @@ the listed order) and warns. The other commands (`graph`, `health`, `sync`, `exp
 `claudemem move --to <store> --file <ids>` moves the listed notes and sessions from `--store` to
 another existing store, keeping each entry's id and its file (under the same name, or the next free
 `-N` name if another file holds it there). The target's index rows are built from the file, as
-`reindex` builds them; vectors go along only when this store's search row matches the file (they
-were embedded from it) and they are of the backend, model and size the target's settings embed with.
-Other vectors are dropped, TF-IDF ones always (they are built against one store's own corpus). The
-access log is not carried over: it records what a person read. The report counts the entries that the
-target has no vectors for, to embed with `claudemem --store <target> reindex --vectors --missing`. The ids file
-has one full id per line; blank lines and anything after a `#` are skipped, and the whole file is
-checked before anything moves.
+`reindex` builds them. No vectors go along, and the target's own vectors for a moved entry are
+removed: a store's vectors can be older than its file (a `reindex`, a `sync pull` or a tag edit
+rebuilds the search row and keeps them), and stale ones would let a search find words the file no
+longer has. The report counts every entry that went into the target and prints the command that
+embeds them there, `claudemem --store <target> reindex --vectors --missing`. The access log is not
+carried over: it records what a person read. The ids file has one full id per line; blank lines and
+anything after a `#` are skipped, and the whole file is checked before anything moves.
 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,
 synced and never over another file, then its index rows (committed with a full sync), and only then
@@ -249,7 +249,7 @@ does the entry leave this store. Every other writer of a store's files or index 
 so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
 `session repair --apply` and the git steps of `sync` that change files. A vector backfill or rebuild
 embeds without the lock and writes under it, leaving out the entries that left the store meanwhile and
-keeping the vectors that came in with a moved entry. A run that stops half way leaves every entry whole in one store or
+keeping the vectors another writer added meanwhile. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
 rows. Two different files under one id (anywhere in the target), a file reached through a symlink
 between the two stores, a stale row in the target, stores that overlap and an index written by a

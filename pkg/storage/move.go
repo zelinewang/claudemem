@@ -97,18 +97,18 @@ type MoveReport struct {
 	// file the move could not remove (running it again finishes them), or a different copy of the file.
 	NeedsCleanup []MoveIssue `json:"needs_cleanup"`
 	Warnings     []string    `json:"warnings"`
-	// VectorsToEmbed counts the moved entries that the target has no vectors for of the backend,
-	// model and size its settings embed with: vectors go along only when they are of those, TF-IDF
-	// vectors never (they are built against one store's own corpus), and a store may have none.
+	// VectorsToEmbed counts the entries this run put into the target (moved, or in the target with
+	// something left here): a move carries no vectors, so the target embeds each of them itself.
 	VectorsToEmbed int `json:"vectors_to_embed"`
 }
 
 // MoveEntries moves the listed notes and sessions from one store to another, keeping each entry's
 // id and its file (under the same name, unless another file holds that name in the target). The
-// target's index rows are built from the file, as a reindex builds them; vectors go along when this
-// store's search row matches the file and they are of the backend, model and size the target's
-// settings embed with (never TF-IDF ones). The access log is not carried over: it records what a
-// person read, and stays out of the target.
+// target's index rows are built from the file, as a reindex builds them. No vectors go along, and
+// the target's own vectors for a moved entry are removed: nothing shows that a store's vectors were
+// embedded from the file as it is now, so the target embeds the moved entries itself (the report
+// counts them). The access log is not carried over: it records what a person read, and stays out
+// of the target.
 //
 // Each entry moves on its own, under the write locks of both stores (taken in one order, so two
 // moves in opposite directions cannot deadlock): the file is put into the target first, durably and
@@ -143,8 +143,6 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 		from:         from,
 		to:           to,
 		dryRun:       dryRun,
-		vectors:      hasChunkedVectors(from.db) && hasChunkedVectors(to.db),
-		active:       targetEmbedding(to),
 		inTarget:     map[string]bool{},
 		refusedNotes: map[string]bool{},
 		report: &MoveReport{
@@ -201,8 +199,6 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 type mover struct {
 	from, to     *FileStore
 	dryRun       bool
-	vectors      bool                // both stores have the chunked vectors table, so vector rows can be copied
-	active       *embeddingTuple     // what the target's settings embed with; nil when unknown
 	fromFiles    map[string][]string // the files of each listed id in this store, from a walk at the start
 	toFiles      map[string][]string // the same in the target
 	inTarget     map[string]bool     // notes in the target after this run (or, dry, that would be)
@@ -345,13 +341,8 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		m.refuse(e, kind, "%v", err)
 		return
 	}
-	plan, err := m.planRows(src, f)
-	if err != nil {
-		m.refuse(e, kind, "read the vectors: %v", err)
-		return
-	}
 	if m.dryRun {
-		m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath, rel))
+		m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, src.filepath, rel))
 		return
 	}
 
@@ -363,7 +354,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 			return
 		}
 	}
-	if err := m.writeTargetRows(f, rel, plan); err != nil {
+	if err := m.writeTargetRows(f, rel); err != nil {
 		if linked {
 			os.Remove(joinStore(m.to, rel))
 		}
@@ -386,7 +377,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
 		return
 	}
-	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath, rel))
+	m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, src.filepath, rel))
 }
 
 // finishFromTarget handles an entry whose rows are here but whose file is not: an earlier run put it
@@ -425,13 +416,8 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 		m.refuse(e, kind, "the target holds a different file for this id at %s, beside %s; compare them by hand", other, rel)
 		return
 	}
-	plan, err := m.planRows(src, f)
-	if err != nil {
-		m.refuse(e, kind, "read the vectors: %v", err)
-		return
-	}
 	if !m.dryRun {
-		if err := m.writeTargetRows(f, rel, plan); err != nil {
+		if err := m.writeTargetRows(f, rel); err != nil {
 			m.refuse(e, kind, "write the target's index: %v", err)
 			return
 		}
@@ -441,7 +427,7 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 			return
 		}
 	}
-	m.finish(e, kind, f.title, rel, "finished an earlier move", plan, m.leftovers(e.ID, kind, data, "", rel))
+	m.finish(e, kind, f.title, rel, "finished an earlier move", m.leftovers(e.ID, kind, data, "", rel))
 }
 
 // alreadyInTarget handles an entry the target's index lists and this store's does not. Its file in
@@ -513,11 +499,6 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 		m.refuse(e, kind, "%v", err)
 		return
 	}
-	plan, err := m.planRows(nil, f)
-	if err != nil {
-		m.refuse(e, kind, "read the vectors: %v", err)
-		return
-	}
 	note := "finished an earlier move: its file was missing in the target"
 	if !m.dryRun {
 		linked := false
@@ -527,7 +508,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 				return
 			}
 		}
-		if err := m.writeTargetRows(f, rel, plan); err != nil {
+		if err := m.writeTargetRows(f, rel); err != nil {
 			if linked {
 				os.Remove(joinStore(m.to, rel))
 			}
@@ -536,15 +517,13 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 		}
 		m.to.removeStaleTemps(kind, e.ID, rel)
 	}
-	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, "", rel))
+	m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, "", rel))
 }
 
 // finish reports an entry that is now in the target: moved, or left to clean up when something of
-// it stays in this store.
-func (m *mover) finish(e MoveID, kind, title, rel, note string, plan *rowPlan, problems []string) {
-	if plan.embed {
-		m.report.VectorsToEmbed++
-	}
+// it stays in this store. Either way the target has no vectors for it.
+func (m *mover) finish(e MoveID, kind, title, rel, note string, problems []string) {
+	m.report.VectorsToEmbed++
 	if len(problems) > 0 {
 		m.needsCleanup(e, kind, problems)
 		return

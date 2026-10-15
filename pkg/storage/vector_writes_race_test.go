@@ -9,7 +9,7 @@ import (
 // ─── Bulk vector writes and a move running meanwhile ──────────────────────────
 //
 // A backfill or a rebuild embeds every document first, which can take minutes, and writes the rows
-// after. A move that runs meanwhile takes an entry out of one store and into another, with its
+// after. Meanwhile a move can take an entry out of the store, and a note add can put one in with its
 // vectors.
 
 // hookEmbedder embeds like storageCountingEmbedder and, on the first batch after hook is set, runs
@@ -74,13 +74,14 @@ func TestIndexMissingVectors_LeavesOutAnEntryThatLeftWhileItWasEmbedded(t *testi
 	}
 }
 
-// An entry that comes in with its vectors while a rebuild embeds the others keeps them.
+// An entry that comes in with its vectors while a rebuild embeds the others (a note added meanwhile is
+// embedded as it is written) keeps them.
 func TestReindexVectors_KeepsTheVectorsOfAnEntryThatCameInMeanwhile(t *testing.T) {
 	store := setupTestStore(t)
 	old := addTaggedNote(t, store, "ops", "Old runbook", "text of the old runbook", "team")
 	emb := attachHookEmbedder(t, store)
 	var arrived string
-	emb.hook = func() { // a move brings an entry in, with its vectors
+	emb.hook = func() { // a note is added, and embedded, while the rebuild embeds the others
 		arrived = addTaggedNote(t, store, "misc", "Arrived checklist", "text of the arrived checklist", "team").ID
 	}
 
