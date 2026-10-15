@@ -203,13 +203,22 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 
 // GetSession retrieves a session by ID or ID prefix
 func (fs *FileStore) GetSession(id string) (*models.Session, error) {
-	// Try exact match first, then prefix match
+	return fs.GetSessionWithTags(id, nil)
+}
+
+// GetSessionWithTags is GetSession restricted to the sessions carrying every required tag. A
+// session without them is reported exactly as an absent id (the error names nothing but the given id); a
+// prefix is matched only among the tagged sessions, and the file's own tags are checked too.
+func (fs *FileStore) GetSessionWithTags(id string, required []string) (*models.Session, error) {
+	// Exact id or prefix; the smallest id wins an ambiguous prefix, as in GetNote
+	tagFilter, tagArgs := tagsWhere("tags", required)
 	var fpath string
 	err := fs.db.QueryRow(`
 		SELECT filepath FROM entries
-		WHERE (id = ? OR id LIKE ? || '%') AND type = 'session'
+		WHERE (id = ? OR id LIKE ? || '%') AND type = 'session'`+tagFilter+`
+		ORDER BY id
 		LIMIT 1`,
-		id, id,
+		append([]interface{}{id, id}, tagArgs...)...,
 	).Scan(&fpath)
 
 	if err == sql.ErrNoRows {
@@ -230,6 +239,9 @@ func (fs *FileStore) GetSession(id string) (*models.Session, error) {
 	session, err := ParseSessionMarkdown(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse session markdown: %w", err)
+	}
+	if !HasAllTags(session.Tags, required) {
+		return nil, fmt.Errorf("session not found: %s", id)
 	}
 
 	return session, nil
@@ -260,6 +272,9 @@ func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, erro
 		query += " AND date_str <= ?"
 		args = append(args, opts.EndDate)
 	}
+	tagFilter, tagArgs := tagsWhere("tags", opts.Tags)
+	query += tagFilter
+	args = append(args, tagArgs...)
 
 	// Order and limit
 	query += " ORDER BY date_str DESC, created DESC"
@@ -295,6 +310,9 @@ func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, erro
 		if err != nil {
 			continue
 		}
+		if !HasAllTags(session.Tags, opts.Tags) {
+			continue // a stale index row listed a tag the file no longer has: the file wins
+		}
 
 		sessions = append(sessions, session)
 	}
@@ -328,6 +346,9 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 		ftsQuery += " AND e.date_str <= ?"
 		args = append(args, opts.EndDate)
 	}
+	tagFilter, tagArgs := tagsWhere("e.tags", opts.Tags)
+	ftsQuery += tagFilter
+	args = append(args, tagArgs...)
 
 	// Order by relevance and limit
 	ftsQuery += " ORDER BY f.rank LIMIT 50"
@@ -359,6 +380,9 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 
 		session, err := ParseSessionMarkdown(data)
 		if err != nil {
+			continue
+		}
+		if !HasAllTags(session.Tags, opts.Tags) {
 			continue
 		}
 

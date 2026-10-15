@@ -6,12 +6,15 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var (
-	updateTitle   string
-	updateContent string
-	updateTags    string
+	updateTitle      string
+	updateContent    string
+	updateTags       string
+	updateAddTags    string
+	updateRemoveTags string
 )
 
 // noteUpdateCmd represents the note update command
@@ -22,13 +25,28 @@ var noteUpdateCmd = &cobra.Command{
 
 The note ID can be a full ID or a prefix (first 8 characters).
 
+--tags replaces the whole tag list. --add-tag and --remove-tag change only the
+tags named and keep the others; on their own they rewrite just the tags line of
+the note's file, so the content, the "updated" time and the embedding stay as
+they are. --tags cannot be combined with them.
+
 Examples:
   claudemem note update abc12345 --title "New Title"
   claudemem note update abc12345 --content "Updated content"
-  claudemem note update abc12345 --tags "newtag,updated"`,
+  claudemem note update abc12345 --tags "newtag,updated"
+  claudemem note update abc12345 --add-tag team --remove-tag personal`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
+		addTags := splitTagList(updateAddTags)
+		removeTags := splitTagList(updateRemoveTags)
+		tagEdit := len(addTags) > 0 || len(removeTags) > 0
+		if updateTags != "" && tagEdit {
+			return fmt.Errorf("--tags replaces the whole tag list; use it without --add-tag/--remove-tag")
+		}
+		if err := storage.ValidateTagEdit(addTags, removeTags); err != nil {
+			return err
+		}
 
 		// Get store
 		store, err := getStore()
@@ -40,6 +58,15 @@ Examples:
 		note, err := store.GetNote(id)
 		if err != nil {
 			return fmt.Errorf("failed to get note: %w", err)
+		}
+
+		// A tags-only edit rewrites just the tags, under the store lock
+		if tagEdit && updateTitle == "" && updateContent == "" {
+			res, err := store.EditTags("note", note.ID, addTags, removeTags, false)
+			if err != nil {
+				return fmt.Errorf("failed to update note tags: %w", err)
+			}
+			return printTagEdit(res)
 		}
 
 		// Track if anything changed
@@ -66,7 +93,10 @@ Examples:
 		}
 
 		if !changed {
-			return fmt.Errorf("no updates specified (use --title, --content, or --tags)")
+			return fmt.Errorf("no updates specified (use --title, --content, --tags, --add-tag or --remove-tag)")
+		}
+		if tagEdit {
+			note.Tags = storage.EditTagList(note.Tags, addTags, removeTags)
 		}
 
 		// Update timestamp
@@ -96,5 +126,7 @@ func init() {
 	noteCmd.AddCommand(noteUpdateCmd)
 	noteUpdateCmd.Flags().StringVar(&updateTitle, "title", "", "New title")
 	noteUpdateCmd.Flags().StringVar(&updateContent, "content", "", "New content")
-	noteUpdateCmd.Flags().StringVar(&updateTags, "tags", "", "New tags (comma-separated)")
+	noteUpdateCmd.Flags().StringVar(&updateTags, "tags", "", "New tags, replacing the current ones (comma-separated)")
+	noteUpdateCmd.Flags().StringVar(&updateAddTags, "add-tag", "", "Tags to add, keeping the others (comma-separated)")
+	noteUpdateCmd.Flags().StringVar(&updateRemoveTags, "remove-tag", "", "Tags to remove, keeping the others (comma-separated)")
 }

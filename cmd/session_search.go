@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	searchBranch    string
-	searchDateRange string
+	searchBranch      string
+	searchDateRange   string
+	sessionSearchTags string
 )
 
 var sessionSearchCmd = &cobra.Command{
@@ -36,6 +37,9 @@ Examples:
   # Search within a date range
   claudemem session search "refactor" --date-range 7d
 
+  # Only sessions carrying all these tags
+  claudemem session search "deploy" --tag team
+
   # Combine filters
   claudemem session search "database" --branch feature/db --date-range 30d`,
 	Args: cobra.ExactArgs(1),
@@ -47,6 +51,7 @@ func init() {
 
 	sessionSearchCmd.Flags().StringVar(&searchBranch, "branch", "", "Filter by branch")
 	sessionSearchCmd.Flags().StringVar(&searchDateRange, "date-range", "", "Filter by date range (START..END or 7d)")
+	sessionSearchCmd.Flags().StringVar(&sessionSearchTags, "tag", "", "Only sessions carrying all these tags (comma-separated)")
 }
 
 func runSessionSearch(cmd *cobra.Command, args []string) error {
@@ -61,6 +66,7 @@ func runSessionSearch(cmd *cobra.Command, args []string) error {
 	// Build options
 	opts := storage.SessionListOpts{
 		Branch: searchBranch,
+		Tags:   splitTagList(sessionSearchTags),
 	}
 
 	// Handle date range

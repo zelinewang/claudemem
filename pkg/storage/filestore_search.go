@@ -214,12 +214,10 @@ func (fs *FileStore) SearchWithOpts(opts SearchOpts) ([]SearchResult, error) {
 		args = append(args, opts.Category)
 	}
 
-	if len(opts.Tags) > 0 {
-		for _, tag := range opts.Tags {
-			sqlQuery += " AND e.tags LIKE ?"
-			args = append(args, "%"+tag+"%")
-		}
-	}
+	// Whole tags only: a substring LIKE let "team" match "team-old"
+	tagFilter, tagArgs := tagsWhere("e.tags", opts.Tags)
+	sqlQuery += tagFilter
+	args = append(args, tagArgs...)
 
 	if opts.After != "" {
 		sqlQuery += " AND e.date_str >= ?"

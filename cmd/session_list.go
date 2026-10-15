@@ -15,6 +15,7 @@ var (
 	listDateRange string
 	listBranch    string
 	listProject   string
+	listTags      string
 )
 
 var sessionListCmd = &cobra.Command{
@@ -41,6 +42,9 @@ Examples:
   # List sessions from a specific branch
   claudemem session list --branch feature/auth
 
+  # Only sessions carrying all these tags
+  claudemem session list --tag team
+
   # Combine filters
   claudemem session list --branch main --date-range 7d --last 5`,
 	RunE: runSessionList,
@@ -54,6 +58,7 @@ func init() {
 	sessionListCmd.Flags().StringVar(&listDateRange, "date-range", "", "Filter by date range (START..END or 7d)")
 	sessionListCmd.Flags().StringVar(&listBranch, "branch", "", "Filter by branch")
 	sessionListCmd.Flags().StringVar(&listProject, "project", "", "Filter by project path")
+	sessionListCmd.Flags().StringVar(&listTags, "tag", "", "Only sessions carrying all these tags (comma-separated)")
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
@@ -67,6 +72,7 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 	opts := storage.SessionListOpts{
 		Branch:  listBranch,
 		Project: listProject,
+		Tags:    splitTagList(listTags),
 		Limit:   listLast,
 	}
 

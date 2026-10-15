@@ -21,13 +21,19 @@ Examples:
   claudemem session get 12345678
 
   # Get session in JSON format
-  claudemem session get 12345678 --format json`,
+  claudemem session get 12345678 --format json
+
+  # Only if the session carries team; otherwise it reads as not found
+  claudemem session get 12345678 --tag team`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSessionGet,
 }
 
+var sessionGetTags string
+
 func init() {
 	sessionCmd.AddCommand(sessionGetCmd)
+	sessionGetCmd.Flags().StringVar(&sessionGetTags, "tag", "", "Only consider sessions carrying all these tags (comma-separated); others read as not found")
 }
 
 func runSessionGet(cmd *cobra.Command, args []string) error {
@@ -40,7 +46,7 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	// Get session
-	session, err := store.GetSession(id)
+	session, err := store.GetSessionWithTags(id, splitTagList(sessionGetTags))
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
