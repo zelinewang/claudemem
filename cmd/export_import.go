@@ -47,13 +47,14 @@ Examples:
 		defer tw.Close()
 
 		// Walk the store directory, skip .index/ (SQLite is rebuilt)
+		dir := getStoreDir()
 		fileCount := 0
-		err = filepath.Walk(storeDir, func(path string, info os.FileInfo, err error) error {
+		err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return nil
 			}
 
-			rel, _ := filepath.Rel(storeDir, path)
+			rel, _ := filepath.Rel(dir, path)
 
 			// Skip .index directory (SQLite index — rebuilt on import)
 			if strings.HasPrefix(rel, ".index") {
@@ -122,6 +123,7 @@ Examples:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		archiveFile := args[0]
+		dir := getStoreDir()
 
 		f, err := os.Open(archiveFile)
 		if err != nil {
@@ -156,11 +158,11 @@ Examples:
 				continue
 			}
 
-			targetPath := filepath.Join(storeDir, name)
+			targetPath := filepath.Join(dir, name)
 
 			// Security: ensure path doesn't escape store directory
 			absTarget, _ := filepath.Abs(targetPath)
-			absStore, _ := filepath.Abs(storeDir)
+			absStore, _ := filepath.Abs(dir)
 			if !strings.HasPrefix(absTarget, absStore) {
 				continue // skip paths that escape the store
 			}
