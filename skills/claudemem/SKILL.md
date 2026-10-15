@@ -70,6 +70,7 @@ claudemem tag apply --file tags.jsonl [--dry-run]   # bulk: {"id","kind":"note|s
 claudemem config set stores.read "~/team-memory"  # reads also return ~/team-memory's entries, each naming its store
 claudemem search "query" --read-stores ""         # this store alone, for one call
 claudemem --store ~/team-memory note append <id> "..."   # writes go to --store only: write where the entry lives
+claudemem move --to ~/team-memory --file ids.txt --dry-run   # then without --dry-run: moves the listed ids there, keeping them
 
 # Context
 claudemem context inject [--limit N] [--project path] [--tag X]  # Recent notes + sessions overview

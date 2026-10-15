@@ -152,6 +152,7 @@ claudemem tag apply --file tags.jsonl [--dry-run]   # bulk add/remove, see below
 # Several stores
 claudemem config set stores.read "~/team-memory"   # reads also return the entries of ~/team-memory
 claudemem search "query" --read-stores ""          # this store alone, for one call
+claudemem move --to ~/team-memory --file ids.txt [--dry-run]   # move entries there, keeping their ids
 
 # Embedding backend (pick one; no silent fallback)
 claudemem setup                              # interactive wizard: Local / Gemini / Voyage / OpenAI / TF-IDF
@@ -219,6 +220,25 @@ with a warning, and with a single store the output is what it always was. Ids ar
 entry lives in one store; if a copy sits in two, `get` shows the one met first (`--store`, then
 the listed order) and warns. The other commands (`graph`, `health`, `sync`, `export`,
 `reindex`, ...) work on `--store` alone.
+
+`claudemem move --to <store> --file <ids>` moves the listed notes and sessions from `--store` to
+another existing store, keeping each entry's id, its file (under the same name, or the next free
+`-N` name if another file holds it there) and its index rows: the entries row, the search row,
+the access log and the vectors. TF-IDF vectors stay behind, because they are built against one
+store's own corpus; the report counts the entries to embed with
+`claudemem --store <target> reindex --vectors --missing`. The ids file has one full id per line;
+blank lines and anything after a `#` are skipped, and the whole file is checked before anything
+moves.
+
+Each entry moves on its own under both stores' write locks: the file and the rows go to the
+target, then the entry leaves this store. A run that stops half way leaves every entry whole in
+one store or both, and running the same file again finishes it; two different files under one id
+are refused. Notes move before sessions, and a session moves only when every note it lists under
+Related Notes is in the target or moves in the same run, since a session file names its related
+notes by title. `--dry-run` changes nothing, and missing or refused entries make the exit code 1.
+With an add-only sync between machines, a moved file can come back from another machine's copy:
+move there too, or run the move again after the next pull, which removes a copy that came back
+when it is the same file.
 
 ## Search Backends
 

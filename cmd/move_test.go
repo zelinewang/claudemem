@@ -1,0 +1,180 @@
+package cmd
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zelinewang/claudemem/pkg/storage"
+)
+
+// ─── CLI tests for moving entries between stores ──────────────────────────────
+
+func writeIDs(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ids.txt")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func saveSessionWithRelatedCLI(t *testing.T, storePath, title, sessionID, related string) string {
+	t.Helper()
+	out := mustRunCLI(t, storePath, "session", "save", "--title", title, "--branch", "main", "--project", "proj",
+		"--session-id", sessionID, "--summary", "movekw "+title, "--related-notes", related, "--format", "json")
+	var res storage.SaveSessionResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil || res.Action != "created" {
+		t.Fatalf("session save %q: %v (%s)", title, err, out)
+	}
+	return res.SessionID
+}
+
+func TestCLI_Move(t *testing.T) {
+	from, to := t.TempDir(), t.TempDir()
+	note := addNoteCLI(t, from, "ops", "Team runbook", "movekw steps", "team")
+	keep := addNoteCLI(t, from, "life", "Holiday plan", "movekw beach", "personal")
+	session := saveSessionWithRelatedCLI(t, from, "Team review", "sid-team", note+":Team runbook:ops")
+	missing := "ffffffff-0000-0000-0000-000000000000"
+	ids := writeIDs(t, "# for the team store", session+"  # Team review", note, "", missing)
+
+	// a dry run reports, changes nothing, and fails on the missing id
+	out, err := runCLI(t, from, "move", "--to", to, "--file", ids, "--dry-run", "--format", "json")
+	if err == nil || !strings.Contains(err.Error(), "1 missing, 0 refused") {
+		t.Errorf("dry run error: %v", err)
+	}
+	var report storage.MoveReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("%v (%s)", err, out)
+	}
+	if !report.DryRun || len(report.Moved) != 2 || report.Moved[0].ID != note || report.Moved[1].ID != session ||
+		len(report.Missing) != 1 || report.Missing[0].Line != 5 {
+		t.Errorf("dry run report %+v", report)
+	}
+	if _, err := runCLI(t, to, "note", "get", note); err == nil {
+		t.Error("the dry run moved the note")
+	}
+
+	out, err = runCLI(t, from, "move", "--to", to, "--file", ids)
+	if err == nil || !strings.Contains(err.Error(), "1 missing, 0 refused") {
+		t.Errorf("move error: %v", err)
+	}
+	header := "move: 3 ids from " + displayStoreName(from) + " to " + displayStoreName(to) + ": 2 moved, 0 already in the target, 1 missing, 0 refused"
+	if !strings.Contains(out, header) || !strings.Contains(out, "moved note "+note+` "Team runbook" -> notes/ops/team-runbook.md`) ||
+		!strings.Contains(out, "missing, line 5: "+missing) {
+		t.Errorf("move report:\n%s", out)
+	}
+
+	// the target holds them under their ids, this store does not
+	if got := noteJSON(t, to, note); got["id"] != note || got["content"] != "movekw steps" {
+		t.Errorf("the moved note in the target: %v", got)
+	}
+	var moved struct {
+		ID           string `json:"id"`
+		RelatedNotes []struct {
+			ID string `json:"id"`
+		} `json:"related_notes"`
+	}
+	if err := json.Unmarshal([]byte(mustRunCLI(t, to, "session", "get", session, "--format", "json")), &moved); err != nil ||
+		moved.ID != session || len(moved.RelatedNotes) != 1 || moved.RelatedNotes[0].ID != note {
+		t.Errorf("the moved session in the target: %+v (%v)", moved, err)
+	}
+	for _, args := range [][]string{{"note", "get", note}, {"session", "get", session}} {
+		if _, err := runCLI(t, from, args...); err == nil {
+			t.Errorf("%v still finds the entry in this store", args)
+		}
+	}
+	if got := noteJSON(t, from, keep); got["id"] != keep {
+		t.Errorf("a note not listed moved: %v", got)
+	}
+
+	// a store that reads the target still finds them, named by the target
+	mustRunCLI(t, from, "config", "set", readStoresKey, to)
+	_, stores := entryStores(t, mustRunCLI(t, from, "search", "movekw", "--format", "json"))
+	if stores[note] != displayStoreName(to) || stores[session] != displayStoreName(to) || stores[keep] != displayStoreName(from) {
+		t.Errorf("search after the move: %v", stores)
+	}
+
+	// the same file again changes nothing
+	out, _ = runCLI(t, from, "move", "--to", to, "--file", ids, "--format", "json")
+	report = storage.MoveReport{}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("%v (%s)", err, out)
+	}
+	if len(report.Moved) != 0 || len(report.AlreadyInTarget) != 2 || len(report.Missing) != 1 {
+		t.Errorf("second run %+v", report)
+	}
+}
+
+func TestCLI_MoveRefusals(t *testing.T) {
+	from, to := t.TempDir(), t.TempDir()
+	note := addNoteCLI(t, from, "life", "Private detail", "x", "personal")
+	session := saveSessionWithRelatedCLI(t, from, "Mixed review", "sid-mixed", note[:8]+":Private detail:life")
+
+	// a session whose related note stays here is refused, and stays
+	out, err := runCLI(t, from, "move", "--to", to, "--file", writeIDs(t, session))
+	if err == nil || !strings.Contains(err.Error(), "0 missing, 1 refused") || !strings.Contains(out, "refused, line 1: session "+session+": it lists the related note") {
+		t.Errorf("a session with a note that stays: %v\n%s", err, out)
+	}
+	if _, err := runCLI(t, from, "session", "get", session); err != nil {
+		t.Errorf("the refused session left: %v", err)
+	}
+
+	ids := writeIDs(t, note)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"move", "--to", from, "--file", ids}, "this store itself"},
+		{[]string{"move", "--to", filepath.Join(to, "nope"), "--file", ids}, "not found"},
+		{[]string{"move", "--to", "relative/dir", "--file", ids}, "must be absolute"},
+		{[]string{"move", "--file", ids}, "needs --to"},
+		{[]string{"move", "--to", to}, "needs --to"},
+		{[]string{"move", "--to", to, "--file", writeIDs(t, note, note+" extra", note)}, "2 invalid lines, nothing moved"},
+	} {
+		if _, err := runCLI(t, from, tc.args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v, want %q", tc.args, err, tc.want)
+		}
+	}
+	if got := noteJSON(t, from, note); got["id"] != note {
+		t.Errorf("a refused run moved the note: %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(to, "nope")); !os.IsNotExist(err) {
+		t.Errorf("a missing target was created: %v", err)
+	}
+}
+
+func TestCLI_MoveReadsStdinAndHomePaths(t *testing.T) {
+	from := t.TempDir()
+	note := addNoteCLI(t, from, "ops", "Piped note", "x", "team")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString(note + "\n")
+	w.Close()
+	orig := os.Stdin
+	os.Stdin = r
+	to := t.TempDir()
+	out := mustRunCLI(t, from, "move", "--to", to, "--file", "-")
+	os.Stdin = orig
+	if !strings.Contains(out, "1 moved") {
+		t.Errorf("--file -:\n%s", out)
+	}
+
+	// --to takes a ~/ path (a child process, for its own home)
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "team"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	other := addNoteCLI(t, from, "ops", "Home note", "y", "team")
+	out, err = runCLIChild(t, home, "--store", from, "move", "--to", "~/team", "--file", writeIDs(t, other))
+	if err != nil || !strings.Contains(out, " to ~/team: 1 moved") {
+		t.Errorf("--to ~/team: %v\n%s", err, out)
+	}
+	if got := noteJSON(t, filepath.Join(home, "team"), other); got["id"] != other {
+		t.Errorf("the note in ~/team: %v", got)
+	}
+}

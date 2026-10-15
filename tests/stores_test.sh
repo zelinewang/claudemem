@@ -1,8 +1,10 @@
 #!/bin/bash
-# claudemem — black-box tests for a store that reads other stores.
+# claudemem — black-box tests for a store that reads other stores, and for moving entries between
+# stores.
 #
 # Checks, through the CLI on throwaway stores, that read commands return the entries of every store
-# read and name their store, that writes stay in --store, and the stores.read / --read-stores rules.
+# read and name their store, that writes stay in --store, the stores.read / --read-stores rules, and
+# that move keeps ids, refuses a session whose related note stays, and can be run again.
 # Run: make build && bash tests/stores_test.sh   (or BINARY=/path/to/claudemem bash ...)
 # REQUIREMENTS: the claudemem binary, python3. Uses a temp directory only.
 
@@ -140,6 +142,49 @@ CNT=$(CP search bbkw --type note --format json | json "len(d)")
 [ "$GOT" = "~/mem" ] && [ "$CNT" = "2" ] && pass "~/ is the home directory, named ~; a store listed twice is read once" \
     || fail "~/ and repeats" "store=[$GOT] count=[$CNT]"
 CP config set stores.read "$S" >/dev/null
+
+echo ""
+echo "7. move"
+MF="$WORK/move-from"
+MT="$WORK/move-to"
+mkdir -p "$MF" "$MT"
+CF() { C --store "$MF" "$@"; }
+CT() { C --store "$MT" "$@"; }
+M_TEAM=$(CF note add ops --title "Team runbook" --content "mvkw steps" --tags team --format json | json "d['note_id']")
+M_KEEP=$(CF note add life --title "Holiday plan" --content "mvkw beach" --tags personal --format json | json "d['note_id']")
+M_SESS=$(CF session save --title "Team review" --branch main --project p --session-id sid-mv --summary "mvkw review" --related-notes "$M_TEAM:Team runbook:ops" --format json | json "d['session_id']")
+M_MIXED=$(CF session save --title "Mixed review" --branch main --project p --session-id sid-mx --summary "mvkw mixed" --related-notes "${M_KEEP:0:8}:Holiday plan:life" --format json | json "d['session_id']")
+printf '# entries for the target\n%s  # Team review\n%s\n%s\n' "$M_SESS" "$M_TEAM" "$M_MIXED" > "$WORK/move-ids.txt"
+FILES_BEFORE=$(find "$MF" "$MT" -type f -name '*.md' | sort)
+OUT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" --dry-run --format json 2>/dev/null)
+GOT=$(json "'%d moved, %d refused, dry run %s' % (len(d['moved']), len(d['refused']), d['dry_run'])" <<<"$OUT")
+TARGET_NOTES=$(CT stats --format json | json "d['total_notes']")
+if [ "$GOT" = "2 moved, 1 refused, dry run True" ] && [ "$FILES_BEFORE" = "$(find "$MF" "$MT" -type f -name '*.md' | sort)" ] && [ "$TARGET_NOTES" = "0" ]; then
+    pass "move --dry-run reports two to move and the mixed session refused, and changes nothing"
+else
+    fail "move --dry-run" "[$GOT] target notes=[$TARGET_NOTES]"
+fi
+OUT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" 2>&1); CODE=$?
+if [ "$CODE" = "1" ] && grep -q ": 2 moved, 0 already in the target, 0 missing, 1 refused" <<<"$OUT" \
+    && grep -qF "refused, line 4: session $M_MIXED: it lists the related note" <<<"$OUT"; then
+    pass "move moves the note and its session, refuses the session whose related note stays, exit 1"
+else
+    fail "move" "exit=$CODE $OUT"
+fi
+GOT=$(CT note get "$M_TEAM" --format json | json "d['id'] + '|' + d['content']")
+if [ "$GOT" = "$M_TEAM|mvkw steps" ] && ! CF note get "$M_TEAM" >/dev/null 2>&1 && CF note get "$M_KEEP" >/dev/null 2>&1; then
+    pass "the moved note is in the target under its id and gone from the source; the other note stayed"
+else
+    fail "moved note" "[$GOT]"
+fi
+GOT=$(CT session get "$M_SESS" --format json | json "d['related_notes'][0]['id']")
+[ "$GOT" = "$M_TEAM" ] && pass "the moved session keeps its related note" || fail "moved session" "[$GOT]"
+GOT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" --format json 2>/dev/null | json "'%d/%d/%d' % (len(d['moved']), len(d['already_in_target']), len(d['refused']))")
+[ "$GOT" = "0/2/1" ] && pass "running the same file again moves nothing more" || fail "second move" "[$GOT]"
+CF config set stores.read "$MT" >/dev/null
+GOT=$(CF search mvkw --type note --format json | json "' '.join(sorted(e['title'] + '@' + e['store'] for e in d))")
+[ "$GOT" = "Holiday plan@$MF Team runbook@$MT" ] && pass "a store that reads the target finds the moved note, named by the target" \
+    || fail "search after the move" "[$GOT]"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
