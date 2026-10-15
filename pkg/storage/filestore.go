@@ -208,8 +208,7 @@ func (fs *FileStore) Close() error {
 
 // DB returns the underlying *sql.DB for use by health / repair tools that
 // need to run custom queries without threading them through FileStore.
-// Kept intentionally read-write so the repair command can DELETE orphan
-// rows directly — but callers SHOULD prefer FileStore methods when one exists.
+// Writes go through FileStore methods, which take the store lock.
 func (fs *FileStore) DB() *sql.DB { return fs.db }
 
 // NotesDir returns the filesystem path where markdown notes live.

@@ -11,5 +11,10 @@ func (fs *FileStore) lockStore() (func(), error) {
 	if fs.readOnly {
 		return nil, fmt.Errorf("this store is open only for reading; writes go to --store")
 	}
+	return LockStoreDir(fs.baseDir)
+}
+
+// LockStoreDir is a no-op on Windows, like lockStore.
+func LockStoreDir(dir string) (func(), error) {
 	return func() {}, nil
 }

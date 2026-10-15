@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/config"
+	"github.com/zelinewang/claudemem/pkg/storage"
 	"github.com/zelinewang/claudemem/pkg/sync"
 )
 
@@ -38,7 +39,7 @@ var syncInitCmd = &cobra.Command{
 	Short: "Initialize git repo at ~/.claudemem and set remote",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		g := sync.NewGitSync(getStoreDir())
+		g := newGitSync()
 		remote := ""
 		if len(args) == 1 {
 			remote = args[0]
@@ -71,7 +72,7 @@ var syncPushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "Commit new/changed markdown and push to remote",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		g := sync.NewGitSync(getStoreDir())
+		g := newGitSync()
 		msg, _ := cmd.Flags().GetString("message")
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		if err := g.Push(msg); err != nil {
@@ -89,7 +90,7 @@ var syncPullCmd = &cobra.Command{
 	Short: "Pull markdown from remote; rebuild local FTS + embed missing vectors",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		quiet, _ := cmd.Flags().GetBool("quiet")
-		g := sync.NewGitSync(getStoreDir())
+		g := newGitSync()
 		if err := g.Pull(); err != nil {
 			return syncCommandError("pull", quiet, err)
 		}
@@ -137,6 +138,15 @@ var syncPullCmd = &cobra.Command{
 	},
 }
 
+// newGitSync is the git sync of the store; it holds the store's write lock while git writes the
+// store's files.
+func newGitSync() *sync.GitSync {
+	dir := getStoreDir()
+	g := sync.NewGitSync(dir)
+	g.LockWrites = func() (func(), error) { return storage.LockStoreDir(dir) }
+	return g
+}
+
 func syncCommandError(action string, quiet bool, err error) error {
 	if err == nil {
 		return nil
@@ -151,7 +161,7 @@ var syncStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show git status + health of the local memory store",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		g := sync.NewGitSync(getStoreDir())
+		g := newGitSync()
 		status, err := newSyncStatusPayload(g, getStoreDir())
 		if err != nil {
 			return err

@@ -245,7 +245,9 @@ checked before anything moves.
 
 Each entry moves on its own under both stores' write locks: its file goes into the target first,
 synced and never over another file, then its index rows (committed with a full sync), and only then
-does the entry leave this store. A run that stops half way leaves every entry whole in one store or
+does the entry leave this store. Every other writer of a store's files or index takes the same lock,
+so none runs in the middle of an entry: note and session writes, `reindex`, `repair`, `import`,
+`session repair --apply` and the git steps of `sync` that change files. A run that stops half way leaves every entry whole in one store or
 both, and running the same file again finishes it, also from a file left in the target without
 rows. Two different files under one id (anywhere in the target), a file reached through a symlink
 between the two stores, a stale row in the target, stores that overlap and an index written by a

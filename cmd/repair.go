@@ -133,20 +133,9 @@ func runRepair(cmd *cobra.Command, args []string) error {
 	// which violates the "no silent fallback" rule for the repair path.
 	if report.DidDeepCheck && !report.I4NoOrphanRows {
 		if confirmRepair(reader, "Delete orphan FTS / vector rows?") {
-			var removed int
-			ftsResult, err := fileStore.DB().Exec(`DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM entries)`)
+			removed, err := fileStore.RemoveOrphanRows()
 			if err != nil {
-				return fmt.Errorf("delete orphan FTS rows: %w", err)
-			}
-			if n, _ := ftsResult.RowsAffected(); n > 0 {
-				removed += int(n)
-			}
-			vecResult, err := fileStore.DB().Exec(`DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`)
-			if err != nil {
-				return fmt.Errorf("delete orphan vector rows: %w", err)
-			}
-			if n, _ := vecResult.RowsAffected(); n > 0 {
-				removed += int(n)
+				return err
 			}
 			OutputText("  ✓ Removed %d orphan rows", removed)
 			repairs++

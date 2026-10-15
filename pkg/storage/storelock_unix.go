@@ -10,12 +10,6 @@ import (
 	"time"
 )
 
-// lockTimeout bounds how long a writer waits for the store lock. A bare LOCK_EX would block forever
-// with no output while another process holds the lock (review of PR #22, round 1, P2-3); it also
-// turned an accidental re-entry — the lock is a flock and is NOT reentrant — into a silent hang
-// (P2-2). With a bound, both become a loud error naming the lock file. Overridable for tests.
-var lockTimeout = 60 * time.Second
-
 // lockStore takes the store-wide exclusive write lock and returns the function that releases it.
 //
 // Every mutating path (AddNote, UpdateNote, DeleteNote, SaveSession) is a read-modify-write on
@@ -39,7 +33,15 @@ func (fs *FileStore) lockStore() (func(), error) {
 	if fs.readOnly {
 		return nil, fmt.Errorf("this store is open only for reading; writes go to --store")
 	}
-	path := filepath.Join(fs.baseDir, ".write.lock")
+	return LockStoreDir(fs.baseDir)
+}
+
+// LockStoreDir takes the write lock of the store in dir, the same lock the store's own writes and a
+// move take. It is for a writer that changes the store's files without going through the store, such
+// as git sync and import. While holding it, the caller must not call a store method that writes: the
+// lock is not reentrant, and that call would wait out lockTimeout and fail.
+func LockStoreDir(dir string) (func(), error) {
+	path := filepath.Join(dir, ".write.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open store lock %s: %w", path, err)

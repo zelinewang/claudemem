@@ -230,6 +230,11 @@ func (fs *FileStore) PruneStaleVectors() (map[string]int, error) {
 	if fs.vectorStore == nil {
 		return nil, fmt.Errorf("no active embedding backend (vector store not initialized)")
 	}
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	return fs.vectorStore.PruneInactiveBackends()
 }
 

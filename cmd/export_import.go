@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var exportCmd = &cobra.Command{
@@ -137,49 +138,19 @@ Examples:
 		}
 		defer gz.Close()
 
-		tr := tar.NewReader(gz)
-		fileCount := 0
-
-		for {
-			header, err := tr.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return fmt.Errorf("failed to read tar: %w", err)
-			}
-
-			// Strip the "claudemem/" prefix from archive paths
-			name := header.Name
-			if strings.HasPrefix(name, "claudemem/") {
-				name = strings.TrimPrefix(name, "claudemem/")
-			}
-			if name == "" || name == "." {
-				continue
-			}
-
-			targetPath := filepath.Join(dir, name)
-
-			// Security: ensure path doesn't escape store directory
-			absTarget, _ := filepath.Abs(targetPath)
-			absStore, _ := filepath.Abs(dir)
-			if !strings.HasPrefix(absTarget, absStore) {
-				continue // skip paths that escape the store
-			}
-
-			switch header.Typeflag {
-			case tar.TypeDir:
-				os.MkdirAll(targetPath, 0700)
-			case tar.TypeReg:
-				os.MkdirAll(filepath.Dir(targetPath), 0700)
-				outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-				if err != nil {
-					continue
-				}
-				io.Copy(outFile, tr)
-				outFile.Close()
-				fileCount++
-			}
+		// The files go in under the store's write lock, so that no other writer (a move above all)
+		// works on files while the archive replaces them.
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+		unlock, err := storage.LockStoreDir(dir)
+		if err != nil {
+			return err
+		}
+		fileCount, err := extractArchive(tar.NewReader(gz), dir)
+		unlock()
+		if err != nil {
+			return err
 		}
 
 		// Rebuild the SQLite index from imported markdown files
@@ -208,6 +179,54 @@ Examples:
 		OutputText("  Run 'claudemem stats' to verify.")
 		return nil
 	},
+}
+
+// extractArchive writes the files of an export archive into the store directory dir and returns how
+// many it wrote.
+func extractArchive(tr *tar.Reader, dir string) (int, error) {
+	fileCount := 0
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fileCount, fmt.Errorf("failed to read tar: %w", err)
+		}
+
+		// Strip the "claudemem/" prefix from archive paths
+		name := header.Name
+		if strings.HasPrefix(name, "claudemem/") {
+			name = strings.TrimPrefix(name, "claudemem/")
+		}
+		if name == "" || name == "." {
+			continue
+		}
+
+		targetPath := filepath.Join(dir, name)
+
+		// Security: ensure path doesn't escape store directory
+		absTarget, _ := filepath.Abs(targetPath)
+		absStore, _ := filepath.Abs(dir)
+		if !strings.HasPrefix(absTarget, absStore) {
+			continue // skip paths that escape the store
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			os.MkdirAll(targetPath, 0700)
+		case tar.TypeReg:
+			os.MkdirAll(filepath.Dir(targetPath), 0700)
+			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+			if err != nil {
+				continue
+			}
+			io.Copy(outFile, tr)
+			outFile.Close()
+			fileCount++
+		}
+	}
+	return fileCount, nil
 }
 
 func init() {

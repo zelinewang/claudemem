@@ -250,8 +250,14 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 	return result, nil
 }
 
-// RepairIntegrity removes orphaned DB entries
+// RepairIntegrity removes orphaned DB entries, under the store lock: between a move's rows and its
+// file, the moved entry looks orphaned.
 func (fs *FileStore) RepairIntegrity() (int, error) {
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 	result, err := fs.VerifyIntegrity()
 	if err != nil {
 		return 0, err
@@ -301,7 +307,19 @@ type OrphanEntry struct {
 
 // Reindex rebuilds the SQLite index from markdown files on disk.
 // Used after import to populate the search index.
+//
+// It takes the store lock, like every other writer: a reindex that ran between a move's rows and its
+// file would rebuild the index without the moved entry, and the move would report it moved.
 func (fs *FileStore) Reindex() (int, error) {
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	return fs.reindexLocked()
+}
+
+func (fs *FileStore) reindexLocked() (int, error) {
 	tx, err := fs.db.Begin()
 	if err != nil {
 		return 0, err
@@ -423,6 +441,30 @@ func (fs *FileStore) Reindex() (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// RemoveOrphanRows deletes the search and vector rows whose entry is gone, under the store lock, and
+// returns how many it removed.
+func (fs *FileStore) RemoveOrphanRows() (int, error) {
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	removed := 0
+	for _, del := range []struct{ what, stmt string }{
+		{"FTS", `DELETE FROM memory_fts WHERE id NOT IN (SELECT id FROM entries)`},
+		{"vector", `DELETE FROM vectors WHERE doc_id NOT IN (SELECT id FROM entries)`},
+	} {
+		res, err := fs.db.Exec(del.stmt)
+		if err != nil {
+			return removed, fmt.Errorf("delete orphan %s rows: %w", del.what, err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			removed += int(n)
+		}
+	}
+	return removed, nil
 }
 
 // resolveDuplicateEntry handles two files claiming the same uuid during a

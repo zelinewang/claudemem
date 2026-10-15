@@ -72,65 +72,21 @@ func runSessionRepair(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			OutputText("no sessions directory at %s — nothing to repair", sessionsDir)
-			return nil
-		}
-		return fmt.Errorf("read sessions dir: %w", err)
-	}
-
-	scanned := 0
-	var results []sessionRepairFileResult
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasPrefix(e.Name(), "._") {
-			continue
-		}
-		scanned++
-		path := filepath.Join(sessionsDir, e.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		repaired, changes := storage.RepairSessionMarkdown(string(data))
-		if len(changes) == 0 {
-			continue
-		}
-		results = append(results, sessionRepairFileResult{
-			name:     e.Name(),
-			changes:  changes,
-			original: string(data),
-			repaired: repaired,
-		})
-	}
-
-	printSessionRepairReport(results, scanned, sessionRepairApply)
-
-	if !sessionRepairApply || len(results) == 0 {
-		if sessionRepairApply {
-			OutputText("nothing to repair — no files written, no backup created")
-		}
-		return nil
-	}
-
-	if err := os.MkdirAll(sessionRepairBackupDir, 0o755); err != nil {
-		return fmt.Errorf("create backup dir: %w", err)
-	}
-	for _, r := range results {
-		src := filepath.Join(sessionsDir, r.name)
-		info, err := os.Stat(src)
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", src, err)
-		}
-		if err := os.WriteFile(filepath.Join(sessionRepairBackupDir, r.name), []byte(r.original), info.Mode()); err != nil {
-			return fmt.Errorf("backup %s: %w", r.name, err)
-		}
-		if err := os.WriteFile(src, []byte(r.repaired), info.Mode()); err != nil {
-			return fmt.Errorf("write %s: %w", src, err)
+	// In a store, --apply holds the store's write lock from the scan to the last write, so that no
+	// writer changes a session between them; a move that took one out in between would see it
+	// written back. The index is rebuilt after the lock is released (the rebuild takes it itself).
+	unlock := func() {}
+	if sessionRepairApply && storage.IsStoreDir(getStoreDir()) {
+		var err error
+		if unlock, err = storage.LockStoreDir(getStoreDir()); err != nil {
+			return err
 		}
 	}
-	OutputText("applied: %d file(s) repaired, originals backed up to %s", len(results), sessionRepairBackupDir)
+	wrote, err := repairSessionFiles(sessionsDir)
+	unlock()
+	if err != nil || !wrote {
+		return err
+	}
 
 	// Index coherence: markdown is the source of truth and the SQLite FTS5
 	// index is a regenerable cache — rebuild it so search sees the repaired
@@ -154,6 +110,71 @@ func runSessionRepair(cmd *cobra.Command, args []string) error {
 	}
 	OutputText("search index rebuilt: %d entries reindexed", count)
 	return nil
+}
+
+// repairSessionFiles scans the session files, prints the report and, with --apply, backs up and
+// rewrites the repairable ones. It reports whether it wrote any.
+func repairSessionFiles(sessionsDir string) (bool, error) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			OutputText("no sessions directory at %s — nothing to repair", sessionsDir)
+			return false, nil
+		}
+		return false, fmt.Errorf("read sessions dir: %w", err)
+	}
+
+	scanned := 0
+	var results []sessionRepairFileResult
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || strings.HasPrefix(e.Name(), "._") {
+			continue
+		}
+		scanned++
+		path := filepath.Join(sessionsDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return false, fmt.Errorf("read %s: %w", path, err)
+		}
+		repaired, changes := storage.RepairSessionMarkdown(string(data))
+		if len(changes) == 0 {
+			continue
+		}
+		results = append(results, sessionRepairFileResult{
+			name:     e.Name(),
+			changes:  changes,
+			original: string(data),
+			repaired: repaired,
+		})
+	}
+
+	printSessionRepairReport(results, scanned, sessionRepairApply)
+
+	if !sessionRepairApply || len(results) == 0 {
+		if sessionRepairApply {
+			OutputText("nothing to repair — no files written, no backup created")
+		}
+		return false, nil
+	}
+
+	if err := os.MkdirAll(sessionRepairBackupDir, 0o755); err != nil {
+		return false, fmt.Errorf("create backup dir: %w", err)
+	}
+	for _, r := range results {
+		src := filepath.Join(sessionsDir, r.name)
+		info, err := os.Stat(src)
+		if err != nil {
+			return true, fmt.Errorf("stat %s: %w", src, err)
+		}
+		if err := os.WriteFile(filepath.Join(sessionRepairBackupDir, r.name), []byte(r.original), info.Mode()); err != nil {
+			return true, fmt.Errorf("backup %s: %w", r.name, err)
+		}
+		if err := os.WriteFile(src, []byte(r.repaired), info.Mode()); err != nil {
+			return true, fmt.Errorf("write %s: %w", src, err)
+		}
+	}
+	OutputText("applied: %d file(s) repaired, originals backed up to %s", len(results), sessionRepairBackupDir)
+	return true, nil
 }
 
 // printSessionRepairReport renders the per-file, per-line before/after report
