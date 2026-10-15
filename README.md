@@ -257,8 +257,10 @@ or another alias between the two stores (a bind mount: one file in one directory
 paths), a stale row in the target, stores that overlap and an index written by a newer claudemem are
 refused; a hard link in another directory is allowed, since removing one name leaves the other. Notes move before sessions, and a session moves only when every note it
 lists under its Related Notes sections is in the target or moves in the same run, since a session
-file names its related notes by title; a line there without a note id, an id shorter than 8
-characters or one that matches several notes keeps the session where it is. A note counts as in a
+file names its related notes by title. A Related Notes section is one under any heading with that
+title, at any level, in any case and with or without a colon; a line there without a note id, a ref
+in backticks that is no note id, an id shorter than 8 characters or one that matches several notes
+keeps the session where it is. A note counts as in a
 store when its index lists it or one of its note files holds it, and a note this run refused stays
 here with its sessions; a note that neither store holds is only a warning, since the link is dead in
 both. `--dry-run` opens both stores read-only and changes nothing in either. Missing and refused entries, and entries left to clean up (in the target, with a different

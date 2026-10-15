@@ -424,6 +424,25 @@ func TestMoveEntries_ReadsRelatedNotesFromTheFile(t *testing.T) {
 		{"a ref that names two notes", "matches several notes", func(private, shared *models.Note) string {
 			return "## Related Notes\n- `abcdef12` — \"Twins\" (ops)"
 		}},
+		// a hand edit can leave the notes under a heading the session parser no longer reads
+		{"a heading with a trailing space", "stays in this store", func(private, shared *models.Note) string {
+			return "## Related Notes \n- `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a heading with a colon", "stays in this store", func(private, shared *models.Note) string {
+			return "## Related notes:\n- `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a heading of another level", "stays in this store", func(private, shared *models.Note) string {
+			return "### Related Notes\n- `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a heading indented and closed", "stays in this store", func(private, shared *models.Note) string {
+			return "  #  related   NOTES  #\n- `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a deeper heading inside the section", "names no note", func(private, shared *models.Note) string {
+			return "## Related Notes\n- `" + shared.ID + "` — \"Shared\" (ops)\n### Private\n- `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a ref in backticks that is no id", "is no note id", func(private, shared *models.Note) string {
+			return "## Related Notes\n- `Private detail notes` — \"Private detail\" (ops)"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			from, to := moveStores(t)
@@ -719,5 +738,44 @@ func TestMoveEntries_ReadOnlyStoresOnlyForADryRun(t *testing.T) {
 	}
 	if report, err := MoveEntries(from, ro, moveIDs(note.ID), true, nil); err != nil || len(report.Moved) != 1 {
 		t.Errorf("a dry run into a store opened read-only: %+v %v", report, err)
+	}
+}
+
+func TestMarkdownHeadingAndNoteIDForms(t *testing.T) {
+	for _, tc := range []struct {
+		line  string
+		level int
+		text  string
+	}{
+		{"## Related Notes", 2, "Related Notes"},
+		{"## Related Notes \r", 2, "Related Notes"},
+		{"   ###### Deep ##", 6, "Deep"},
+		{"## C#", 2, "C#"},
+		{"#", 1, ""},
+		{"    ## indented four spaces", 0, ""},
+		{"#hashtag", 0, ""},
+		{"####### seven", 0, ""},
+		{"- `id` — \"title\"", 0, ""},
+	} {
+		if level, text := markdownHeading(tc.line); level != tc.level || text != tc.text {
+			t.Errorf("markdownHeading(%q) = %d %q, want %d %q", tc.line, level, text, tc.level, tc.text)
+		}
+	}
+	for title, want := range map[string]bool{
+		"Related Notes": true, "related notes:": true, "RELATED  NOTES :": true,
+		"Related": false, "Related Notes and more": false, "Related Note": false,
+	} {
+		if got := isRelatedNotesTitle(title); got != want {
+			t.Errorf("isRelatedNotesTitle(%q) = %v", title, got)
+		}
+	}
+	for ref, want := range map[string]bool{
+		"abcdef12": true, "abcdef12-0000": true, "eeeeeeee-0000-0000-0000-000000000000": true,
+		"ABCDEF12": false, "abcdefgh": false, "abcdef12-": true, "abcdef120": false,
+		"eeeeeeee-0000-0000-0000-0000000000000": false, "Private detail notes": false,
+	} {
+		if got := looksLikeNoteID(ref); got != want {
+			t.Errorf("looksLikeNoteID(%q) = %v", ref, got)
+		}
 	}
 }

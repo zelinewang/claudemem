@@ -169,6 +169,8 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 			}
 		}
 		switch {
+		case len(ids) == 0 && !looksLikeNoteID(rn.ID):
+			return fmt.Sprintf("its Related Notes line %q names %q in backticks, which is no note id; fix or remove the line first", item, rn.ID)
 		case len(ids) == 0:
 			m.warn("session %s lists the related note %s (%q), which is in neither store", sessionID, rn.ID, rn.Title)
 			continue
@@ -191,19 +193,29 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 }
 
 // relatedNoteItems returns the list items of every Related Notes section of a session file, or the
-// first line there that is not part of one.
+// first line there that is not part of one. A Related Notes section is one under any Markdown heading
+// with that title, at any level, in any case and with a closing colon: a hand edit can leave the notes
+// listed under a heading the session parser no longer reads. The section ends at the next heading of
+// its level or above; a deeper heading inside it is returned as a line that is not part of it.
 func relatedNoteItems(data []byte) (items []string, bad string) {
 	_, rest, _, err := splitFrontmatter(string(data))
 	if err != nil {
 		return nil, ""
 	}
-	inSection := false
+	sectionLevel := 0 // of the Related Notes heading above; 0 outside such a section
 	for _, line := range strings.Split(strings.TrimPrefix(rest, "\n---\n"), "\n") {
-		if strings.HasPrefix(line, "## ") {
-			inSection = strings.ToLower(strings.TrimPrefix(line, "## ")) == "related notes"
+		if level, title := markdownHeading(line); level > 0 {
+			switch {
+			case isRelatedNotesTitle(title):
+				sectionLevel = level
+			case sectionLevel > 0 && level > sectionLevel:
+				return nil, line
+			default:
+				sectionLevel = 0
+			}
 			continue
 		}
-		if !inSection {
+		if sectionLevel == 0 {
 			continue
 		}
 		trimmed := strings.TrimSpace(line)
@@ -218,6 +230,60 @@ func relatedNoteItems(data []byte) (items []string, bad string) {
 		}
 	}
 	return items, ""
+}
+
+// markdownHeading returns the level and text of a Markdown ATX heading: up to three spaces, one to
+// six #, then a space or the end of the line, with a closing run of # dropped. It returns 0 for any
+// other line.
+func markdownHeading(line string) (int, string) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return 0, ""
+	}
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 {
+		return 0, ""
+	}
+	text := trimmed[level:]
+	if text != "" && !strings.ContainsAny(text[:1], " \t\r") {
+		return 0, ""
+	}
+	text = strings.TrimSpace(text)
+	if open := strings.TrimRight(text, "#"); open != text && (open == "" || strings.ContainsAny(open[len(open)-1:], " \t")) {
+		text = strings.TrimSpace(open)
+	}
+	return level, text
+}
+
+// isRelatedNotesTitle reports whether a heading's text is Related Notes, in any case and spacing,
+// with or without a closing colon.
+func isRelatedNotesTitle(title string) bool {
+	title = strings.TrimSuffix(strings.TrimSpace(title), ":")
+	return strings.EqualFold(strings.Join(strings.Fields(title), " "), "related notes")
+}
+
+// looksLikeNoteID reports whether ref can be the start of a note id as claudemem makes them: a
+// lowercase UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
+func looksLikeNoteID(ref string) bool {
+	const form = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+	if ref == "" || len(ref) > len(form) {
+		return false
+	}
+	for i := 0; i < len(ref); i++ {
+		c := ref[i]
+		switch {
+		case form[i] == '-':
+			if c != '-' {
+				return false
+			}
+		case !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f'):
+			return false
+		}
+	}
+	return true
 }
 
 // notesWithPrefix returns the ids of up to two notes whose id starts with ref.
