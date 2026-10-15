@@ -122,3 +122,40 @@ func TestIndexMissingVectors_LeavesOutAnEntryWhoseFileNameWasTaken(t *testing.T)
 		t.Errorf("the entry that left has %d vector rows here, want 0", n)
 	}
 }
+
+// An entry that leaves the store while the vectors are embedded gets none written back, also when a
+// copy of its file comes back meanwhile (an add-only sync can bring one): the index does not list
+// it, so its vectors would belong to no entry.
+func TestVectorWrites_SkipAnEntryTheIndexDoesNotList(t *testing.T) {
+	for _, write := range []string{"backfill", "rebuild"} {
+		t.Run(write, func(t *testing.T) {
+			store := setupTestStore(t)
+			kept := addTaggedNote(t, store, "ops", "Kept runbook", "text of the kept runbook", "team")
+			left := addTaggedNote(t, store, "misc", "Moved checklist", "text of the moved checklist", "team")
+			rel := entryFile(t, store, left.ID)
+			data := readRelFile(t, store, rel)
+			emb := attachHookEmbedder(t, store)
+			emb.hook = func() {
+				if err := store.DeleteNote(left.ID); err != nil { // as a move does to the store it leaves
+					t.Error(err)
+				}
+				writeRel(t, store, rel, data) // then a copy of its file comes back
+			}
+			var err error
+			if write == "backfill" {
+				_, _, err = store.IndexMissingVectors()
+			} else {
+				_, err = store.ReindexVectors()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := vectorRowsOf(t, store, left.ID); n != 0 {
+				t.Errorf("the entry the index does not list has %d vector rows, want 0", n)
+			}
+			if n := vectorRowsOf(t, store, kept.ID); n != 1 {
+				t.Errorf("the kept entry has %d vector rows, want 1", n)
+			}
+		})
+	}
+}

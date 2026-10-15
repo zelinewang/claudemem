@@ -40,6 +40,41 @@ import (
 type VectorStore struct {
 	db       *sql.DB
 	embedder Embedder
+	docTable string // set by RequireDocumentRows
+}
+
+// RequireDocumentRows makes every vector write insert a document's vectors only while table, the index
+// of the store that owns the vectors, holds a row with the document's id, checked in the transaction
+// that inserts them. A document whose entry left the index after it was read (a move, a delete) then
+// gets no vectors, which would belong to no entry, also when a copy of its file came back. Without it
+// every document is written.
+func (vs *VectorStore) RequireDocumentRows(table string) error {
+	if table == "" || strings.Trim(table, "abcdefghijklmnopqrstuvwxyz_") != "" {
+		return fmt.Errorf("vectors: %q is not a table name", table)
+	}
+	vs.docTable = table
+	return nil
+}
+
+// rowQuerier is a transaction or a connection, through which a write reads what it depends on.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// listed reports whether the document table holds a row for id, read through q, the transaction that
+// writes the vectors. Without a document table every document is listed.
+func (vs *VectorStore) listed(ctx context.Context, q rowQuerier, id string) (bool, error) {
+	if vs.docTable == "" {
+		return true, nil
+	}
+	var one int
+	switch err := q.QueryRowContext(ctx, `SELECT 1 FROM `+vs.docTable+` WHERE id = ?`, id).Scan(&one); {
+	case err == sql.ErrNoRows:
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check that %s is still listed: %w", shortID(id), err)
+	}
+	return true, nil
 }
 
 // NewVectorStore creates a store bound to a specific Embedder. The embedder
@@ -433,6 +468,12 @@ func (vs *VectorStore) IndexDocument(id, text string) error {
 		id, backend, model); err != nil {
 		return fmt.Errorf("clear stale chunks for %s: %w", shortID(id), err)
 	}
+	if ok, err := vs.listed(context.Background(), tx, id); err != nil || !ok {
+		if err != nil {
+			return err
+		}
+		return tx.Commit() // its entry is gone: no vectors, and none left behind
+	}
 	for i, vec := range vecs {
 		if _, err := tx.Exec(`
 			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
@@ -595,7 +636,9 @@ func (vs *VectorStore) RebuildIndexGated(documents []Document, gate Gate) (int, 
 			}
 		}
 		_, isTFIDF := vs.embedder.(*TFIDFEmbedder)
-		return vs.writeRebuild(indexed, gate == nil || isTFIDF, func(id string) bool { return rebuilt[id] || !present(id) }, present)
+		unlisted, err := vs.writeRebuild(indexed, gate == nil || isTFIDF, func(id string) bool { return rebuilt[id] || !present(id) }, present)
+		left += unlisted
+		return err
 	})
 	if err != nil {
 		return 0, err
@@ -610,20 +653,21 @@ func (vs *VectorStore) RebuildIndexGated(documents []Document, gate Gate) (int, 
 
 // writeRebuild replaces the active backend's rows in one transaction: all of them when clearAll is
 // set, otherwise those of the documents for which replaced holds; then it inserts the vectors of
-// the documents present. The transaction takes the write lock as it begins (BEGIN IMMEDIATE),
-// waiting out busy_timeout while another writer holds it: a deferred one reads the active rows
-// first, and fails busy at its first write when another process (a search logging its access, say)
-// committed in between.
-func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bool, replaced, present func(string) bool) error {
+// the documents present, and listed in the document table (RequireDocumentRows), and returns how many
+// documents it left out as no longer listed. The transaction takes the write lock as it begins
+// (BEGIN IMMEDIATE), waiting out busy_timeout while another writer holds it: a deferred one reads
+// the active rows first, and fails busy at its first write when another process (a search logging its
+// access, say) committed in between.
+func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bool, replaced, present func(string) bool) (int, error) {
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
 	ctx := context.Background()
 	conn, err := vs.db.Conn(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return fmt.Errorf("begin: %w", err)
+		return 0, fmt.Errorf("begin: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -634,19 +678,19 @@ func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bo
 
 	if clearAll {
 		if _, err := conn.ExecContext(ctx, `DELETE FROM vectors WHERE backend = ? AND model = ?`, backend, model); err != nil {
-			return fmt.Errorf("clear active backend rows: %w", err)
+			return 0, fmt.Errorf("clear active backend rows: %w", err)
 		}
 	} else {
 		rows, err := conn.QueryContext(ctx, `SELECT DISTINCT doc_id FROM vectors WHERE backend = ? AND model = ?`, backend, model)
 		if err != nil {
-			return fmt.Errorf("list active backend rows: %w", err)
+			return 0, fmt.Errorf("list active backend rows: %w", err)
 		}
 		var clear []string
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
 				rows.Close()
-				return err
+				return 0, err
 			}
 			if replaced(id) {
 				clear = append(clear, id)
@@ -654,40 +698,53 @@ func (vs *VectorStore) writeRebuild(indexed []indexedDocumentVector, clearAll bo
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return err
+			return 0, err
 		}
 		for _, id := range clear {
 			if _, err := conn.ExecContext(ctx, `DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`, id, backend, model); err != nil {
-				return fmt.Errorf("clear active backend rows of %s: %w", shortID(id), err)
+				return 0, fmt.Errorf("clear active backend rows of %s: %w", shortID(id), err)
 			}
 		}
 	}
 
+	unlisted := map[string]bool{}
 	if len(indexed) > 0 {
 		stmt, err := conn.PrepareContext(ctx, `
 			INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
-			return fmt.Errorf("prepare insert: %w", err)
+			return 0, fmt.Errorf("prepare insert: %w", err)
 		}
 		defer stmt.Close()
 
 		now := time.Now().UTC().Format(time.RFC3339)
+		checked := map[string]bool{}
 		for _, doc := range indexed {
-			if !present(doc.docID) {
+			if !present(doc.docID) || unlisted[doc.docID] {
 				continue
 			}
+			if !checked[doc.docID] {
+				checked[doc.docID] = true
+				ok, err := vs.listed(ctx, conn, doc.docID)
+				if err != nil {
+					return 0, err
+				}
+				if !ok {
+					unlisted[doc.docID] = true
+					continue
+				}
+			}
 			if _, err := stmt.ExecContext(ctx, doc.docID, doc.chunk, backend, model, len(doc.vector), vectorToBlob(doc.vector), now); err != nil {
-				return fmt.Errorf("insert vector for %s chunk %d: %w", doc.docID, doc.chunk, err)
+				return 0, fmt.Errorf("insert vector for %s chunk %d: %w", doc.docID, doc.chunk, err)
 			}
 		}
 	}
 
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return 0, fmt.Errorf("commit: %w", err)
 	}
 	committed = true
-	return nil
+	return len(unlisted), nil
 }
 
 func (vs *VectorStore) embedDocumentsForRebuild(documents []Document) ([]indexedDocumentVector, error) {
@@ -805,26 +862,33 @@ func (vs *VectorStore) UpsertDocumentsGated(documents []Document, gate Gate) (in
 	now := time.Now().UTC().Format(time.RFC3339)
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
 
-	// insertDoc replaces all of a doc's chunk rows atomically.
-	insertDoc := func(id string, vecs [][]float32) error {
+	// insertDoc replaces all of a doc's chunk rows atomically, and reports whether it wrote them: a doc
+	// no longer listed in the document table gets none (RequireDocumentRows).
+	insertDoc := func(id string, vecs [][]float32) (bool, error) {
 		tx, err := vs.db.Begin()
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer tx.Rollback()
 		if _, err := tx.Exec(`DELETE FROM vectors WHERE doc_id = ? AND backend = ? AND model = ?`,
 			id, backend, model); err != nil {
-			return fmt.Errorf("clear stale chunks for %s: %w", shortID(id), err)
+			return false, fmt.Errorf("clear stale chunks for %s: %w", shortID(id), err)
+		}
+		if ok, err := vs.listed(context.Background(), tx, id); err != nil || !ok {
+			if err != nil {
+				return false, err
+			}
+			return false, tx.Commit()
 		}
 		for i, vec := range vecs {
 			if _, err := tx.Exec(`
 				INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				id, i, backend, model, len(vec), vectorToBlob(vec), now); err != nil {
-				return fmt.Errorf("insert vector for %s chunk %d: %w", shortID(id), i, err)
+				return false, fmt.Errorf("insert vector for %s chunk %d: %w", shortID(id), i, err)
 			}
 		}
-		return tx.Commit()
+		return true, tx.Commit()
 	}
 
 	// writeBatch writes the embedded documents of one batch through the gate.
@@ -842,8 +906,13 @@ func (vs *VectorStore) UpsertDocumentsGated(documents []Document, gate Gate) (in
 					left++
 					continue
 				}
-				if err := insertDoc(d.id, d.vecs); err != nil {
+				written, err := insertDoc(d.id, d.vecs)
+				if err != nil {
 					return err
+				}
+				if !written {
+					left++
+					continue
 				}
 				indexed++
 			}

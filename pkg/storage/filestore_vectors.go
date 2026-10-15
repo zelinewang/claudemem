@@ -48,6 +48,10 @@ func (fs *FileStore) InitVectorStore() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize vector store: %w", err)
 	}
+	// vectors only for the entries the index lists, checked as they are written
+	if err := vs.RequireDocumentRows("entries"); err != nil {
+		return err
+	}
 	fs.vectorStore = vs
 	return nil
 }
@@ -421,11 +425,8 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	return err == nil
 }
 
-// collectVectorDocuments reads the documents to embed from the store's files; files maps each id to
-// the files it was read from.
-func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document, files map[string][]string) {
-	files = make(map[string][]string)
-
+// collectVectorDocuments reads the documents to embed from the store's note and session files.
+func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
 	// Collect notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
 		filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
@@ -446,7 +447,6 @@ func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document, files ma
 				ID:   note.ID,
 				Text: text,
 			})
-			files[note.ID] = append(files[note.ID], path)
 			return nil
 		})
 	}
@@ -471,12 +471,11 @@ func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document, files ma
 				ID:   session.ID,
 				Text: text,
 			})
-			files[session.ID] = append(files[session.ID], path)
 			return nil
 		})
 	}
 
-	return docs, files
+	return docs
 }
 
 // IndexMissingVectors embeds only documents that do not yet have a vector row
@@ -491,10 +490,10 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 		return 0, 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs, files := fs.collectVectorDocuments()
+	docs := fs.collectVectorDocuments()
 	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
 		// TF-IDF needs the whole corpus; a "backfill" is always a full rebuild.
-		left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate(files))
+		left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
 		if err != nil {
 			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
@@ -515,7 +514,7 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 			missingDocs = append(missingDocs, doc)
 		}
 	}
-	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate(files))
+	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate())
 	return indexed, len(missingDocs) - left, err
 }
 
@@ -526,8 +525,8 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs, files := fs.collectVectorDocuments()
-	left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate(files))
+	docs := fs.collectVectorDocuments()
+	left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
 	if err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}
@@ -536,11 +535,12 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 }
 
 // vectorGate is the gate of a bulk vector write of documents read from files: it runs the write
-// under the store lock, where a document counts as present while the index lists it or one of the
-// files it was read from still holds it (another note can take a name a moved one left). The documents were read and embedded without the lock
-// (embedding can take minutes), and a move or a delete may have taken some out since: their vectors
-// are not written back.
-func (fs *FileStore) vectorGate(files map[string][]string) vectors.Gate {
+// under the store lock, where a document counts as present while the index lists it. The documents
+// were read and embedded without the lock (embedding can take minutes), and a move or a delete may
+// have taken some out since: their vectors are not written back, also when a copy of a file came back
+// meanwhile, since they would belong to no entry. The vector store checks the same again in the
+// transaction that writes them (RequireDocumentRows).
+func (fs *FileStore) vectorGate() vectors.Gate {
 	return func(write func(present func(id string) bool) error) error {
 		unlock, err := fs.lockStore()
 		if err != nil {
@@ -564,19 +564,6 @@ func (fs *FileStore) vectorGate(files map[string][]string) vectors.Gate {
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		known := make(map[string]bool)
-		return write(func(id string) bool {
-			if present, ok := known[id]; ok {
-				return present
-			}
-			present := indexed[id]
-			for _, path := range files[id] {
-				if frontmatterID(path) == id { // the file is still there and still this document's
-					present = true
-				}
-			}
-			known[id] = present
-			return present
-		})
+		return write(func(id string) bool { return indexed[id] })
 	}
 }
