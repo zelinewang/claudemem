@@ -161,7 +161,8 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 	for _, e := range ids {
 		want[e.ID] = true
 	}
-	m.fromFiles, m.toFiles = entryFilesByID(from.baseDir, want), entryFilesByID(to.baseDir, want)
+	m.fromFiles, m.fromNoteFiles = entryFilesByID(from.baseDir, want)
+	m.toFiles, m.toNoteFiles = entryFilesByID(to.baseDir, want)
 
 	var notes, sessions []MoveID
 	for _, e := range ids {
@@ -197,13 +198,15 @@ func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(d
 }
 
 type mover struct {
-	from, to     *FileStore
-	dryRun       bool
-	fromFiles    map[string][]string // the files of each listed id in this store, from a walk at the start
-	toFiles      map[string][]string // the same in the target
-	inTarget     map[string]bool     // notes in the target after this run (or, dry, that would be)
-	refusedNotes map[string]bool     // notes this run refused or did not attempt: they stay here
-	report       *MoveReport
+	from, to      *FileStore
+	dryRun        bool
+	fromFiles     map[string][]string // the files of each listed id in this store, from a walk at the start
+	toFiles       map[string][]string // the same in the target
+	fromNoteFiles []string            // the ids of every note file in this store, sorted, from the same walk
+	toNoteFiles   []string            // the same in the target
+	inTarget      map[string]bool     // notes in the target after this run (or, dry, that would be)
+	refusedNotes  map[string]bool     // notes this run refused or did not attempt: they stay here
+	report        *MoveReport
 }
 
 // kindOf is the entry's kind in this store, else in the target, else "".

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -176,24 +177,41 @@ func kindOfPath(rel string) string {
 	return ""
 }
 
-// entryFilesByID maps each wanted id to the files of the store whose frontmatter names it, from a
-// quick look at the frontmatter of every entry file (copiesOf parses them before any use). Symlinks
-// are not followed, and files a reindex would skip are skipped.
-func entryFilesByID(baseDir string, want map[string]bool) map[string][]string {
+// entryFilesByID walks a store's notes and sessions. It maps each wanted id to the files whose
+// frontmatter names it, and returns the ids of every note file, sorted: a session's related note may
+// sit in a file the index does not list.
+func entryFilesByID(baseDir string, want map[string]bool) (map[string][]string, []string) {
 	found := map[string][]string{}
+	var notes []string
 	for _, sub := range []string{"notes", "sessions"} {
 		filepath.Walk(filepath.Join(baseDir, sub), func(path string, info os.FileInfo, err error) error {
 			if err != nil || !info.Mode().IsRegular() || !strings.HasSuffix(info.Name(), ".md") || strings.HasPrefix(info.Name(), "._") {
 				return nil
 			}
-			if id := frontmatterID(path); want[id] {
+			id := frontmatterID(path)
+			if want[id] {
 				rel, _ := filepath.Rel(baseDir, path)
 				found[id] = append(found[id], rel)
+			}
+			if sub == "notes" && id != "" {
+				notes = append(notes, id)
 			}
 			return nil
 		})
 	}
-	return found
+	sort.Strings(notes)
+	return found, notes
+}
+
+// idsWithPrefix returns the distinct ids of sorted that start with prefix.
+func idsWithPrefix(sorted []string, prefix string) []string {
+	var ids []string
+	for i := sort.SearchStrings(sorted, prefix); i < len(sorted) && strings.HasPrefix(sorted[i], prefix); i++ {
+		if len(ids) == 0 || ids[len(ids)-1] != sorted[i] {
+			ids = append(ids, sorted[i])
+		}
+	}
+	return ids
 }
 
 // frontmatterID is the top-level id in a file's YAML frontmatter, or "".

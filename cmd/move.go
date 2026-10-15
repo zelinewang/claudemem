@@ -39,7 +39,10 @@ Two different files under one id, a file reached through a symlink between the
 stores, and stores that overlap are refused. Notes move first, then sessions. A
 session moves only when every note it lists under Related Notes is in the target
 or moves in the same run, since a session file names its related notes by title;
-a note in neither store is only a warning, since that link is dead in both.
+a note counts as in a store when its index lists it or a note file there holds
+it, and a note that neither store holds is only a warning, since that link is
+dead in both. Before a migration, run reindex and then health on this store, so
+that its index matches its files.
 
 The report lists the entries moved, already in the target, missing (in neither
 store), refused (with the reason) and left to clean up (in the target, with

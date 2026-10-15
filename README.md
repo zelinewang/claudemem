@@ -256,13 +256,18 @@ between the two stores, a stale row in the target, stores that overlap and an in
 newer claudemem are refused. Notes move before sessions, and a session moves only when every note it
 lists under its Related Notes sections is in the target or moves in the same run, since a session
 file names its related notes by title; a line there without a note id, an id shorter than 8
-characters or one that matches several notes keeps the session where it is, while a note that is in
-neither store is only a warning, since the link is dead in both. `--dry-run` changes
-nothing. Missing and refused entries, and entries left to clean up (in the target, with a different
+characters or one that matches several notes keeps the session where it is. A note counts as in a
+store when its index lists it or one of its note files holds it, and a note this run refused stays
+here with its sessions; a note that neither store holds is only a warning, since the link is dead in
+both. `--dry-run` changes nothing. Missing and refused entries, and entries left to clean up (in the target, with a different
 copy of the file, or rows the move could not remove, still in this store), make the exit code 1.
 With an add-only sync between machines, a moved file can come back from another machine's copy:
 move there too, or run the move again after the next pull, which removes a copy that came back when
 it is the same file.
+
+Before a migration, run `claudemem --store <store> reindex` and then `claudemem --store <store>
+health` on the store the entries leave, so that its index matches its files: the move goes by the
+index for what a store holds, and refuses an entry, or keeps a session, where the two disagree.
 
 ## Search Backends
 

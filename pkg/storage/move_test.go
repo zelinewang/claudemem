@@ -520,6 +520,39 @@ func TestMoveEntries_SessionsMoveWithTheirRelatedNotes(t *testing.T) {
 		}
 	})
 
+	// The index can lag behind the files: a note whose file is here, though the index here lists
+	// nothing for it, stays here, and so does a session that lists it, moved alone or with it.
+	for _, withNote := range []bool{false, true} {
+		name := "a related note that is only a file here keeps the session"
+		if withNote {
+			name = "a related note refused for being only a file here keeps the session"
+		}
+		t.Run(name, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Private detail", "x", "personal")
+			session := newSession(t, from, "Review", link(note, note.ID))
+			for _, stmt := range []string{`DELETE FROM entries WHERE id = ?`, `DELETE FROM memory_fts WHERE id = ?`} {
+				if _, err := from.db.Exec(stmt, note.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ids := []string{session.ID}
+			if withNote {
+				ids = append(ids, note.ID)
+			}
+			report := mustMove(t, from, to, false, ids...)
+			if len(report.Moved) != 0 || len(report.Refused) != len(ids) {
+				t.Fatalf("report %+v", report)
+			}
+			if _, err := from.GetSession(session.ID); err != nil {
+				t.Errorf("the session left: %v", err)
+			}
+			if _, err := to.GetSession(session.ID); err == nil {
+				t.Error("the session is in the target")
+			}
+		})
+	}
+
 	t.Run("a refused note keeps its session here", func(t *testing.T) {
 		from, to := moveStores(t)
 		note := addTaggedNote(t, from, "ops", "Disputed", "here", "team")
