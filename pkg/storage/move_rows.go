@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -140,9 +141,11 @@ func hasVectorsByDoc(db *sql.DB) bool {
 
 // relatedNotesStay checks the notes a session file lists under its Related Notes sections, read
 // from the file's text (the parsed session keeps only the last such section, and drops a line without
-// an id). Every id in backticks on a line counts, not only the first. It returns why the session must
-// stay, or "" when every listed note is in the target, moves there in this run, or is in neither store
-// (a dead link in both, so only a warning). A note counts as in a store when its index lists it or one
+// an id). Every id in backticks on a line counts, not only the first. Then it checks every note id
+// anywhere else in the file (fileNoteRefs): a hand edit can name a note under a heading this does not
+// read as Related Notes, or without backticks. It returns why the session must stay, or "" when every
+// note it names is in the target, moves there in this run, or is in neither store (for a listed note,
+// a dead link in both, so only a warning). A note counts as in a store when its index lists it or one
 // of its note files holds it (the index can lag behind the files), and a note this run refused stays
 // here.
 func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
@@ -150,6 +153,7 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 	if bad != "" {
 		return fmt.Sprintf("its Related Notes section has a line that names no note as claudemem writes it (- `id` — \"title\"): %q; fix or remove the line first", bad)
 	}
+	checked := map[string]bool{}
 	for _, item := range items {
 		rn := parseRelatedNoteLine(item)
 		if rn.ID == "" {
@@ -158,6 +162,7 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 		if reason := m.relatedNoteStays(sessionID, item, rn.ID, rn.Title, true); reason != "" {
 			return reason
 		}
+		checked[rn.ID] = true
 		// further ids on the line: another link joined onto it, or a nested item
 		spans := backtickSpans(item)
 		for i := 1; i < len(spans); i++ {
@@ -165,7 +170,17 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 				if reason := m.relatedNoteStays(sessionID, item, ref, "", false); reason != "" {
 					return reason
 				}
+				checked[ref] = true
 			}
+		}
+	}
+	for _, ref := range fileNoteRefs(data) {
+		if checked[ref.id] {
+			continue
+		}
+		checked[ref.id] = true
+		if reason := m.namedNoteStays(ref); reason != "" {
+			return reason
 		}
 	}
 	return ""
@@ -181,25 +196,9 @@ func (m *mover) relatedNoteStays(sessionID, item, ref, title string, first bool)
 	if len(ref) < 8 {
 		return fmt.Sprintf("it lists the related note %q, too short an id to name one note; write at least its first 8 characters", ref)
 	}
-	here, err := notesWithPrefix(m.from, ref)
+	ids, there, filesThere, err := m.notesNamed(ref)
 	if err != nil {
 		return fmt.Sprintf("check its related note %s: %v", ref, err)
-	}
-	there, err := notesWithPrefix(m.to, ref)
-	if err != nil {
-		return fmt.Sprintf("check its related note %s: %v", ref, err)
-	}
-	filesThere := idsWithPrefix(m.toNoteFiles, ref)
-	ids := map[string]bool{}
-	for _, list := range [][]string{here, there, idsWithPrefix(m.fromNoteFiles, ref), filesThere} {
-		for _, id := range list {
-			ids[id] = true
-		}
-	}
-	for id := range m.refusedNotes {
-		if strings.HasPrefix(id, ref) {
-			ids[id] = true
-		}
 	}
 	switch {
 	case len(ids) == 0 && !looksLikeNoteID(ref):
@@ -210,18 +209,96 @@ func (m *mover) relatedNoteStays(sessionID, item, ref, title string, first bool)
 	case len(ids) > 1:
 		return fmt.Sprintf("it lists the related note %s, which matches several notes; write its full id", name)
 	}
+	return m.noteStays("lists the related note "+name, "take the link out", ids, there, filesThere)
+}
+
+// namedNoteStays checks a note id found elsewhere in a session file. One that names no note is not a
+// note ref; one that names several, or a note that stays here, keeps the session.
+func (m *mover) namedNoteStays(ref noteRef) string {
+	ids, there, filesThere, err := m.notesNamed(ref.id)
+	if err != nil {
+		return fmt.Sprintf("check the note %s it names: %v", ref.id, err)
+	}
+	name := fmt.Sprintf("%s (on the line %q)", ref.id, ref.line)
+	switch {
+	case len(ids) == 0:
+		return ""
+	case len(ids) > 1:
+		return fmt.Sprintf("it names the note %s, which matches several notes; write its full id", name)
+	}
+	return m.noteStays("names the note "+name, "take that mention out", ids, there, filesThere)
+}
+
+// notesNamed returns the notes whose id starts with ref, in either store's index, note files or this
+// run's refusals, and of those the ones the target's index lists and the target's note files hold.
+func (m *mover) notesNamed(ref string) (ids map[string]bool, there, filesThere []string, err error) {
+	here, err := notesWithPrefix(m.from, ref)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if there, err = notesWithPrefix(m.to, ref); err != nil {
+		return nil, nil, nil, err
+	}
+	filesThere = idsWithPrefix(m.toNoteFiles, ref)
+	ids = map[string]bool{}
+	for _, list := range [][]string{here, there, idsWithPrefix(m.fromNoteFiles, ref), filesThere} {
+		for _, id := range list {
+			ids[id] = true
+		}
+	}
+	for id := range m.refusedNotes {
+		if strings.HasPrefix(id, ref) {
+			ids[id] = true
+		}
+	}
+	return ids, there, filesThere, nil
+}
+
+// noteStays returns why a session that names a note (one of ids, the only one) must stay: the note
+// stays in this store. what says how the session names it, fix how to take it out.
+func (m *mover) noteStays(what, fix string, ids map[string]bool, there, filesThere []string) string {
 	var id string
 	for id = range ids {
 	}
 	switch {
 	case m.refusedNotes[id]:
-		return fmt.Sprintf("it lists the related note %s, which stays in this store: its move was refused", name)
+		return fmt.Sprintf("it %s, which stays in this store: its move was refused", what)
 	case m.inTarget[id]:
 	case contains(there, id), contains(filesThere, id):
 	default:
-		return fmt.Sprintf("it lists the related note %s, which stays in this store; list that note's id too, or take the link out first", name)
+		return fmt.Sprintf("it %s, which stays in this store; list that note's id too, or %s first", what, fix)
 	}
 	return ""
+}
+
+// noteRef is a note id found in a session file, and the line it is on.
+type noteRef struct{ id, line string }
+
+// uuidPattern is a lowercase UUID, the form of claudemem's ids.
+var uuidPattern = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// fileNoteRefs returns the note ids a session file names anywhere, frontmatter included, in order and
+// once each: every lowercase UUID, and every id or id prefix of 8 or more characters in backticks.
+func fileNoteRefs(data []byte) []noteRef {
+	var refs []noteRef
+	seen := map[string]bool{}
+	add := func(id, line string) {
+		if !seen[id] {
+			seen[id] = true
+			refs = append(refs, noteRef{id: id, line: strings.TrimSpace(line)})
+		}
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		for _, id := range uuidPattern.FindAllString(line, -1) {
+			add(id, line)
+		}
+		for _, span := range backtickSpans(line) {
+			if span = strings.TrimSpace(span); len(span) >= 8 && looksLikeNoteID(span) {
+				add(span, line)
+			}
+		}
+	}
+	return refs
 }
 
 // backtickSpans returns the text between each pair of backticks on a line, in order.

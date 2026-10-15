@@ -297,7 +297,11 @@ any case and with or without a colon, and every id in backticks on a line there 
 without a note id, a first ref in backticks that is no note id, an id shorter than 8 characters or
 one that matches several notes keeps the session where it is. A note counts as in a store when its
 index lists it or one of its note files holds it, and a note this run refused stays here with its
-sessions; a note that neither store holds is only a warning, since the link is dead in both.
+sessions; a note that neither store holds is only a warning, since the link is dead in both. The
+rest of the session file counts too, since a hand edit can name a note under a heading this does not
+read as Related Notes (bold, setext, HTML) or without backticks: a full lowercase id anywhere in the
+file, or an id or prefix of 8 or more characters in backticks, that names a note staying here keeps
+the session; one that names no note is not a note ref.
 
 Missing and refused entries, and entries left to clean up (in the target, with a different copy of
 the file, or rows the move could not remove, still in this store), make the exit code 1. With an

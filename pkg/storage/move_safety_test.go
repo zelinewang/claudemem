@@ -523,6 +523,68 @@ func TestMoveEntries_ReadsRelatedNotesFromTheFile(t *testing.T) {
 	}
 }
 
+// Every note id in a session file counts, wherever it is: a hand edit can name a note under a heading
+// the section check does not read (bold, setext, HTML) or without backticks. A full lowercase id, or a
+// hex prefix of 8 or more characters in backticks, that names a note staying here keeps the session;
+// one that names no note does not.
+func TestMoveEntries_ChecksEveryNoteIDInASessionFile(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stays bool
+		edit  func(data string, private, shared *models.Note) string
+	}{
+		{"a bold heading", true, func(data string, private, shared *models.Note) string {
+			return data + "\n## **Related Notes**\n- `" + private.ID + "` — \"Private detail\" (ops)\n"
+		}},
+		{"a setext heading", true, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes for later\nsome text\n\nRelated Notes\n-------------\n- `" + private.ID + "` — \"Private detail\" (ops)\n"
+		}},
+		{"an HTML heading", true, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes for later\nsome text\n\n<h2>Related Notes</h2>\n\n- `" + private.ID + "` — \"Private detail\" (ops)\n"
+		}},
+		{"a second id without backticks", true, func(data string, private, shared *models.Note) string {
+			line := "- `" + shared.ID + "` — \"Shared\" (ops)"
+			return strings.Replace(data, line, line+"; see also "+private.ID+" \"Private detail\"", 1)
+		}},
+		{"an id in the text", true, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes\nwe went through " + private.ID + " today\n"
+		}},
+		{"a prefix in backticks in the text", true, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes\nsee `" + private.ID[:8] + "` for the details\n"
+		}},
+		{"an id that names no note", false, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes\nthe run 123e4567-e89b-42d3-a456-426614174000 failed\n"
+		}},
+		{"hex in backticks that names no note", false, func(data string, private, shared *models.Note) string {
+			return data + "\n## Notes\ncommit `deadbeef` fixed it\n"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from, to := moveStores(t)
+			private := addTaggedNote(t, from, "ops", "Private detail", "x", "personal")
+			shared := addTaggedNote(t, from, "ops", "Shared", "x", "team")
+			session := models.NewSession("Review", "main", "proj", "sid-review")
+			session.Summary = "relkw"
+			session.RelatedNotes = []models.RelatedNote{{ID: shared.ID, Title: shared.Title, Category: shared.Category}}
+			if _, err := from.SaveSession(session); err != nil {
+				t.Fatal(err)
+			}
+			rel := entryFile(t, from, session.ID)
+			data := string(readRelFile(t, from, rel))
+			edited := tc.edit(data, private, shared)
+			if edited == data {
+				t.Fatalf("the edit changed nothing in:\n%s", data)
+			}
+			writeRel(t, from, rel, []byte(edited))
+			report := mustMove(t, from, to, false, shared.ID, session.ID)
+			refused := len(report.Refused) == 1 && report.Refused[0].ID == session.ID && strings.Contains(report.Refused[0].Reason, "stays in this store")
+			if refused != tc.stays {
+				t.Errorf("session refused: %v, want %v; report %+v", refused, tc.stays, report)
+			}
+		})
+	}
+}
+
 // An index that cannot be read refuses the entry instead of calling its id wrong, and store locks
 // that cannot be taken end the run instead of making every entry wait.
 func TestMoveEntries_IndexAndLockFailures(t *testing.T) {
