@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode"
+
+	"github.com/zelinewang/claudemem/pkg/vectors"
 )
 
 // MoveID is one line of a `claudemem move` file: a full entry id.
@@ -76,7 +77,7 @@ type MovedEntry struct {
 	Note  string `json:"note,omitempty"` // what was out of the ordinary, for example a file renamed
 }
 
-// MoveIssue is an entry that MoveEntries did not move.
+// MoveIssue is an entry that MoveEntries did not move, or moved without finishing.
 type MoveIssue struct {
 	Line   int    `json:"line"`
 	ID     string `json:"id"`
@@ -92,107 +93,149 @@ type MoveReport struct {
 	AlreadyInTarget []MovedEntry `json:"already_in_target"`
 	Missing         []MoveIssue  `json:"missing"`
 	Refused         []MoveIssue  `json:"refused"`
-	Warnings        []string     `json:"warnings"`
-	// VectorsToEmbed counts the moved entries that took no vectors along: TF-IDF vectors are built
-	// against one store's own corpus and are never copied, and a store may have none.
+	// NeedsCleanup lists entries that are in the target but left something in this store: rows or a
+	// file the move could not remove (running it again finishes them), or a different copy of the file.
+	NeedsCleanup []MoveIssue `json:"needs_cleanup"`
+	Warnings     []string    `json:"warnings"`
+	// VectorsToEmbed counts the moved entries that the target's semantic search has no vectors for:
+	// TF-IDF vectors are built against one store's own corpus and are never copied, vectors of another
+	// backend, model or size do not serve the target's searches, and a store may have none. When the
+	// target's semantic search is off, it counts the entries that took no vectors along.
 	VectorsToEmbed int `json:"vectors_to_embed"`
 }
 
 // MoveEntries moves the listed notes and sessions from one store to another, keeping each entry's
-// id, its file (under the same name, unless another file holds that name in the target) and its
-// index rows: the entries row, the search row, the access log and the vectors (except TF-IDF ones).
+// id and its file (under the same name, unless another file holds that name in the target). The
+// target's index rows are built from the file, as a reindex builds them; vectors other than TF-IDF
+// ones go along when this store's search row matches the file. The access log is not carried over:
+// it records what a person read, and stays out of the target.
 //
 // Each entry moves on its own, under the write locks of both stores (taken in one order, so two
-// moves in opposite directions cannot deadlock): the file goes to the target first, through a temp
-// file, with its index rows in one transaction; then the file and the rows leave this store. A run
-// that stops half way leaves every entry whole in one store or in both, and running the same ids
-// again finishes it: an entry already in the target is reported as such, and a copy in both stores
-// with the same file is removed from this store. Two different files under one id are refused.
+// moves in opposite directions cannot deadlock): the file is put into the target first, durably and
+// never over another file, then its index rows; only then do the file and the rows leave this store.
+// A run that stops half way leaves every entry whole in one store or in both, and running the same
+// ids again finishes it. Two different files under one id, a file reached through a symlink between
+// the stores, and a stale row in the target are refused. Stores that overlap are refused.
 //
-// Notes move before sessions. A session moves only if every note it lists as related is in the
-// target, or moved there in this run: a session file names its related notes by title, so it
+// Notes move before sessions. A session moves only if every note it lists under Related Notes is
+// in the target, or moved there in this run: a session file names its related notes by title, so it
 // never moves without them. A note may move alone. A dry run changes nothing.
 func MoveEntries(from, to *FileStore, ids []MoveID, dryRun bool, progress func(done, total int)) (*MoveReport, error) {
 	if sameStoreDir(from.baseDir, to.baseDir) {
 		return nil, fmt.Errorf("the target is this store itself")
 	}
+	if StoresOverlap(from.baseDir, to.baseDir) {
+		return nil, fmt.Errorf("the two stores overlap: one sits inside the other")
+	}
+	if from.readOnly || to.readOnly {
+		return nil, fmt.Errorf("both stores must be open for writing")
+	}
+	for _, s := range []struct {
+		name string
+		db   *sql.DB
+	}{{"this store", from.db}, {"the target", to.db}} {
+		if err := vectors.CheckIndexSchema(s.db); err != nil {
+			return nil, fmt.Errorf("%s: %w", s.name, err)
+		}
+	}
 	m := &mover{
-		from:     from,
-		to:       to,
-		dryRun:   dryRun,
-		vectors:  hasChunkedVectors(from.db) && hasChunkedVectors(to.db),
-		inTarget: map[string]bool{},
+		from:         from,
+		to:           to,
+		dryRun:       dryRun,
+		vectors:      hasChunkedVectors(from.db) && hasChunkedVectors(to.db),
+		active:       targetEmbedding(to),
+		inTarget:     map[string]bool{},
+		refusedNotes: map[string]bool{},
 		report: &MoveReport{
 			DryRun: dryRun, Entries: len(ids),
 			Moved: []MovedEntry{}, AlreadyInTarget: []MovedEntry{},
-			Missing: []MoveIssue{}, Refused: []MoveIssue{}, Warnings: []string{},
+			Missing: []MoveIssue{}, Refused: []MoveIssue{}, NeedsCleanup: []MoveIssue{}, Warnings: []string{},
 		},
 	}
+	if !dryRun {
+		// The target's commits must be on disk before anything leaves this store.
+		if _, err := to.db.Exec(`PRAGMA synchronous=FULL`); err != nil {
+			return nil, fmt.Errorf("make the target's index sync each commit: %w", err)
+		}
+	}
+	want := make(map[string]bool, len(ids))
+	for _, e := range ids {
+		want[e.ID] = true
+	}
+	m.fromFiles, m.toFiles = entryFilesByID(from.baseDir, want), entryFilesByID(to.baseDir, want)
 
 	var notes, sessions []MoveID
 	for _, e := range ids {
-		switch m.kindOf(e.ID) {
-		case "note":
+		kind, err := m.kindOf(e.ID)
+		switch {
+		case err != nil:
+			m.refuse(e, "", "read the index: %v", err)
+		case kind == "note":
 			notes = append(notes, e)
-		case "session":
+		case kind == "session":
 			sessions = append(sessions, e)
 		default:
-			m.report.Missing = append(m.report.Missing, MoveIssue{Line: e.Line, ID: e.ID, Reason: "in neither store's index (ids are full ids, not prefixes)"})
+			m.missing(e)
 		}
 	}
-	done := len(m.report.Missing)
-	for _, list := range [][]MoveID{notes, sessions} {
-		for _, e := range list {
-			m.moveOne(e)
-			done++
-			if progress != nil {
-				progress(done, len(ids))
+	done := len(ids) - len(notes) - len(sessions)
+	queue := append(notes, sessions...)
+	for i, e := range queue {
+		if err := m.moveOne(e); err != nil {
+			// The locks cannot be taken: every entry left would wait just as long.
+			for _, rest := range queue[i:] {
+				kind, _ := m.kindOf(rest.ID)
+				m.refuse(rest, kind, "not attempted: %v", err)
 			}
+			break
+		}
+		done++
+		if progress != nil {
+			progress(done, len(ids))
 		}
 	}
 	return m.report, nil
 }
 
 type mover struct {
-	from, to *FileStore
-	dryRun   bool
-	vectors  bool            // both stores have the chunked vectors table, so vector rows can be copied
-	inTarget map[string]bool // notes in the target after their move in this run (or, dry, that would be)
-	report   *MoveReport
-}
-
-// indexRow is an entry's row in the entries table.
-type indexRow struct {
-	id, typ, title, category, branch, project, sessionID, dateStr, tags, filepath, created, updated string
-}
-
-func (fs *FileStore) indexRow(id string) (*indexRow, error) {
-	r := &indexRow{}
-	err := fs.db.QueryRow(`SELECT id, type, title, category, branch, project, session_id, date_str, tags, filepath, created, updated
-		FROM entries WHERE id = ?`, id).Scan(&r.id, &r.typ, &r.title, &r.category, &r.branch, &r.project,
-		&r.sessionID, &r.dateStr, &r.tags, &r.filepath, &r.created, &r.updated)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
+	from, to     *FileStore
+	dryRun       bool
+	vectors      bool                // both stores have the chunked vectors table, so vector rows can be copied
+	active       *embeddingTuple     // what the target's semantic search uses; nil when it is off
+	fromFiles    map[string][]string // the files of each listed id in this store, from a walk at the start
+	toFiles      map[string][]string // the same in the target
+	inTarget     map[string]bool     // notes in the target after this run (or, dry, that would be)
+	refusedNotes map[string]bool     // notes this run refused or did not attempt: they stay here
+	report       *MoveReport
 }
 
 // kindOf is the entry's kind in this store, else in the target, else "".
-func (m *mover) kindOf(id string) string {
+func (m *mover) kindOf(id string) (string, error) {
 	for _, fs := range []*FileStore{m.from, m.to} {
 		var typ string
-		if err := fs.db.QueryRow(`SELECT type FROM entries WHERE id = ?`, id).Scan(&typ); err == nil {
-			return typ
+		err := fs.db.QueryRow(`SELECT type FROM entries WHERE id = ?`, id).Scan(&typ)
+		if err == nil {
+			return typ, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", err
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (m *mover) refuse(e MoveID, kind, format string, args ...interface{}) {
 	m.report.Refused = append(m.report.Refused, MoveIssue{Line: e.Line, ID: e.ID, Kind: kind, Reason: fmt.Sprintf(format, args...)})
+	if kind == "note" {
+		m.refusedNotes[e.ID] = true
+	}
+}
+
+func (m *mover) needsCleanup(e MoveID, kind string, problems []string) {
+	m.report.NeedsCleanup = append(m.report.NeedsCleanup, MoveIssue{Line: e.Line, ID: e.ID, Kind: kind, Reason: strings.Join(problems, "; ")})
+	if kind == "note" {
+		m.inTarget[e.ID] = true
+	}
 }
 
 func (m *mover) warn(format string, args ...interface{}) {
@@ -206,63 +249,87 @@ func (m *mover) moved(e MoveID, kind, title, file, note string) {
 	}
 }
 
-func (m *mover) moveOne(e MoveID) {
+// missing reports an id that neither index lists. When a store holds a file for it outside its
+// index, the entry is refused instead, naming that file: moving it needs that store reindexed first.
+func (m *mover) missing(e MoveID) {
+	for _, s := range []struct {
+		name  string
+		store *FileStore
+		files []string
+	}{{"this store", m.from, m.fromFiles[e.ID]}, {"the target", m.to, m.toFiles[e.ID]}} {
+		for _, rel := range s.files {
+			if kind := kindOfPath(rel); kind != "" && len(s.store.copiesOf(kind, e.ID, []string{rel})) > 0 {
+				m.refuse(e, kind, "in neither store's index, but %s holds its file %s; reindex it, then run the move again", s.name, rel)
+				return
+			}
+		}
+	}
+	m.report.Missing = append(m.report.Missing, MoveIssue{Line: e.Line, ID: e.ID, Reason: "in neither store's index (ids are full ids, not prefixes)"})
+}
+
+// moveOne moves one entry under both stores' locks. It returns an error only when the locks cannot be
+// taken, which ends the run.
+func (m *mover) moveOne(e MoveID) error {
 	if !m.dryRun {
 		unlock, err := lockBoth(m.from, m.to)
 		if err != nil {
-			m.refuse(e, "", "%v", err)
-			return
+			return err
 		}
 		defer unlock()
 	}
 	src, err := m.from.indexRow(e.ID)
 	if err != nil {
 		m.refuse(e, "", "read this store's index: %v", err)
-		return
+		return nil
 	}
 	dst, err := m.to.indexRow(e.ID)
 	if err != nil {
 		m.refuse(e, "", "read the target's index: %v", err)
-		return
+		return nil
 	}
-	if src == nil {
-		if dst == nil { // removed by someone else since the run started
-			m.report.Missing = append(m.report.Missing, MoveIssue{Line: e.Line, ID: e.ID, Reason: "in neither store's index"})
-			return
-		}
+	switch {
+	case src == nil && dst == nil: // removed by someone else since the run started
+		m.missing(e)
+	case src == nil:
 		m.alreadyInTarget(e, dst)
-		return
+	default:
+		m.moveFromHere(e, src, dst)
 	}
+	return nil
+}
 
+// moveFromHere moves an entry this store's index lists.
+func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 	kind := src.typ
 	if !validEntryPath(kind, src.filepath) {
 		m.refuse(e, kind, "its file path %q is not where a %s lives", src.filepath, kind)
 		return
 	}
-	srcPath := filepath.Join(m.from.baseDir, src.filepath)
+	if dst != nil && (dst.typ != kind || !validEntryPath(kind, dst.filepath)) {
+		m.refuse(e, kind, "the target's index has a stale row for it (a %s at %q); reindex the target, then run the move again", dst.typ, dst.filepath)
+		return
+	}
+	srcPath, err := movePath(m.from, m.to, src.filepath)
+	if err != nil {
+		m.refuse(e, kind, "its file: %v", err)
+		return
+	}
 	data, readErr := os.ReadFile(srcPath)
-	if os.IsNotExist(readErr) && dst != nil {
-		// An earlier run moved the file and stopped before this store's rows were removed.
-		if _, err := os.Stat(filepath.Join(m.to.baseDir, dst.filepath)); err != nil {
-			m.refuse(e, kind, "its file is in neither store (%s here, %s there): %v", src.filepath, dst.filepath, err)
-			return
-		}
-		if !m.dryRun {
-			if err := m.from.removeEntryRows(e.ID); err != nil {
-				m.refuse(e, kind, "it is in the target, but its rows here could not be removed: %v; run the move again", err)
-				return
-			}
-		}
-		m.moved(e, kind, dst.title, dst.filepath, "finished an earlier move")
+	if os.IsNotExist(readErr) {
+		m.finishFromTarget(e, kind, src, dst, readErr)
 		return
 	}
 	if readErr != nil {
 		m.refuse(e, kind, "its file %s cannot be read: %v", src.filepath, readErr)
 		return
 	}
-	fields, err := parseEntryFile(kind, data)
-	if err != nil || fields.id != e.ID {
-		m.refuse(e, kind, "its file %s does not parse as this %s (%v)", src.filepath, kind, err)
+	f, err := parseEntry(kind, data)
+	if err != nil {
+		m.refuse(e, kind, "its file %s does not parse: %v", src.filepath, err)
+		return
+	}
+	if f.id != e.ID {
+		m.refuse(e, kind, "its file %s holds another id (%s)", src.filepath, f.id)
 		return
 	}
 	if kind == "session" {
@@ -272,482 +339,210 @@ func (m *mover) moveOne(e MoveID) {
 		}
 	}
 
-	// Where the file goes in the target, and what is there already.
-	rel, note := src.filepath, ""
-	writeFile, writeRows := true, true
-	if dst != nil {
-		// The target has this entry's rows (an earlier run, or a copy indexed there): its file must
-		// be this file, or missing (then it is written).
-		rel, writeRows, note = dst.filepath, false, "finished an earlier move"
-		existing, err := os.ReadFile(filepath.Join(m.to.baseDir, rel))
-		switch {
-		case err == nil && bytes.Equal(existing, data):
-			writeFile = false
-		case err == nil:
-			m.refuse(e, kind, "the target holds a different file for this id (%s there, %s here); compare them by hand", rel, src.filepath)
-			return
-		case !os.IsNotExist(err):
-			m.refuse(e, kind, "the target's file %s cannot be read: %v", rel, err)
-			return
-		}
-	} else {
-		free, err := m.to.freeEntryPath(kind, src.filepath, e.ID)
-		if err != nil {
-			m.refuse(e, kind, "%v", err)
-			return
-		}
-		if free != src.filepath {
-			note = fmt.Sprintf("written as %s: %s is taken in the target", free, src.filepath)
-		}
-		rel = free
-		if existing, err := os.ReadFile(filepath.Join(m.to.baseDir, rel)); err == nil {
-			// freeEntryPath only returns a taken path that holds this entry's own file: an earlier
-			// run wrote it and stopped before its rows.
-			if !bytes.Equal(existing, data) {
-				m.refuse(e, kind, "the target holds a different file for this id at %s; compare them by hand", rel)
-				return
-			}
-			writeFile, note = false, "finished an earlier move"
-		}
-	}
-	targetPath := filepath.Join(m.to.baseDir, rel)
-	if err := validateFilepathWithinBase(m.to.baseDir, targetPath); err != nil {
+	rel, note, install, err := m.placeInTarget(kind, e.ID, src.filepath, dst, data)
+	if err != nil {
 		m.refuse(e, kind, "%v", err)
 		return
 	}
-
+	plan, err := m.planRows(src, f)
+	if err != nil {
+		m.refuse(e, kind, "read the vectors: %v", err)
+		return
+	}
 	if m.dryRun {
-		m.moved(e, kind, fields.title, rel, note)
-		if writeRows && !m.hasCopyableVectors(e.ID) {
-			m.report.VectorsToEmbed++
-		}
+		m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath))
 		return
 	}
 
-	// 1. The file and the rows into the target: the file through a temp file, renamed into place
-	// once the rows are committed (the order every write of this package uses).
-	var tmpPath string
-	if writeFile {
-		if tmpPath, err = writeTemp(targetPath, data); err != nil {
+	// 1. Into the target: the file (durably, never over another file), then its rows.
+	linked := false
+	if install {
+		if rel, linked, err = m.installFile(kind, e.ID, rel, data); err != nil {
 			m.refuse(e, kind, "write the target file: %v", err)
 			return
 		}
 	}
-	if writeRows {
-		copied, err := m.copyRows(src, rel, fields)
-		if err != nil {
-			if tmpPath != "" {
-				os.Remove(tmpPath)
+	if err := m.writeTargetRows(f, rel, plan); err != nil {
+		if linked {
+			os.Remove(joinStore(m.to, rel))
+		}
+		m.refuse(e, kind, "write the target's index: %v", err)
+		return
+	}
+	m.to.removeStaleTemps(kind, e.ID, rel)
+
+	// 2. Out of this store: the file, then the rows. A stop between the two leaves rows without a
+	// file here, which the next run finishes.
+	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
+		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its file here could not be removed: %v; run the move again", err)})
+		return
+	}
+	if err := m.from.removeEntryRows(e.ID); err != nil {
+		m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
+		return
+	}
+	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, src.filepath))
+}
+
+// finishFromTarget handles an entry whose rows are here but whose file is not: an earlier run put it
+// into the target and stopped before removing the rows here. The target's file is checked and its
+// rows rebuilt from it, then the rows here are removed.
+func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, readErr error) {
+	var rel string
+	switch {
+	case dst != nil:
+		rel = dst.filepath
+	default:
+		// the target may hold the file without rows, when an earlier run lost them
+		copies := m.to.copiesOf(kind, e.ID, m.toFiles[e.ID])
+		if len(copies) != 1 {
+			m.refuse(e, kind, "its file %s cannot be read: %v", src.filepath, readErr)
+			return
+		}
+		rel = copies[0].rel
+	}
+	targetPath, err := movePath(m.to, m.from, rel)
+	if err != nil {
+		m.refuse(e, kind, "the target's file: %v", err)
+		return
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		m.refuse(e, kind, "its file is in neither store (%s here, %s there): %v", src.filepath, rel, err)
+		return
+	}
+	f, err := parseEntry(kind, data)
+	if err != nil || f.id != e.ID {
+		m.refuse(e, kind, "the target's index row for it names %s, which holds another entry's file; reindex the target, then run the move again", rel)
+		return
+	}
+	if other := m.differentCopy(m.to, kind, e.ID, data, m.toFiles[e.ID]); other != "" {
+		m.refuse(e, kind, "the target holds a different file for this id at %s, beside %s; compare them by hand", other, rel)
+		return
+	}
+	plan, err := m.planRows(src, f)
+	if err != nil {
+		m.refuse(e, kind, "read the vectors: %v", err)
+		return
+	}
+	if !m.dryRun {
+		if err := m.writeTargetRows(f, rel, plan); err != nil {
+			m.refuse(e, kind, "write the target's index: %v", err)
+			return
+		}
+		m.to.removeStaleTemps(kind, e.ID, rel)
+		if err := m.from.removeEntryRows(e.ID); err != nil {
+			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
+			return
+		}
+	}
+	m.finish(e, kind, f.title, rel, "finished an earlier move", plan, m.leftovers(e.ID, kind, data, ""))
+}
+
+// alreadyInTarget handles an entry the target's index lists and this store's does not. Its file in
+// the target is checked; copies of it left in this store outside the index (an add-only sync can
+// bring one back) are removed when they are the same file. When the target's file is missing, the
+// move is finished from such a copy.
+func (m *mover) alreadyInTarget(e MoveID, dst *indexRow) {
+	kind := dst.typ
+	if !validEntryPath(kind, dst.filepath) {
+		m.refuse(e, kind, "the target's index has a stale row for it (%q); reindex the target, then run the move again", dst.filepath)
+		return
+	}
+	targetPath, err := movePath(m.to, m.from, dst.filepath)
+	if err != nil {
+		m.refuse(e, kind, "the target's file: %v", err)
+		return
+	}
+	there, err := os.ReadFile(targetPath)
+	if os.IsNotExist(err) {
+		m.finishFromCopyHere(e, kind, dst)
+		return
+	}
+	if err != nil {
+		m.refuse(e, kind, "the target's file %s cannot be read: %v", dst.filepath, err)
+		return
+	}
+	if f, perr := parseEntryFile(kind, there); perr != nil || f.id != e.ID {
+		m.refuse(e, kind, "the target's index row for it names %s, which holds another entry's file; reindex the target, then run the move again", dst.filepath)
+		return
+	}
+	if kind == "note" {
+		m.inTarget[e.ID] = true
+	}
+	if problems := m.leftovers(e.ID, kind, there, ""); len(problems) > 0 {
+		m.needsCleanup(e, kind, problems)
+		return
+	}
+	m.report.AlreadyInTarget = append(m.report.AlreadyInTarget, MovedEntry{Line: e.Line, ID: e.ID, Kind: kind, Title: dst.title, File: dst.filepath})
+}
+
+// finishFromCopyHere finishes the move of an entry that the target's index lists without its file,
+// from the one copy of the file that this store holds outside its index.
+func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
+	copies := m.from.copiesOf(kind, e.ID, m.fromFiles[e.ID])
+	if len(copies) == 0 {
+		m.refuse(e, kind, "the target's index lists it, but its file %s is in neither store; reindex the target", dst.filepath)
+		return
+	}
+	for _, c := range copies[1:] {
+		if !bytes.Equal(c.data, copies[0].data) {
+			m.refuse(e, kind, "the target lacks its file, and this store holds different copies of it (%s, %s); compare them by hand", copies[0].rel, c.rel)
+			return
+		}
+	}
+	data := copies[0].data
+	f, err := parseEntry(kind, data)
+	if err != nil {
+		m.refuse(e, kind, "its file %s does not parse: %v", copies[0].rel, err)
+		return
+	}
+	if kind == "session" {
+		if reason := m.relatedNotesStay(data); reason != "" {
+			m.refuse(e, kind, "%s", reason)
+			return
+		}
+	}
+	rel, _, install, err := m.placeInTarget(kind, e.ID, dst.filepath, dst, data)
+	if err != nil {
+		m.refuse(e, kind, "%v", err)
+		return
+	}
+	plan, err := m.planRows(nil, f)
+	if err != nil {
+		m.refuse(e, kind, "read the vectors: %v", err)
+		return
+	}
+	note := "finished an earlier move: its file was missing in the target"
+	if !m.dryRun {
+		linked := false
+		if install {
+			if rel, linked, err = m.installFile(kind, e.ID, rel, data); err != nil {
+				m.refuse(e, kind, "write the target file: %v", err)
+				return
+			}
+		}
+		if err := m.writeTargetRows(f, rel, plan); err != nil {
+			if linked {
+				os.Remove(joinStore(m.to, rel))
 			}
 			m.refuse(e, kind, "write the target's index: %v", err)
 			return
 		}
-		if !copied {
-			m.report.VectorsToEmbed++
-		}
+		m.to.removeStaleTemps(kind, e.ID, rel)
 	}
-	if tmpPath != "" {
-		if err := os.Rename(tmpPath, targetPath); err != nil {
-			os.Remove(tmpPath)
-			m.refuse(e, kind, "put the target file in place: %v; run the move again", err)
-			return
-		}
-	}
+	m.finish(e, kind, f.title, rel, note, plan, m.leftovers(e.ID, kind, data, ""))
+}
 
-	// 2. Out of this store: the file, then the rows. A stop between the two leaves rows without a
-	// file here, which the next run finishes.
-	if err := validateFilepathWithinBase(m.from.baseDir, srcPath); err != nil {
-		m.refuse(e, kind, "%v", err)
+// finish reports an entry that is now in the target: moved, or left to clean up when something of
+// it stays in this store.
+func (m *mover) finish(e MoveID, kind, title, rel, note string, plan *rowPlan, problems []string) {
+	if plan.embed {
+		m.report.VectorsToEmbed++
+	}
+	if len(problems) > 0 {
+		m.needsCleanup(e, kind, problems)
 		return
 	}
-	if err := os.Remove(srcPath); err != nil && !os.IsNotExist(err) {
-		m.refuse(e, kind, "it is in the target, but its file here could not be removed: %v; run the move again", err)
-		return
-	}
-	if err := m.from.removeEntryRows(e.ID); err != nil {
-		m.refuse(e, kind, "it is in the target, but its rows here could not be removed: %v; run the move again", err)
-		return
-	}
-	m.moved(e, kind, fields.title, rel, note)
-}
-
-// alreadyInTarget reports an entry that is in the target and not in this store, and removes a copy
-// of its file that was left here without index rows (an add-only sync can bring one back) when it
-// is the same file.
-func (m *mover) alreadyInTarget(e MoveID, dst *indexRow) {
-	m.report.AlreadyInTarget = append(m.report.AlreadyInTarget, MovedEntry{Line: e.Line, ID: e.ID, Kind: dst.typ, Title: dst.title, File: dst.filepath})
-	if dst.typ == "note" {
-		m.inTarget[e.ID] = true
-	}
-	if !validEntryPath(dst.typ, dst.filepath) {
-		return
-	}
-	left := filepath.Join(m.from.baseDir, dst.filepath)
-	here, err := os.ReadFile(left)
-	if err != nil {
-		return
-	}
-	if f, perr := parseEntryFile(dst.typ, here); perr != nil || f.id != e.ID {
-		return
-	}
-	there, err := os.ReadFile(filepath.Join(m.to.baseDir, dst.filepath))
-	if err != nil || !bytes.Equal(here, there) {
-		m.warn("%s %s: a different copy of its file sits in this store at %s, outside the index; left as it is", dst.typ, e.ID, dst.filepath)
-		return
-	}
-	if m.dryRun {
-		m.warn("%s %s: a leftover copy of its file sits in this store at %s; it would be removed", dst.typ, e.ID, dst.filepath)
-		return
-	}
-	if err := os.Remove(left); err != nil {
-		m.warn("%s %s: a leftover copy of its file sits in this store at %s and could not be removed: %v", dst.typ, e.ID, dst.filepath, err)
-		return
-	}
-	m.warn("%s %s: removed a leftover copy of its file from this store (%s)", dst.typ, e.ID, dst.filepath)
-}
-
-// relatedNotesStay names the first related note that the session lists and the target would not
-// hold, or returns "". A session file names a related note by its id or by the first 8 characters of
-// it, so both forms are matched.
-func (m *mover) relatedNotesStay(data []byte) string {
-	session, err := ParseSessionMarkdown(data)
-	if err != nil {
-		return fmt.Sprintf("its file does not parse: %v", err)
-	}
-	for _, rn := range session.RelatedNotes {
-		if rn.ID == "" || m.movedNote(rn.ID) || hasNote(m.to, rn.ID) {
-			continue
-		}
-		if hasNote(m.from, rn.ID) {
-			return fmt.Sprintf("it lists the related note %s (%q), which stays in this store; list that note's id too, or take the link out first", rn.ID, rn.Title)
-		}
-		m.warn("session %s lists the related note %s (%q), which is in neither store", session.ID, rn.ID, rn.Title)
-	}
-	return ""
-}
-
-// movedNote reports whether a note whose id is, or starts with, ref is in the target after this run.
-func (m *mover) movedNote(ref string) bool {
-	for id := range m.inTarget {
-		if strings.HasPrefix(id, ref) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasNote reports whether the store has a note whose id is, or starts with, ref.
-func hasNote(fs *FileStore, ref string) bool {
-	var one int
-	return fs.db.QueryRow(`SELECT 1 FROM entries WHERE type = 'note' AND substr(id, 1, ?) = ? LIMIT 1`, len(ref), ref).Scan(&one) == nil
-}
-
-// copyRows writes the entry's rows into the target in one transaction, replacing any rows the
-// target has for this id: the entries row as it is here (with the target's file path), the search
-// row as it is here (rebuilt from the file when this store has none or several), the access log,
-// and the vectors other than TF-IDF ones. It reports whether any vector was copied.
-func (m *mover) copyRows(src *indexRow, rel string, fields *entryFields) (bool, error) {
-	title, content, tags := fields.title, fields.ftsContent, strings.Join(fields.tags, " ")
-	var n int
-	if err := m.from.db.QueryRow(`SELECT COUNT(*) FROM memory_fts WHERE id = ?`, src.id).Scan(&n); err != nil {
-		return false, err
-	}
-	if n == 1 {
-		if err := m.from.db.QueryRow(`SELECT title, content, tags FROM memory_fts WHERE id = ?`, src.id).Scan(&title, &content, &tags); err != nil {
-			return false, err
-		}
-	} else {
-		m.warn("%s %s: this store has %d search rows for it; the target's was built from its file", src.typ, src.id, n)
-	}
-
-	type accessRow struct{ at, typ string }
-	var accesses []accessRow
-	rows, err := m.from.db.Query(`SELECT accessed_at, access_type FROM access_log WHERE entry_id = ? ORDER BY rowid`, src.id)
-	if err != nil {
-		return false, err
-	}
-	for rows.Next() {
-		var a accessRow
-		if err := rows.Scan(&a.at, &a.typ); err != nil {
-			rows.Close()
-			return false, err
-		}
-		accesses = append(accesses, a)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-
-	type vectorRow struct {
-		chunk          int
-		backend, model string
-		dim            int
-		vector         []byte
-		createdAt      string
-	}
-	var vecs []vectorRow
-	if m.vectors {
-		rows, err := m.from.db.Query(`SELECT chunk, backend, model, dim, vector, created_at FROM vectors
-			WHERE doc_id = ? AND backend != 'tfidf' ORDER BY backend, model, chunk`, src.id)
-		if err != nil {
-			return false, err
-		}
-		for rows.Next() {
-			var v vectorRow
-			if err := rows.Scan(&v.chunk, &v.backend, &v.model, &v.dim, &v.vector, &v.createdAt); err != nil {
-				rows.Close()
-				return false, err
-			}
-			vecs = append(vecs, v)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return false, err
-		}
-	}
-
-	// Asked before Begin: the store has one connection, which the transaction then holds.
-	targetVectors := hasVectorsByDoc(m.to.db)
-	tx, err := m.to.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	if err := deleteEntryRowsTx(tx, src.id, targetVectors); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(`INSERT INTO entries (id, type, title, category, branch, project, session_id, date_str, tags, filepath, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, src.id, src.typ, src.title, src.category, src.branch, src.project,
-		src.sessionID, src.dateStr, src.tags, rel, src.created, src.updated); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`, src.id, title, content, tags); err != nil {
-		return false, err
-	}
-	for _, a := range accesses {
-		if _, err := tx.Exec(`INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (?, ?, ?)`, src.id, a.at, a.typ); err != nil {
-			return false, err
-		}
-	}
-	for _, v := range vecs {
-		if _, err := tx.Exec(`INSERT INTO vectors (doc_id, chunk, backend, model, dim, vector, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			src.id, v.chunk, v.backend, v.model, v.dim, v.vector, v.createdAt); err != nil {
-			return false, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	return len(vecs) > 0, nil
-}
-
-// hasCopyableVectors reports whether this store has vectors for the entry that a move would copy.
-func (m *mover) hasCopyableVectors(id string) bool {
-	if !m.vectors {
-		return false
-	}
-	var n int
-	if err := m.from.db.QueryRow(`SELECT COUNT(*) FROM vectors WHERE doc_id = ? AND backend != 'tfidf'`, id).Scan(&n); err != nil {
-		return false
-	}
-	return n > 0
-}
-
-// removeEntryRows removes an entry's rows from this store in one transaction: the entries row, the
-// search rows, the access log and the vectors.
-func (fs *FileStore) removeEntryRows(id string) error {
-	vectors := hasVectorsByDoc(fs.db) // before Begin: the transaction holds the store's one connection
-	tx, err := fs.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := deleteEntryRowsTx(tx, id, vectors); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func deleteEntryRowsTx(tx *sql.Tx, id string, vectors bool) error {
-	stmts := []string{
-		`DELETE FROM entries WHERE id = ?`,
-		`DELETE FROM memory_fts WHERE id = ?`,
-		`DELETE FROM access_log WHERE entry_id = ?`,
-	}
-	if vectors {
-		stmts = append(stmts, `DELETE FROM vectors WHERE doc_id = ?`)
-	}
-	for _, stmt := range stmts {
-		if _, err := tx.Exec(stmt, id); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// freeEntryPath returns where an entry's file goes in this store: rel when no other entry's row
-// names it and no other file sits there (a file holding this entry itself counts as free), else the
-// first such "<name>-N.md" next to it.
-func (fs *FileStore) freeEntryPath(kind, rel, id string) (string, error) {
-	dir := filepath.Dir(rel)
-	base := strings.TrimSuffix(filepath.Base(rel), ".md")
-	for i := 1; i <= 1000; i++ {
-		name := base + ".md"
-		if i > 1 {
-			name = fmt.Sprintf("%s-%d.md", base, i)
-		}
-		candidate := filepath.Join(dir, name)
-		var owner string
-		err := fs.db.QueryRow(`SELECT id FROM entries WHERE filepath = ?`, candidate).Scan(&owner)
-		if err != nil && err != sql.ErrNoRows {
-			return "", fmt.Errorf("check who owns %s in the target: %w", candidate, err)
-		}
-		if err == nil && owner != id {
-			continue
-		}
-		data, readErr := os.ReadFile(filepath.Join(fs.baseDir, candidate))
-		if readErr == nil {
-			if f, perr := parseEntryFile(kind, data); perr != nil || f.id != id {
-				continue
-			}
-		} else if !os.IsNotExist(readErr) {
-			continue
-		}
-		return candidate, nil
-	}
-	return "", fmt.Errorf("no free file name for %s in the target", rel)
-}
-
-// validEntryPath reports whether rel is where a file of this kind lives: notes/<category>/<name>.md
-// or sessions/<name>.md, inside the store.
-func validEntryPath(kind, rel string) bool {
-	if filepath.IsAbs(rel) || strings.Contains(filepath.ToSlash(rel), "..") || !strings.HasSuffix(rel, ".md") {
-		return false
-	}
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	switch kind {
-	case "note":
-		return len(parts) == 3 && parts[0] == "notes"
-	case "session":
-		return len(parts) == 2 && parts[0] == "sessions"
-	}
-	return false
-}
-
-// writeTemp writes data to a new temp file next to path and returns its name; the caller renames it
-// over path. The name starts with a dot and does not end in .md, so a reindex never picks it up.
-func writeTemp(path string, data []byte) (string, error) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(dir, "."+strings.TrimSuffix(filepath.Base(path), ".md")+".*.tmp")
-	if err != nil {
-		return "", err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return "", err
-	}
-	return tmp.Name(), nil
-}
-
-// lockBoth takes the write locks of both stores, always in the same order (by resolved directory),
-// so two moves running in opposite directions cannot deadlock.
-func lockBoth(a, b *FileStore) (func(), error) {
-	first, second := a, b
-	if resolvedDir(b.baseDir) < resolvedDir(a.baseDir) {
-		first, second = b, a
-	}
-	unlockFirst, err := first.lockStore()
-	if err != nil {
-		return nil, err
-	}
-	unlockSecond, err := second.lockStore()
-	if err != nil {
-		unlockFirst()
-		return nil, err
-	}
-	return func() {
-		unlockSecond()
-		unlockFirst()
-	}, nil
-}
-
-// sameStoreDir reports whether two store directories are one, also when reached by a symlink or a
-// bind mount.
-func sameStoreDir(a, b string) bool {
-	if resolvedDir(a) == resolvedDir(b) {
-		return true
-	}
-	ia, errA := os.Stat(a)
-	ib, errB := os.Stat(b)
-	return errA == nil && errB == nil && os.SameFile(ia, ib)
-}
-
-// StoresOverlap reports whether two store directories are one, or one sits inside the other, after
-// symlinks are resolved. Such stores share files, so neither move nor a store read across them is
-// allowed.
-func StoresOverlap(a, b string) bool {
-	if sameStoreDir(a, b) {
-		return true
-	}
-	ra, rb := resolvedDir(a), resolvedDir(b)
-	return isWithin(ra, rb) || isWithin(rb, ra)
-}
-
-// isWithin reports whether path is dir or lies under it (both resolved, absolute).
-func isWithin(path, dir string) bool {
-	rel, err := filepath.Rel(dir, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
-}
-
-// resolvedDir is dir as an absolute path with symlinks resolved, as far as they resolve.
-func resolvedDir(dir string) string {
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
-		return real
-	}
-	return filepath.Clean(dir)
-}
-
-// hasVectorsByDoc reports whether the store's index has a vectors table keyed by doc_id (every layout
-// since v22; a v21 table has none and is migrated on its next open with semantic search).
-func hasVectorsByDoc(db *sql.DB) bool {
-	var n int
-	return db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('vectors') WHERE name = 'doc_id'`).Scan(&n) == nil && n == 1
-}
-
-// hasChunkedVectors reports whether the store's vectors table has the current layout, with a chunk
-// column, so its rows can be copied as they are.
-func hasChunkedVectors(db *sql.DB) bool {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('vectors')`)
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	cols := map[string]bool{}
-	for rows.Next() {
-		var name string
-		if rows.Scan(&name) == nil {
-			cols[name] = true
-		}
-	}
-	return cols["doc_id"] && cols["chunk"] && cols["backend"] && cols["model"] && cols["dim"] && cols["vector"] && cols["created_at"]
+	m.moved(e, kind, title, rel, note)
 }

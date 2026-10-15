@@ -21,18 +21,8 @@ func OpenForSearch(db *sql.DB, embedder Embedder) (*VectorStore, error) {
 	if embedder.Name() == "tfidf" {
 		return nil, fmt.Errorf("TF-IDF vectors belong to the store that built them")
 	}
-	stamped, err := readMeta(db, vectorsSchemaKey)
-	if err != nil && !isNoSuchTable(err) {
-		return nil, fmt.Errorf("read vectors schema: %w", err)
-	}
-	if stamped != "" {
-		n, convErr := strconv.Atoi(stamped)
-		if convErr != nil {
-			return nil, fmt.Errorf("vector_meta.%s is %q, not a number", vectorsSchemaKey, stamped)
-		}
-		if n > currentVectorsSchema {
-			return nil, &ErrIndexNewerThanBinary{IndexSchema: n, BinarySchema: currentVectorsSchema}
-		}
+	if err := CheckIndexSchema(db); err != nil {
+		return nil, err
 	}
 	kind, err := detectVectorsSchema(db)
 	if err != nil {
@@ -42,6 +32,29 @@ func OpenForSearch(db *sql.DB, embedder Embedder) (*VectorStore, error) {
 		return nil, fmt.Errorf("no vectors in the current layout")
 	}
 	return &VectorStore{db: db, embedder: embedder}, nil
+}
+
+// CheckIndexSchema returns an *ErrIndexNewerThanBinary when a newer claudemem stamped this
+// database's vectors, and nil when it has no stamp or one this binary knows. It reads only.
+func CheckIndexSchema(db *sql.DB) error {
+	stamped, err := readMeta(db, vectorsSchemaKey)
+	if err != nil {
+		if isNoSuchTable(err) {
+			return nil
+		}
+		return fmt.Errorf("read vectors schema: %w", err)
+	}
+	if stamped == "" {
+		return nil
+	}
+	n, convErr := strconv.Atoi(stamped)
+	if convErr != nil {
+		return fmt.Errorf("vector_meta.%s is %q, not a number", vectorsSchemaKey, stamped)
+	}
+	if n > currentVectorsSchema {
+		return &ErrIndexNewerThanBinary{IndexSchema: n, BinarySchema: currentVectorsSchema}
+	}
+	return nil
 }
 
 func isNoSuchTable(err error) bool {

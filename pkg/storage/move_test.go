@@ -129,8 +129,9 @@ func readRelFile(t *testing.T, store *FileStore, rel string) []byte {
 	return data
 }
 
-// A moved entry keeps its id, its file (same name, same bytes) and its index rows; TF-IDF vectors stay
-// behind, and this store keeps nothing of it. A second run changes nothing.
+// A moved entry keeps its id, its file (same name, same bytes) and its index rows, built from the
+// file; TF-IDF vectors and the access log stay behind, and this store keeps nothing of it. A second run
+// changes nothing.
 func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	from, to := moveStores(t)
 	note := addTaggedNote(t, from, "ops", "Deploy runbook", "movekw how to deploy", "team", "ops")
@@ -158,7 +159,12 @@ func TestMoveEntries_KeepsIDFileAndRows(t *testing.T) {
 	for k, v := range noteRows {
 		wantNote[k] = v
 	}
-	wantNote["vectors"] = strings.Split(noteRows["vectors"], ";")[0] // the fake-cloud row; not the tfidf one
+	if noteRows["access_log"] == "" {
+		t.Fatalf("no access log before the move: %v", noteRows)
+	}
+	// what a person read stays out of the target, and so does the tfidf vector
+	delete(wantNote, "access_log")
+	wantNote["vectors"] = strings.Split(noteRows["vectors"], ";")[0]
 	if !strings.Contains(wantNote["vectors"], "fake-cloud") {
 		t.Fatalf("vectors before the move: %q", noteRows["vectors"])
 	}
@@ -422,7 +428,7 @@ func TestMoveEntries_CleansUpACopyThatCameBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	report = mustMove(t, from, to, false, note.ID)
-	if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "different copy") {
+	if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "different copy") || len(report.AlreadyInTarget) != 0 {
 		t.Errorf("a different copy: %+v", report)
 	}
 	if _, err := os.Stat(filepath.Join(from.baseDir, rel)); err != nil {
@@ -501,13 +507,17 @@ func TestMoveEntries_SessionsMoveWithTheirRelatedNotes(t *testing.T) {
 		}
 	})
 
-	t.Run("a related note already in the target, or in neither store", func(t *testing.T) {
+	t.Run("a related note already in the target moves the session; one in neither store does not", func(t *testing.T) {
 		from, to := moveStores(t)
 		there := addTaggedNote(t, to, "ops", "Already there", "x", "team")
+		session := newSession(t, from, "Review", link(there, there.ID))
+		if report := mustMove(t, from, to, false, session.ID); len(report.Moved) != 1 {
+			t.Fatalf("report %+v", report)
+		}
 		gone := &models.Note{ID: "eeeeeeee-0000-0000-0000-000000000000", Title: "Deleted note", Category: "ops"}
-		session := newSession(t, from, "Review", link(there, there.ID), link(gone, gone.ID))
-		report := mustMove(t, from, to, false, session.ID)
-		if len(report.Moved) != 1 || len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "in neither store") {
+		other := newSession(t, from, "Second review", link(there, there.ID), link(gone, gone.ID))
+		report := mustMove(t, from, to, false, other.ID)
+		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "in neither store") {
 			t.Fatalf("report %+v", report)
 		}
 	})

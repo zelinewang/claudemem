@@ -233,23 +233,31 @@ the listed order) and warns. The other commands (`graph`, `health`, `sync`, `exp
 `reindex`, ...) work on `--store` alone.
 
 `claudemem move --to <store> --file <ids>` moves the listed notes and sessions from `--store` to
-another existing store, keeping each entry's id, its file (under the same name, or the next free
-`-N` name if another file holds it there) and its index rows: the entries row, the search row,
-the access log and the vectors. TF-IDF vectors stay behind, because they are built against one
-store's own corpus; the report counts the entries to embed with
-`claudemem --store <target> reindex --vectors --missing`. The ids file has one full id per line;
-blank lines and anything after a `#` are skipped, and the whole file is checked before anything
-moves.
+another existing store, keeping each entry's id and its file (under the same name, or the next free
+`-N` name if another file holds it there). The target's index rows are built from the file, as
+`reindex` builds them; the vectors go along when this store's search row matches the file (they were
+embedded from it), except TF-IDF ones, which are built against one store's own corpus, and except
+vectors of the target's own backend and model at another size. The access log is not carried over:
+it records what a person read. The report counts the entries that the target's semantic search has
+no vectors for, to embed with `claudemem --store <target> reindex --vectors --missing`. The ids file
+has one full id per line; blank lines and anything after a `#` are skipped, and the whole file is
+checked before anything moves.
 
-Each entry moves on its own under both stores' write locks: the file and the rows go to the
-target, then the entry leaves this store. A run that stops half way leaves every entry whole in
-one store or both, and running the same file again finishes it; two different files under one id
-are refused. Notes move before sessions, and a session moves only when every note it lists under
-Related Notes is in the target or moves in the same run, since a session file names its related
-notes by title. `--dry-run` changes nothing, and missing or refused entries make the exit code 1.
+Each entry moves on its own under both stores' write locks: its file goes into the target first,
+synced and never over another file, then its index rows (committed with a full sync), and only then
+does the entry leave this store. A run that stops half way leaves every entry whole in one store or
+both, and running the same file again finishes it, also from a file left in the target without
+rows. Two different files under one id (anywhere in the target), a file reached through a symlink
+between the two stores, a stale row in the target, stores that overlap and an index written by a
+newer claudemem are refused. Notes move before sessions, and a session moves only when every note it
+lists under its Related Notes sections is in the target or moves in the same run, since a session
+file names its related notes by title; a line there without a note id, an id shorter than 8
+characters or one that matches several notes keeps the session where it is. `--dry-run` changes
+nothing. Missing and refused entries, and entries left to clean up (in the target, with a different
+copy of the file, or rows the move could not remove, still in this store), make the exit code 1.
 With an add-only sync between machines, a moved file can come back from another machine's copy:
-move there too, or run the move again after the next pull, which removes a copy that came back
-when it is the same file.
+move there too, or run the move again after the next pull, which removes a copy that came back when
+it is the same file.
 
 ## Search Backends
 

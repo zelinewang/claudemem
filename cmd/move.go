@@ -19,31 +19,37 @@ var moveCmd = &cobra.Command{
 	Use:   "move --to <store> --file <ids>",
 	Short: "Move entries to another store, keeping their ids",
 	Long: `Move the listed notes and sessions from this store (--store) to another existing store,
-keeping each entry's id, its file and its index rows (the search row, the access
-log and the vectors, except TF-IDF ones, which belong to one store's corpus).
+keeping each entry's id and its file. The target's index rows are built from the
+file; vectors go along when they were made from it (TF-IDF ones never do: they
+belong to one store's corpus). The access log is not carried over: it records
+what a person read.
 
 The file lists one full id per line; blank lines and everything after a # are
 skipped, and --file - reads standard input. The whole file is checked before
 anything moves.
 
 Each entry moves on its own, under the write locks of both stores: its file is
-written to the target under the same name (or, if another file has that name
-there, the next free one), its index rows are copied, then it leaves this store.
-A run that stops half way leaves each entry whole in one store or both, and
-running the same file again finishes it. Notes move first, then sessions. A
-session moves only when every note it lists as related is in the target or moves
-in the same run, since a session file names its related notes by title.
+put into the target under the same name (or, if another file has that name
+there, the next free one), durably and never over another file, then its index
+rows; only then does it leave this store. A run that stops half way leaves each
+entry whole in one store or both, and running the same file again finishes it.
+Two different files under one id, a file reached through a symlink between the
+stores, and stores that overlap are refused. Notes move first, then sessions. A
+session moves only when every note it lists under Related Notes is in the target
+or moves in the same run, since a session file names its related notes by title.
 
 The report lists the entries moved, already in the target, missing (in neither
-store) and refused, with the reason; missing or refused entries make the exit
-code 1. With --dry-run nothing changes.
+store), refused (with the reason) and left to clean up (in the target, with
+something left in this store); any of the last three makes the exit code 1. With
+--dry-run nothing changes.
 
 Examples:
   claudemem move --to ~/team-memory --file ids.txt --dry-run
   claudemem move --to ~/team-memory --file ids.txt
   claudemem --store ~/team-memory move --to ~/.claudemem --file back.txt`,
-	Args: cobra.NoArgs,
-	RunE: runMove,
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE:         runMove,
 }
 
 func init() {
@@ -73,6 +79,12 @@ func runMove(cmd *cobra.Command, args []string) error {
 	}
 	if sameDirKey(fromDir) == sameDirKey(toDir) {
 		return fmt.Errorf("--to is this store itself (%s)", displayStoreName(fromDir))
+	}
+	if storage.StoresOverlap(fromDir, toDir) {
+		return fmt.Errorf("--to %s and this store %s overlap: one sits inside the other", displayStoreName(toDir), displayStoreName(fromDir))
+	}
+	if !storage.IsStoreDir(fromDir) {
+		return fmt.Errorf("--store %s is not a claudemem store (no .index/search.db)", displayStoreName(fromDir))
 	}
 
 	var in io.Reader = os.Stdin
@@ -116,8 +128,12 @@ func runMove(cmd *cobra.Command, args []string) error {
 	} else {
 		printMoveReport(report, displayStoreName(fromDir), displayStoreName(toDir))
 	}
-	if len(report.Missing) > 0 || len(report.Refused) > 0 {
-		return fmt.Errorf("move: %d missing, %d refused", len(report.Missing), len(report.Refused))
+	if len(report.Missing) > 0 || len(report.Refused) > 0 || len(report.NeedsCleanup) > 0 {
+		msg := fmt.Sprintf("move: %d missing, %d refused", len(report.Missing), len(report.Refused))
+		if len(report.NeedsCleanup) > 0 {
+			msg += fmt.Sprintf(", %d left to clean up", len(report.NeedsCleanup))
+		}
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
 }
@@ -127,8 +143,12 @@ func printMoveReport(r *storage.MoveReport, from, to string) {
 	if r.DryRun {
 		header, verb = "move (dry run)", "to move"
 	}
-	OutputText("%s: %d ids from %s to %s: %d %s, %d already in the target, %d missing, %d refused",
+	summary := fmt.Sprintf("%s: %d ids from %s to %s: %d %s, %d already in the target, %d missing, %d refused",
 		header, r.Entries, from, to, len(r.Moved), verb, len(r.AlreadyInTarget), len(r.Missing), len(r.Refused))
+	if len(r.NeedsCleanup) > 0 {
+		summary += fmt.Sprintf(", %d left to clean up", len(r.NeedsCleanup))
+	}
+	OutputText("%s", summary)
 	for _, e := range r.Moved {
 		line := fmt.Sprintf("  %s %s %s %q -> %s", verb, e.Kind, e.ID, e.Title, e.File)
 		if e.Note != "" {
@@ -145,10 +165,13 @@ func printMoveReport(r *storage.MoveReport, from, to string) {
 	for _, issue := range r.Refused {
 		OutputText("  refused, line %d: %s %s: %s", issue.Line, issue.Kind, issue.ID, issue.Reason)
 	}
+	for _, issue := range r.NeedsCleanup {
+		OutputText("  left to clean up, line %d: %s %s: %s", issue.Line, issue.Kind, issue.ID, issue.Reason)
+	}
 	for _, w := range r.Warnings {
 		OutputText("  warning: %s", w)
 	}
 	if r.VectorsToEmbed > 0 {
-		OutputText("  %d moved entries took no vectors along; if %s uses semantic search, run: claudemem --store %s reindex --vectors --missing", r.VectorsToEmbed, to, to)
+		OutputText("  %d moved entries have no vectors for the target's semantic search; if %s uses it, run: claudemem --store %s reindex --vectors --missing", r.VectorsToEmbed, to, to)
 	}
 }

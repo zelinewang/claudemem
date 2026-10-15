@@ -191,3 +191,46 @@ func TestCLI_MoveReadsStdinAndHomePaths(t *testing.T) {
 		t.Errorf("the note in ~/team: %v", got)
 	}
 }
+
+// A mistyped --store is refused before anything is created, a store inside the other is refused, a
+// refusal prints no usage block, and a different copy of a moved file left here makes the exit code 1.
+func TestCLI_MoveChecks(t *testing.T) {
+	from, to := t.TempDir(), newStoreDir(t)
+	note := addNoteCLI(t, from, "ops", "Checked runbook", "checkkw steps", "team")
+	ids := writeIDs(t, note)
+
+	typo := filepath.Join(t.TempDir(), "typo")
+	if _, err := runCLI(t, typo, "move", "--to", to, "--file", ids, "--dry-run"); err == nil || !strings.Contains(err.Error(), "is not a claudemem store") {
+		t.Errorf("a mistyped --store: %v", err)
+	}
+	if _, err := os.Stat(typo); !os.IsNotExist(err) {
+		t.Errorf("the dry run created the mistyped store: %v", err)
+	}
+
+	nested := filepath.Join(from, "notes", "team")
+	mustRunCLI(t, nested, "stats")
+	for _, args := range [][]string{{"--store", from, "move", "--to", nested}, {"--store", nested, "move", "--to", from}} {
+		if _, err := runCLI(t, args[1], append(args[2:], "--file", ids)...); err == nil || !strings.Contains(err.Error(), "overlap") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+
+	out, err := runCLIChild(t, t.TempDir(), "--store", from, "move", "--to", filepath.Join(to, "nope"), "--file", ids)
+	if err == nil || strings.Contains(out, "Usage:") {
+		t.Errorf("a refused move printed the usage block: %v\n%s", err, out)
+	}
+
+	mustRunCLI(t, from, "move", "--to", to, "--file", ids)
+	rel := filepath.Join("notes", "ops", "checked-runbook.md")
+	moved, err := os.ReadFile(filepath.Join(to, rel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(from, rel), []byte(strings.Replace(string(moved), "checkkw steps", "edited here", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, from, "move", "--to", to, "--file", ids)
+	if err == nil || !strings.Contains(err.Error(), "1 left to clean up") || !strings.Contains(out, "left to clean up, line 1: note "+note+": a different copy") {
+		t.Errorf("a different copy left here: %v\n%s", err, out)
+	}
+}

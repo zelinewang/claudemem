@@ -218,6 +218,7 @@ if [ "$GOT" = "2 moved, 1 refused, dry run True" ] && [ "$FILES_BEFORE" = "$(fin
 else
     fail "move --dry-run" "[$GOT] target notes=[$TARGET_NOTES]"
 fi
+CF note get "$M_TEAM" >/dev/null  # a read, logged in the access log here
 OUT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" 2>&1); CODE=$?
 if [ "$CODE" = "1" ] && grep -q ": 2 moved, 0 already in the target, 0 missing, 1 refused" <<<"$OUT" \
     && grep -qF "refused, line 4: session $M_MIXED: it lists the related note" <<<"$OUT"; then
@@ -235,9 +236,33 @@ GOT=$(CT session get "$M_SESS" --format json | json "d['related_notes'][0]['id']
 [ "$GOT" = "$M_TEAM" ] && pass "the moved session keeps its related note" || fail "moved session" "[$GOT]"
 GOT=$(CF move --to "$MT" --file "$WORK/move-ids.txt" --format json 2>/dev/null | json "'%d/%d/%d' % (len(d['moved']), len(d['already_in_target']), len(d['refused']))")
 [ "$GOT" = "0/2/1" ] && pass "running the same file again moves nothing more" || fail "second move" "[$GOT]"
+GOT=$(CT stats --top-accessed --format json | json "[a['access_count'] for a in d['top_accessed'] if a['id'] == '$M_TEAM']")
+[ "$GOT" = "[1]" ] && pass "the access log stays behind: the target counts only its own read of the moved note" || fail "access log carried" "[$GOT]"
+cp "$MT/notes/ops/team-runbook.md" "$MF/notes/ops/team-runbook.md"
+python3 -c "import sys; p = sys.argv[1]; s = open(p).read(); open(p, 'w').write(s.replace('mvkw steps', 'edited here'))" "$MF/notes/ops/team-runbook.md"
+printf '%s\n' "$M_TEAM" > "$WORK/team-id.txt"
+OUT=$(CF move --to "$MT" --file "$WORK/team-id.txt" 2>&1); CODE=$?
+if [ "$CODE" = "1" ] && grep -q "1 left to clean up" <<<"$OUT" && grep -q "a different copy of its file sits in this store" <<<"$OUT" \
+    && [ -f "$MF/notes/ops/team-runbook.md" ]; then
+    pass "a different copy of a moved file left here is kept and reported, exit 1"
+else
+    fail "different leftover copy" "exit=$CODE $OUT"
+fi
+rm -f "$MF/notes/ops/team-runbook.md"
+M_LINK=$(CF note add linked --title "Linked runbook" --content "mvkw linked" --tags team --format json | json "d['note_id']")
+mkdir -p "$MT/notes"
+ln -s "$MF/notes/linked" "$MT/notes/linked"
+printf '%s\n' "$M_LINK" > "$WORK/link-id.txt"
+OUT=$(CF move --to "$MT" --file "$WORK/link-id.txt" 2>&1); CODE=$?
+if [ "$CODE" = "1" ] && grep -q "symlink" <<<"$OUT" && CF note get "$M_LINK" >/dev/null 2>&1 && ! grep -q "Usage:" <<<"$OUT"; then
+    pass "a file reached through a symlink between the stores is refused and kept, without a usage block"
+else
+    fail "symlinked category" "exit=$CODE $OUT"
+fi
+rm -f "$MT/notes/linked"
 CF config set stores.read "$MT" >/dev/null
 GOT=$(CF search mvkw --type note --format json | json "' '.join(sorted(e['title'] + '@' + e['store'] for e in d))")
-[ "$GOT" = "Holiday plan@$MF Team runbook@$MT" ] && pass "a store that reads the target finds the moved note, named by the target" \
+[ "$GOT" = "Holiday plan@$MF Linked runbook@$MF Team runbook@$MT" ] && pass "a store that reads the target finds the moved note, named by the target" \
     || fail "search after the move" "[$GOT]"
 
 echo ""
