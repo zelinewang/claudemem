@@ -35,11 +35,38 @@ func resetFlags(c *cobra.Command) {
 	}
 }
 
+// isTempPath reports whether path lies inside a directory that t.TempDir creates under: GOTMPDIR when
+// it is set (go test puts test directories there), else the system temp directory.
+func isTempPath(path string) bool {
+	for _, root := range []string{os.Getenv("GOTMPDIR"), os.TempDir()} {
+		if root == "" {
+			continue
+		}
+		if rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path)); err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// The runCLI guard takes every directory t.TempDir makes, also under a GOTMPDIR outside TMPDIR, and
+// nothing outside the temp roots.
+func TestIsTempPath(t *testing.T) {
+	if dir := t.TempDir(); !isTempPath(dir) {
+		t.Errorf("t.TempDir() = %q is not taken as temporary", dir)
+	}
+	for _, path := range []string{"/", "/no-such-root/.claudemem", os.TempDir()} {
+		if isTempPath(path) {
+			t.Errorf("%q is taken as temporary", path)
+		}
+	}
+}
+
 // runCLI runs `claudemem --store <storePath> args...` and returns what it printed on stdout.
 // Cobra keeps flag values between runs, so every flag is reset to its default first.
 func runCLI(t *testing.T, storePath string, args ...string) (string, error) {
 	t.Helper()
-	if storePath == "" || !strings.HasPrefix(storePath, os.TempDir()) {
+	if storePath == "" || !isTempPath(storePath) {
 		t.Fatalf("runCLI needs a temporary store, got %q", storePath)
 	}
 	resetFlags(rootCmd)
