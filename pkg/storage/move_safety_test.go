@@ -620,3 +620,22 @@ func TestMoveEntries_TargetFileIsNeverTheSourceFile(t *testing.T) {
 		t.Errorf("an ordinary source file: %v", err)
 	}
 }
+
+// An entry whose file here cannot be removed is in the target, left to clean up there: the target
+// has no vectors for it, so it is counted to embed all the same.
+func TestMoveEntries_CountsToEmbedAnEntryLeftToCleanUp(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory whose permissions stop a removal")
+	}
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Stuck", "stuck body", "team")
+	dir := filepath.Join(from.baseDir, filepath.Dir(entryFile(t, from, note.ID)))
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	report := mustMove(t, from, to, false, note.ID)
+	if len(report.NeedsCleanup) != 1 || report.VectorsToEmbed != 1 {
+		t.Errorf("report %+v, want it left to clean up and counted to embed", report)
+	}
+}

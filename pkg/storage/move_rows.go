@@ -90,7 +90,11 @@ func (m *mover) writeTargetRows(f *parsedEntry, rel string) error {
 	if _, err := tx.Exec(`INSERT INTO memory_fts (id, title, content, tags) VALUES (?, ?, ?, ?)`, f.id, f.title, f.ftsContent, f.tags); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	m.report.VectorsToEmbed++ // in the target now, without vectors
+	return nil
 }
 
 // removeEntryRows removes an entry's rows from this store in one transaction: the entries row, the

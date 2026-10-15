@@ -524,9 +524,12 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 }
 
 // finish reports an entry that is now in the target: moved, or left to clean up when something of
-// it stays in this store. Either way the target has no vectors for it.
+// it stays in this store. A dry run counts it to embed here; a move counts it when its rows go into
+// the target (writeTargetRows), also when it stops before the entry leaves this store.
 func (m *mover) finish(e MoveID, kind, title, rel, note string, problems []string) {
-	m.report.VectorsToEmbed++
+	if m.dryRun {
+		m.report.VectorsToEmbed++
+	}
 	if len(problems) > 0 {
 		m.needsCleanup(e, kind, problems)
 		return
