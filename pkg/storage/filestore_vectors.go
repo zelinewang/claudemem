@@ -249,7 +249,8 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 	// counts as a facet: without it `search --type session` let semantic-only notes through.
 	hasFacets := opts.Type != "" || opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
 	if hasFacets {
-		filtered := semanticResults[:0]
+		// A new slice: filtering into semanticResults[:0] overwrote hits the second loop still reads.
+		filtered := make([]SearchResult, 0, len(semanticResults))
 		for _, r := range semanticResults {
 			if ftsIDs[r.ID] {
 				filtered = append(filtered, r)
