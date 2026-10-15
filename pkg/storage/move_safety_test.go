@@ -356,6 +356,44 @@ func TestMoveEntries_FindsLeftoverCopiesAnywhere(t *testing.T) {
 	}
 }
 
+// A leftover copy that cannot be read, or no longer parses, is reported, not skipped as if it were gone.
+func TestMoveEntries_ReportsALeftoverCopyItCannotCheck(t *testing.T) {
+	for _, problem := range []string{"cannot be read", "no longer parses"} {
+		t.Run(problem, func(t *testing.T) {
+			if problem == "cannot be read" && (runtime.GOOS == "windows" || os.Geteuid() == 0) {
+				t.Skip("needs a file its permissions keep from being read")
+			}
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+			rel := entryFile(t, from, note.ID)
+			data := readRelFile(t, from, rel)
+			if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+				t.Fatalf("report %+v", report)
+			}
+			path := filepath.Join(from.baseDir, rel)
+			writeRel(t, from, rel, data) // a sync brings the file back
+			if problem == "cannot be read" {
+				atStep(t, "after-walk", func() { // the walk read it; then its permissions change
+					if err := os.Chmod(path, 0); err != nil {
+						t.Fatal(err)
+					}
+				})
+				t.Cleanup(func() { os.Chmod(path, 0600) })
+			} else {
+				broken := strings.Replace(string(data), "\n---\n", "\n", 1) // drop the frontmatter's closing line
+				writeRel(t, from, rel, []byte(broken))
+			}
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, problem) {
+				t.Errorf("report %+v, want it left to clean up", report)
+			}
+			if !exists(path) {
+				t.Error("the copy here was removed")
+			}
+		})
+	}
+}
+
 // What a stopped run leaves is recognized: a temp file is removed, and a file in the target without
 // rows is used when this store's rows have lost their file.
 func TestMoveEntries_FinishesWhatAStoppedRunLeft(t *testing.T) {

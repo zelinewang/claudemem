@@ -114,10 +114,19 @@ func (m *mover) leftovers(id, kind string, data []byte, except, targetRel string
 			continue
 		}
 		held, err := os.ReadFile(path)
-		if err != nil {
+		if os.IsNotExist(err) {
 			continue // gone since the walk
 		}
-		if f, perr := parseEntryFile(kind, held); perr != nil || f.id != id {
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("a copy of its file at %s cannot be read: %v; check it by hand", rel, err))
+			continue
+		}
+		f, perr := parseEntryFile(kind, held)
+		if perr == nil && f.id != id {
+			continue // another entry's file now
+		}
+		if perr != nil {
+			problems = append(problems, fmt.Sprintf("a copy of its file at %s no longer parses: %v; check it by hand", rel, perr))
 			continue
 		}
 		if !bytes.Equal(held, data) {
