@@ -549,20 +549,17 @@ func writeTemp(path string, data []byte) (string, error) {
 	return tmp.Name(), nil
 }
 
-// removeStaleTemps removes the temp files that an earlier, stopped move left next to rel holding this
-// entry.
-func (fs *FileStore) removeStaleTemps(kind, id, rel string) {
+// removeStaleTemps removes the temp files that an earlier, stopped move left next to rel: those that
+// hold exactly data, the moved file. Any other temp there is kept, also one of this entry: a note update
+// or a tag edit that failed to put its file in place names its temp as the only copy of the new text.
+func (fs *FileStore) removeStaleTemps(rel string, data []byte) {
 	dir := filepath.Dir(filepath.Join(fs.baseDir, rel))
 	temps, _ := filepath.Glob(filepath.Join(dir, ".*.tmp"))
 	for _, tmp := range temps {
 		if info, err := os.Lstat(tmp); err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		data, err := os.ReadFile(tmp)
-		if err != nil {
-			continue
-		}
-		if f, err := parseEntryFile(kind, data); err == nil && f.id == id {
+		if held, err := os.ReadFile(tmp); err == nil && bytes.Equal(held, data) {
 			os.Remove(tmp)
 		}
 	}

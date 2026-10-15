@@ -373,6 +373,22 @@ func TestMoveEntries_FinishesWhatAStoppedRunLeft(t *testing.T) {
 		}
 	})
 
+	t.Run("a temp of this entry with other content is kept", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "old body", "team")
+		rel := entryFile(t, from, note.ID)
+		// a note update that failed to put its file in place names this temp as the new text's only copy
+		newer := strings.Replace(string(readRelFile(t, from, rel)), "old body", "newer body only in the temp", 1)
+		temp := filepath.Join(filepath.Dir(rel), ".deploy-runbook.987654.tmp")
+		writeRel(t, to, temp, []byte(newer))
+		if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+			t.Fatalf("report %+v", report)
+		}
+		if !exists(filepath.Join(to.baseDir, temp)) {
+			t.Error("the temp with other content was removed")
+		}
+	})
+
 	t.Run("the target's file without rows, the rows here without the file", func(t *testing.T) {
 		from, to := moveStores(t)
 		note := addTaggedNote(t, from, "ops", "Deploy runbook", "lostrowskw", "team")

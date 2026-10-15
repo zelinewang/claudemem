@@ -420,7 +420,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 		return
 	}
 	moveStep("after-target-rows")
-	m.to.removeStaleTemps(kind, e.ID, rel)
+	m.to.removeStaleTemps(rel, data)
 
 	// 2. Out of this store: the file, then the rows. A stop between the two leaves rows without a
 	// file here, which the next run finishes.
@@ -499,7 +499,7 @@ func (m *mover) finishFromTarget(e MoveID, kind string, src, dst *indexRow, read
 			m.refuse(e, kind, "write the target's index: %v", err)
 			return
 		}
-		m.to.removeStaleTemps(kind, e.ID, rel)
+		m.to.removeStaleTemps(rel, data)
 		if err := m.from.removeEntryRows(e.ID); err != nil {
 			m.needsCleanup(e, kind, []string{fmt.Sprintf("it is in the target, but its rows here could not be removed: %v; run the move again", err)})
 			return
@@ -590,7 +590,7 @@ func (m *mover) finishFromCopyHere(e MoveID, kind string, dst *indexRow) {
 			m.refuse(e, kind, "write the target's index: %v%s", err, m.rollBack(linked, rel))
 			return
 		}
-		m.to.removeStaleTemps(kind, e.ID, rel)
+		m.to.removeStaleTemps(rel, data)
 	}
 	m.finish(e, kind, f.title, rel, note, m.leftovers(e.ID, kind, data, "", rel))
 }
