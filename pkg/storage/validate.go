@@ -128,3 +128,23 @@ func validateFilepathWithinBase(base, target string) error {
 	}
 	return nil
 }
+
+// PathInside reports whether path lies inside dir (dir itself does not count), both as written and
+// with the symlinks of its existing part resolved: a path that ".." or a symlink on the way leads out
+// of dir is not inside it.
+func PathInside(dir, path string) bool {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	if rel, err := filepath.Rel(absDir, absPath); err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	realDir, realPath := resolvedDir(absDir), resolvedPath(absPath)
+	return realPath != realDir && isWithin(realPath, realDir)
+}

@@ -205,11 +205,12 @@ func extractArchive(tr *tar.Reader, dir string) (int, error) {
 
 		targetPath := filepath.Join(dir, name)
 
-		// Security: ensure path doesn't escape store directory
-		absTarget, _ := filepath.Abs(targetPath)
-		absStore, _ := filepath.Abs(dir)
-		if !strings.HasPrefix(absTarget, absStore) {
-			continue // skip paths that escape the store
+		// Security: never write outside the store, whether ".." or a symlink in the store leads there.
+		// (A prefix check passed "claudemem/../<store>-x/...", a sibling directory whose name starts
+		// with the store's.)
+		if !storage.PathInside(dir, targetPath) {
+			fmt.Fprintf(os.Stderr, "warning: import skipped %s: it leads out of the store\n", header.Name)
+			continue
 		}
 
 		switch header.Typeflag {

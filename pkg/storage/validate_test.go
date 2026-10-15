@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -287,5 +288,23 @@ func TestValidateTags_TagTooLong(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tag too long") {
 		t.Errorf("Expected error about tag too long, got: %v", err)
+	}
+}
+
+func TestPathInside(t *testing.T) {
+	root := t.TempDir()
+	store := filepath.Join(root, "memory")
+	for path, want := range map[string]bool{
+		filepath.Join(store, "notes", "ops", "a.md"):   true,
+		filepath.Join(store, "a.md"):                   true,
+		store:                                          false,
+		filepath.Join(root, "memory-x", "a.md"):        false,
+		filepath.Join(store, "..", "memory-x", "a.md"): false,
+		filepath.Join(store, "notes", "..", "..", "a"): false,
+		filepath.Join(store, "notes", "..", "keep.md"): true,
+	} {
+		if got := PathInside(store, path); got != want {
+			t.Errorf("PathInside(%s, %s) = %v, want %v", store, path, got, want)
+		}
 	}
 }
