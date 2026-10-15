@@ -131,10 +131,11 @@ func hasVectorsByDoc(db *sql.DB) bool {
 
 // relatedNotesStay checks the notes a session file lists under its Related Notes sections, read
 // from the file's text (the parsed session keeps only the last such section, and drops a line without
-// an id). It returns why the session must stay, or "" when every listed note is in the target, moves
-// there in this run, or is in neither store (a dead link in both, so only a warning). A note counts as
-// in a store when its index lists it or one of its note files holds it (the index can lag behind the
-// files), and a note this run refused stays here.
+// an id). Every id in backticks on a line counts, not only the first. It returns why the session must
+// stay, or "" when every listed note is in the target, moves there in this run, or is in neither store
+// (a dead link in both, so only a warning). A note counts as in a store when its index lists it or one
+// of its note files holds it (the index can lag behind the files), and a note this run refused stays
+// here.
 func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 	items, bad := relatedNoteItems(data)
 	if bad != "" {
@@ -145,51 +146,90 @@ func (m *mover) relatedNotesStay(sessionID string, data []byte) string {
 		if rn.ID == "" {
 			return fmt.Sprintf("its Related Notes line %q names no note id in backticks; fix or remove the line first", item)
 		}
-		if len(rn.ID) < 8 {
-			return fmt.Sprintf("it lists the related note %q, too short an id to name one note; write at least its first 8 characters", rn.ID)
+		if reason := m.relatedNoteStays(sessionID, item, rn.ID, rn.Title, true); reason != "" {
+			return reason
 		}
-		here, err := notesWithPrefix(m.from, rn.ID)
-		if err != nil {
-			return fmt.Sprintf("check its related note %s: %v", rn.ID, err)
-		}
-		there, err := notesWithPrefix(m.to, rn.ID)
-		if err != nil {
-			return fmt.Sprintf("check its related note %s: %v", rn.ID, err)
-		}
-		filesThere := idsWithPrefix(m.toNoteFiles, rn.ID)
-		ids := map[string]bool{}
-		for _, list := range [][]string{here, there, idsWithPrefix(m.fromNoteFiles, rn.ID), filesThere} {
-			for _, id := range list {
-				ids[id] = true
+		// further ids on the line: another link joined onto it, or a nested item
+		spans := backtickSpans(item)
+		for i := 1; i < len(spans); i++ {
+			if ref := spans[i]; len(ref) >= 8 && looksLikeNoteID(ref) {
+				if reason := m.relatedNoteStays(sessionID, item, ref, "", false); reason != "" {
+					return reason
+				}
 			}
-		}
-		for id := range m.refusedNotes {
-			if strings.HasPrefix(id, rn.ID) {
-				ids[id] = true
-			}
-		}
-		switch {
-		case len(ids) == 0 && !looksLikeNoteID(rn.ID):
-			return fmt.Sprintf("its Related Notes line %q names %q in backticks, which is no note id; fix or remove the line first", item, rn.ID)
-		case len(ids) == 0:
-			m.warn("session %s lists the related note %s (%q), which is in neither store", sessionID, rn.ID, rn.Title)
-			continue
-		case len(ids) > 1:
-			return fmt.Sprintf("it lists the related note %s (%q), which matches several notes; write its full id", rn.ID, rn.Title)
-		}
-		var id string
-		for id = range ids {
-		}
-		switch {
-		case m.refusedNotes[id]:
-			return fmt.Sprintf("it lists the related note %s (%q), which stays in this store: its move was refused", rn.ID, rn.Title)
-		case m.inTarget[id]:
-		case contains(there, id), contains(filesThere, id):
-		default:
-			return fmt.Sprintf("it lists the related note %s (%q), which stays in this store; list that note's id too, or take the link out first", rn.ID, rn.Title)
 		}
 	}
 	return ""
+}
+
+// relatedNoteStays checks one note ref of a Related Notes line, the line's first ref (which must name
+// a note) or a further id on it. It returns why the session must stay, or "".
+func (m *mover) relatedNoteStays(sessionID, item, ref, title string, first bool) string {
+	name := fmt.Sprintf("%s (%q)", ref, title)
+	if !first {
+		name = fmt.Sprintf("%s (on the line %q)", ref, item)
+	}
+	if len(ref) < 8 {
+		return fmt.Sprintf("it lists the related note %q, too short an id to name one note; write at least its first 8 characters", ref)
+	}
+	here, err := notesWithPrefix(m.from, ref)
+	if err != nil {
+		return fmt.Sprintf("check its related note %s: %v", ref, err)
+	}
+	there, err := notesWithPrefix(m.to, ref)
+	if err != nil {
+		return fmt.Sprintf("check its related note %s: %v", ref, err)
+	}
+	filesThere := idsWithPrefix(m.toNoteFiles, ref)
+	ids := map[string]bool{}
+	for _, list := range [][]string{here, there, idsWithPrefix(m.fromNoteFiles, ref), filesThere} {
+		for _, id := range list {
+			ids[id] = true
+		}
+	}
+	for id := range m.refusedNotes {
+		if strings.HasPrefix(id, ref) {
+			ids[id] = true
+		}
+	}
+	switch {
+	case len(ids) == 0 && !looksLikeNoteID(ref):
+		return fmt.Sprintf("its Related Notes line %q names %q in backticks, which is no note id; fix or remove the line first", item, ref)
+	case len(ids) == 0:
+		m.warn("session %s lists the related note %s, which is in neither store", sessionID, name)
+		return ""
+	case len(ids) > 1:
+		return fmt.Sprintf("it lists the related note %s, which matches several notes; write its full id", name)
+	}
+	var id string
+	for id = range ids {
+	}
+	switch {
+	case m.refusedNotes[id]:
+		return fmt.Sprintf("it lists the related note %s, which stays in this store: its move was refused", name)
+	case m.inTarget[id]:
+	case contains(there, id), contains(filesThere, id):
+	default:
+		return fmt.Sprintf("it lists the related note %s, which stays in this store; list that note's id too, or take the link out first", name)
+	}
+	return ""
+}
+
+// backtickSpans returns the text between each pair of backticks on a line, in order.
+func backtickSpans(line string) []string {
+	var spans []string
+	for {
+		open := strings.IndexByte(line, '`')
+		if open < 0 {
+			return spans
+		}
+		end := strings.IndexByte(line[open+1:], '`')
+		if end < 0 {
+			return spans
+		}
+		spans = append(spans, line[open+1:open+1+end])
+		line = line[open+1+end+1:]
+	}
 }
 
 // relatedNoteItems returns the list items of every Related Notes section of a session file, or the

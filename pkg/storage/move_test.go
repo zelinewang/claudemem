@@ -509,6 +509,15 @@ func TestMoveEntries_SessionsMoveWithTheirRelatedNotes(t *testing.T) {
 		}
 	})
 
+	t.Run("a title with a word in backticks", func(t *testing.T) {
+		from, to := moveStores(t)
+		there := addTaggedNote(t, to, "ops", "Fix `kubectl` rollout", "x", "team")
+		session := newSession(t, from, "Review", link(there, there.ID))
+		if report := mustMove(t, from, to, false, session.ID); len(report.Moved) != 1 {
+			t.Fatalf("report %+v", report)
+		}
+	})
+
 	t.Run("a related note already in the target, or in neither store", func(t *testing.T) {
 		from, to := moveStores(t)
 		there := addTaggedNote(t, to, "ops", "Already there", "x", "team")

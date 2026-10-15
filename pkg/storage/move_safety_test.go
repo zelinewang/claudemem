@@ -443,6 +443,12 @@ func TestMoveEntries_ReadsRelatedNotesFromTheFile(t *testing.T) {
 		{"a ref in backticks that is no id", "is no note id", func(private, shared *models.Note) string {
 			return "## Related Notes\n- `Private detail notes` — \"Private detail\" (ops)"
 		}},
+		{"a second id on a line", "stays in this store", func(private, shared *models.Note) string {
+			return "## Related Notes\n- `" + shared.ID + "` — \"Shared\" (ops), `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
+		{"a nested item", "stays in this store", func(private, shared *models.Note) string {
+			return "## Related Notes\n- `" + shared.ID + "` — \"Shared\" (ops)\n  - `" + private.ID + "` — \"Private detail\" (ops)"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			from, to := moveStores(t)
