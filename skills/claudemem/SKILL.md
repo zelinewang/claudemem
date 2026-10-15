@@ -38,29 +38,36 @@ All commands support `--format json` for structured output.
 claudemem note add <category> --title "..." --content "..." --tags "..." [--session-id "..."]
 claudemem note search "query" [--in category] [--tag tags]
 claudemem note list [category]
-claudemem note get <id>                        # Supports 8-char prefix
+claudemem note get <id> [--tag X]              # Supports 8-char prefix; --tag: only if tagged X
 claudemem note append <id> "additional content"
-claudemem note update <id> --content "..." [--title "..."] [--tags "..."]
+claudemem note update <id> --content "..." [--title "..."] [--tags "..."]   # --tags replaces all tags
+claudemem note update <id> --add-tag X,Y --remove-tag Z                     # labels only, keeps the rest
 claudemem note delete <id>
 claudemem note categories
 claudemem note tags
 
 # Sessions
-claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--related-notes "id:title:cat,..."]
-claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X]
-claudemem session search "query" [--branch X]
-claudemem session get <id>
+claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--tags "..."] [--related-notes "id:title:cat,..."]
+claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X] [--tag X]
+claudemem session search "query" [--branch X] [--tag X]
+claudemem session get <id> [--tag X]
+claudemem session update <id> --add-tag X --remove-tag Y
 
 # Search
 claudemem search "query" [--type note|session] [--limit N]
 claudemem search "query" --compact              # IDs + titles only
-claudemem search "query" --category X --tag Y   # Faceted filters
+claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, all required)
+
+# Tags as a filtered view (e.g. vis-shared / vis-personal labels on one store)
+claudemem context inject --tag vis-shared       # inject only entries carrying the tag
+claudemem stats --tag vis-shared                # counts of the tagged set, no titles
+claudemem tag apply --file labels.jsonl [--dry-run]   # bulk: {"id","kind":"note|session","add":[],"remove":[]} per line
 claudemem search "query" --after 2025-01-01     # Date range
 claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
 claudemem search "query" --semantic             # Force semantic even if feature flag off
 
 # Context
-claudemem context inject [--limit N] [--project path]  # Recent notes + sessions overview
+claudemem context inject [--limit N] [--project path] [--tag X]  # Recent notes + sessions overview
 
 # Code
 claudemem code outline <file>                   # Structural symbols (Go/Python/TS/Rust)

@@ -245,8 +245,9 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 	}
 
 	// Filter semantic results: only keep those that also pass facet filters.
-	// If no facet filters active (no category/tag/date), keep all semantic results.
-	hasFacets := opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
+	// If no facet filters active (no type/category/tag/date), keep all semantic results. The type
+	// counts as a facet: without it `search --type session` let semantic-only notes through.
+	hasFacets := opts.Type != "" || opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
 	if hasFacets {
 		filtered := semanticResults[:0]
 		for _, r := range semanticResults {
@@ -355,16 +356,17 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	query := `SELECT 1 FROM entries WHERE id = ?`
 	args := []interface{}{id}
 
+	if opts.Type != "" {
+		query += " AND type = ?"
+		args = append(args, opts.Type)
+	}
 	if opts.Category != "" {
 		query += " AND category = ?"
 		args = append(args, opts.Category)
 	}
-	if len(opts.Tags) > 0 {
-		for _, tag := range opts.Tags {
-			query += " AND tags LIKE ?"
-			args = append(args, "%"+tag+"%")
-		}
-	}
+	tagFilter, tagArgs := tagsWhere("tags", opts.Tags)
+	query += tagFilter
+	args = append(args, tagArgs...)
 	if opts.After != "" {
 		query += " AND date_str >= ?"
 		args = append(args, opts.After)

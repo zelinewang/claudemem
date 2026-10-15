@@ -248,7 +248,7 @@ func init() {
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 20, "Maximum number of results")
 	searchCmd.Flags().BoolVar(&searchCompact, "compact", false, "Compact output (ID + title + score only)")
 	searchCmd.Flags().StringVar(&searchFilterCategory, "category", "", "Filter by category")
-	searchCmd.Flags().StringVar(&searchFilterTags, "tag", "", "Filter by tags (comma-separated)")
+	searchCmd.Flags().StringVar(&searchFilterTags, "tag", "", "Only entries carrying all these tags, matched as whole tags (comma-separated)")
 	searchCmd.Flags().StringVar(&searchAfter, "after", "", "Filter entries after date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchBefore, "before", "", "Filter entries before date (YYYY-MM-DD)")
 	searchCmd.Flags().StringVar(&searchSort, "sort", "relevance", "Sort by: relevance, date")

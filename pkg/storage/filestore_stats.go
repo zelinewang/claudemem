@@ -165,3 +165,61 @@ func (fs *FileStore) Stats() (*StoreStats, error) {
 
 	return stats, nil
 }
+
+// TaggedStats counts only the entries carrying every required tag: notes, sessions, the notes'
+// categories and the ten most used tags among them. It prints no titles and reads no file, so a
+// filtered wrapper can report the size of its view without showing anything outside it. Ties sort
+// by name, so the output is stable.
+func (fs *FileStore) TaggedStats(required []string) (*TaggedStats, error) {
+	if fs.db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	tagFilter, tagArgs := tagsWhere("tags", required)
+	rows, err := fs.db.Query(`SELECT type, category, tags FROM entries WHERE 1 = 1`+tagFilter, tagArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("count tagged entries failed: %w", err)
+	}
+	defer rows.Close()
+
+	stats := &TaggedStats{Tags: required, Categories: []CategoryInfo{}, TopTags: []TagInfo{}}
+	categories := make(map[string]int)
+	tagCounts := make(map[string]int)
+	for rows.Next() {
+		var entryType, category, tagsStr string
+		if err := rows.Scan(&entryType, &category, &tagsStr); err != nil {
+			return nil, fmt.Errorf("scan tagged entry failed: %w", err)
+		}
+		switch entryType {
+		case "note":
+			stats.TotalNotes++
+			categories[category]++
+		case "session":
+			stats.TotalSessions++
+		}
+		for _, tag := range strings.Fields(tagsStr) {
+			tagCounts[tag]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+
+	for name, count := range categories {
+		stats.Categories = append(stats.Categories, CategoryInfo{Name: name, Count: count})
+	}
+	sort.Slice(stats.Categories, func(i, j int) bool {
+		a, b := stats.Categories[i], stats.Categories[j]
+		return a.Count > b.Count || (a.Count == b.Count && a.Name < b.Name)
+	})
+	for name, count := range tagCounts {
+		stats.TopTags = append(stats.TopTags, TagInfo{Name: name, Count: count})
+	}
+	sort.Slice(stats.TopTags, func(i, j int) bool {
+		a, b := stats.TopTags[i], stats.TopTags[j]
+		return a.Count > b.Count || (a.Count == b.Count && a.Name < b.Name)
+	})
+	if len(stats.TopTags) > 10 {
+		stats.TopTags = stats.TopTags[:10]
+	}
+	return stats, nil
+}

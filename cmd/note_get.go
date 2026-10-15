@@ -9,18 +9,25 @@ import (
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
+var noteGetTags string
+
 // noteGetCmd represents the note get command
 var noteGetCmd = &cobra.Command{
 	Use:   "get <id-or-category> [title-pattern]",
 	Short: "Get a specific note",
 	Long: `Get a specific note by ID or by category and title.
 
+With --tag, only notes carrying all the given tags are considered: a note
+without them is reported exactly like a note that does not exist.
+
 Examples:
   claudemem note get abc12345                    # Get by ID (or ID prefix)
   claudemem note get work "Meeting Notes"        # Get by category and title
-  claudemem note get work meeting                # Search in category by title pattern`,
+  claudemem note get work meeting                # Search in category by title pattern
+  claudemem note get abc12345 --tag vis-shared   # Only if the note carries vis-shared`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		required := splitTagList(noteGetTags)
 		store, err := getStore()
 		if err != nil {
 			return err
@@ -28,7 +35,7 @@ Examples:
 
 		// Single argument: treat as ID
 		if len(args) == 1 {
-			note, err := store.GetNote(args[0])
+			note, err := store.GetNoteWithTags(args[0], required)
 			if err != nil {
 				return fmt.Errorf("failed to get note: %w", err)
 			}
@@ -62,7 +69,7 @@ Examples:
 
 		// First try exact match
 		note, err := store.GetNoteByTitle(category, titlePattern)
-		if err == nil {
+		if err == nil && storage.HasAllTags(note.Tags, required) {
 			// Log access (non-blocking, best-effort)
 			if fs, ok := store.(*storage.FileStore); ok {
 				fs.LogAccess(note.ID, "get")
@@ -87,7 +94,7 @@ Examples:
 		}
 
 		// If not found, try listing category and filtering
-		notes, err := store.ListNotes(category)
+		notes, err := store.ListNotesWithTags(category, required)
 		if err != nil {
 			return fmt.Errorf("failed to list notes: %w", err)
 		}
@@ -152,4 +159,5 @@ Examples:
 
 func init() {
 	noteCmd.AddCommand(noteGetCmd)
+	noteGetCmd.Flags().StringVar(&noteGetTags, "tag", "", "Only consider notes carrying all these tags (comma-separated); others read as not found")
 }

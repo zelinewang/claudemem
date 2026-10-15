@@ -12,6 +12,7 @@ import (
 var (
 	injectLimit   int
 	injectProject string
+	injectTags    string
 )
 
 var contextInjectCmd = &cobra.Command{
@@ -24,10 +25,14 @@ Designed to be called from a Claude Code SessionStart hook to provide
 continuity across sessions. Returns recent knowledge and session summaries
 in a token-efficient format.
 
+With --tag, only notes and sessions carrying all the given tags are injected,
+and the counts cover only them (a filtered view, e.g. --tag vis-shared).
+
 Examples:
   claudemem context inject
   claudemem context inject --limit 5 --format json
-  claudemem context inject --project /path/to/project`,
+  claudemem context inject --project /path/to/project
+  claudemem context inject --tag vis-shared`,
 	RunE: runContextInject,
 }
 
@@ -35,9 +40,11 @@ func init() {
 	contextCmd.AddCommand(contextInjectCmd)
 	contextInjectCmd.Flags().IntVar(&injectLimit, "limit", 5, "Number of recent items per category")
 	contextInjectCmd.Flags().StringVar(&injectProject, "project", "", "Filter by project path")
+	contextInjectCmd.Flags().StringVar(&injectTags, "tag", "", "Only notes and sessions carrying all these tags (comma-separated)")
 }
 
 type contextPayload struct {
+	Tags           []string       `json:"tags,omitempty"`
 	RecentNotes    []compactEntry `json:"recent_notes"`
 	RecentSessions []compactEntry `json:"recent_sessions"`
 	Stats          contextStats   `json:"stats"`
@@ -57,13 +64,14 @@ type contextStats struct {
 }
 
 func runContextInject(cmd *cobra.Command, args []string) error {
+	required := splitTagList(injectTags)
 	store, err := getUnifiedStore()
 	if err != nil {
 		return err
 	}
 
 	// Gather recent notes
-	notes, err := store.ListNotes("")
+	notes, err := store.ListNotesWithTags("", required)
 	if err != nil {
 		return fmt.Errorf("failed to list notes: %w", err)
 	}
@@ -72,6 +80,7 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	sessOpts := storage.SessionListOpts{
 		Limit:   injectLimit,
 		Project: injectProject,
+		Tags:    required,
 	}
 	sessions, err := store.ListSessions(sessOpts)
 	if err != nil {
@@ -118,19 +127,27 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	// Get stats for context
-	stats, err := store.Stats()
-	if err != nil {
-		return fmt.Errorf("failed to get stats: %w", err)
+	// Get stats for context: with --tag, the counts of the tagged set only
+	var totals contextStats
+	if len(required) == 0 {
+		stats, err := store.Stats()
+		if err != nil {
+			return fmt.Errorf("failed to get stats: %w", err)
+		}
+		totals = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
+	} else {
+		stats, err := store.TaggedStats(required)
+		if err != nil {
+			return fmt.Errorf("failed to get stats: %w", err)
+		}
+		totals = contextStats{TotalNotes: stats.TotalNotes, TotalSessions: stats.TotalSessions}
 	}
 
 	payload := contextPayload{
+		Tags:           required,
 		RecentNotes:    recentNotes,
 		RecentSessions: recentSessions,
-		Stats: contextStats{
-			TotalNotes:    stats.TotalNotes,
-			TotalSessions: stats.TotalSessions,
-		},
+		Stats:          totals,
 	}
 
 	if outputFormat == "json" {
@@ -138,7 +155,11 @@ func runContextInject(cmd *cobra.Command, args []string) error {
 	}
 
 	// Text output: concise markdown for Claude context
-	OutputText("claudemem context (%d notes, %d sessions)", stats.TotalNotes, stats.TotalSessions)
+	if len(required) == 0 {
+		OutputText("claudemem context (%d notes, %d sessions)", totals.TotalNotes, totals.TotalSessions)
+	} else {
+		OutputText("claudemem context (%d notes, %d sessions tagged %s)", totals.TotalNotes, totals.TotalSessions, strings.Join(required, ", "))
+	}
 	OutputText("")
 
 	if len(recentNotes) > 0 {

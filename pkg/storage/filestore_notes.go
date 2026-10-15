@@ -188,13 +188,22 @@ func mergeTags(existing, new []string) []string {
 
 // GetNote retrieves a note by ID (supports prefix matching)
 func (fs *FileStore) GetNote(id string) (*models.Note, error) {
+	return fs.GetNoteWithTags(id, nil)
+}
+
+// GetNoteWithTags is GetNote restricted to the notes carrying every required tag. A note without
+// them is reported exactly as an absent id, so a filtered view learns nothing about it; a prefix is
+// matched only among the tagged notes. The file's own tags are checked too: when a stale index row
+// still lists a tag the file no longer has, the file wins.
+func (fs *FileStore) GetNoteWithTags(id string, required []string) (*models.Note, error) {
+	tagFilter, tagArgs := tagsWhere("tags", required)
 	var fpath string
 	err := fs.db.QueryRow(`
 		SELECT filepath FROM entries
-		WHERE (id = ? OR id LIKE ? || '%') AND type = 'note'
+		WHERE (id = ? OR id LIKE ? || '%') AND type = 'note'`+tagFilter+`
 		ORDER BY id
 		LIMIT 1
-	`, id, id).Scan(&fpath)
+	`, append([]interface{}{id, id}, tagArgs...)...).Scan(&fpath)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("note not found: %s", id)
@@ -202,7 +211,14 @@ func (fs *FileStore) GetNote(id string) (*models.Note, error) {
 		return nil, fmt.Errorf("failed to query note: %w", err)
 	}
 
-	return fs.readNoteFile(filepath.Join(fs.baseDir, fpath))
+	note, err := fs.readNoteFile(filepath.Join(fs.baseDir, fpath))
+	if err != nil {
+		return nil, err
+	}
+	if !HasAllTags(note.Tags, required) {
+		return nil, fmt.Errorf("note not found: %s", id)
+	}
+	return note, nil
 }
 
 // GetNoteByTitle retrieves a note by category and title
@@ -241,18 +257,25 @@ func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error
 
 // ListNotes lists all notes or notes in a specific category
 func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
+	return fs.ListNotesWithTags(category, nil)
+}
+
+// ListNotesWithTags is ListNotes restricted to the notes carrying every required tag (nil: all).
+func (fs *FileStore) ListNotesWithTags(category string, required []string) ([]*models.Note, error) {
 	var query string
 	var args []interface{}
+	tagFilter, tagArgs := tagsWhere("tags", required)
 
 	if category == "" {
-		query = `SELECT filepath FROM entries WHERE type = 'note' ORDER BY category, title`
+		query = `SELECT filepath FROM entries WHERE type = 'note'` + tagFilter + ` ORDER BY category, title`
 	} else {
 		if _, err := sanitizePath(category); err != nil {
 			return nil, fmt.Errorf("invalid category: %w", err)
 		}
-		query = `SELECT filepath FROM entries WHERE type = 'note' AND category = ? ORDER BY title`
+		query = `SELECT filepath FROM entries WHERE type = 'note' AND category = ?` + tagFilter + ` ORDER BY title`
 		args = append(args, category)
 	}
+	args = append(args, tagArgs...)
 
 	rows, err := fs.db.Query(query, args...)
 	if err != nil {
@@ -270,6 +293,9 @@ func (fs *FileStore) ListNotes(category string) ([]*models.Note, error) {
 		note, err := fs.readNoteFile(filepath.Join(fs.baseDir, fpath))
 		if err != nil {
 			continue // skip unreadable files
+		}
+		if !HasAllTags(note.Tags, required) {
+			continue // a stale index row listed a tag the file no longer has: the file wins
 		}
 		notes = append(notes, note)
 	}
@@ -506,6 +532,10 @@ func (fs *FileStore) SearchNotes(query string, category string, tags []string) (
 		ftsQuery += ` AND e.category = ?`
 		args = append(args, category)
 	}
+	// Whole tags in SQL too, so the 50 best matches are 50 tagged ones
+	tagFilter, tagArgs := tagsWhere("e.tags", tags)
+	ftsQuery += tagFilter
+	args = append(args, tagArgs...)
 
 	ftsQuery += ` ORDER BY f.rank LIMIT 50`
 
@@ -754,17 +784,5 @@ func (fs *FileStore) FindNotesBySessionRef(sessionRef string) ([]models.RelatedN
 
 // noteHasAllTags checks if a note has all required tags (case-insensitive)
 func noteHasAllTags(note *models.Note, required []string) bool {
-	for _, req := range required {
-		found := false
-		for _, tag := range note.Tags {
-			if strings.EqualFold(tag, req) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
+	return HasAllTags(note.Tags, required)
 }

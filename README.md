@@ -125,22 +125,29 @@ existing data across upgrades.
 claudemem note add <category> --title "..." --content "..." [--tags "..."] [--session-id "..."]
 claudemem note search "query" [--in category] [--tag tags]
 claudemem note list [category]
-claudemem note get <id-or-prefix>
+claudemem note get <id-or-prefix> [--tag t1,t2]
 claudemem note append <id> "additional content"
-claudemem note update <id> --title "..." --content "..." --tags "..."
+claudemem note update <id> --title "..." --content "..." --tags "..."   # --tags replaces all tags
+claudemem note update <id> --add-tag t1,t2 --remove-tag t3              # keeps the other tags
 claudemem note delete <id>
 claudemem note categories
 claudemem note tags
 
 # Sessions (work reports)
 claudemem session save --title "..." --branch "..." --project "..." --session-id "..." \
-  [--related-notes "id:title:category,..."] [--content "..."]
-claudemem session list [--last N] [--branch X] [--date-range 7d]
-claudemem session search "query" [--branch X]
-claudemem session get <id-or-prefix>
+  [--tags "..."] [--related-notes "id:title:category,..."] [--content "..."]
+claudemem session list [--last N] [--branch X] [--date-range 7d] [--tag t1,t2]
+claudemem session search "query" [--branch X] [--tag t1,t2]
+claudemem session get <id-or-prefix> [--tag t1,t2]
+claudemem session update <id> --add-tag t1,t2 --remove-tag t3
 
 # Search everything
-claudemem search "query" [--type note|session] [--limit N]
+claudemem search "query" [--type note|session] [--tag t1,t2] [--limit N]
+
+# Tags as a filtered view: one store, entries labelled e.g. vis-shared / vis-personal
+claudemem context inject --tag vis-shared    # only entries carrying every listed tag
+claudemem stats --tag vis-shared             # counts of the tagged set, no titles
+claudemem tag apply --file labels.jsonl [--dry-run]   # bulk add/remove, see below
 
 # Embedding backend (pick one; no silent fallback)
 claudemem setup                              # interactive wizard: Local / Gemini / Voyage / OpenAI / TF-IDF
@@ -164,6 +171,25 @@ claudemem import backup.tar.gz
 ```
 
 Add `--format json` to any command for structured output.
+
+### Tags as a filtered view
+
+A `--tag t1,t2` filter keeps the entries that carry every listed tag, matched as whole tags,
+ignoring the case of ASCII letters (`--tag vis-shared` does not match `vis-shared-old`). On `get`, an entry
+without the tags is reported exactly like an id that does not exist, and `stats --tag` prints
+counts only, so a wrapper can show one labelled part of a store without the rest.
+
+`--add-tag` / `--remove-tag` and `tag apply` change labels only: the tags list in the file's
+frontmatter and the entry's index rows, nothing else (the body, the `updated` time and the
+vectors stay as they are). `tag apply` reads one JSON object per line:
+
+```json
+{"id": "<full id>", "kind": "note", "add": ["vis-shared"], "remove": ["vis-personal"]}
+```
+
+The whole file is validated before anything changes; each entry is then applied atomically
+under the store lock, unknown ids are listed (exit 1), and a second run of the same file
+changes nothing.
 
 ## Search Backends
 

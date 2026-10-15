@@ -8,14 +8,28 @@ import (
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
-var statsTopAccessed bool
+var (
+	statsTopAccessed bool
+	statsTags        string
+)
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Display statistics about stored memory",
 	Long: `Display statistics about stored notes and sessions including counts,
-categories, tags, and recent activity.`,
+categories, tags, and recent activity.
+
+With --tag, only the entries carrying all the given tags are counted, and only
+counts are printed (notes, sessions, categories, top tags): no titles, no recent
+activity and no storage size, so a filtered view can report its own size.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if required := splitTagList(statsTags); len(required) > 0 {
+			if statsTopAccessed {
+				return fmt.Errorf("--top-accessed lists titles, so it cannot be combined with --tag")
+			}
+			return runTaggedStats(required)
+		}
+
 		// Get unified store
 		store, err := getUnifiedStore()
 		if err != nil {
@@ -129,6 +143,50 @@ categories, tags, and recent activity.`,
 	},
 }
 
+// runTaggedStats prints the counts of the entries carrying every required tag, and nothing else.
+func runTaggedStats(required []string) error {
+	store, err := getUnifiedStore()
+	if err != nil {
+		return err
+	}
+	stats, err := store.TaggedStats(required)
+	if err != nil {
+		return fmt.Errorf("failed to get statistics: %w", err)
+	}
+	if outputFormat == "json" {
+		return OutputJSON(stats)
+	}
+
+	OutputText("ClaudeMem Statistics (tagged %s)", strings.Join(required, ", "))
+	OutputText("====================")
+	OutputText("Notes:    %d", stats.TotalNotes)
+	OutputText("Sessions: %d", stats.TotalSessions)
+	OutputText("")
+	if len(stats.Categories) > 0 {
+		OutputText("Categories (top %d):", min(5, len(stats.Categories)))
+		for i, cat := range stats.Categories {
+			if i >= 5 {
+				break
+			}
+			plural := "note"
+			if cat.Count != 1 {
+				plural = "notes"
+			}
+			OutputText("  %-15s (%d %s)", cat.Name, cat.Count, plural)
+		}
+		OutputText("")
+	}
+	if len(stats.TopTags) > 0 {
+		var tagStrings []string
+		for _, tag := range stats.TopTags {
+			tagStrings = append(tagStrings, fmt.Sprintf("%s (%d)", tag.Name, tag.Count))
+		}
+		OutputText("Top Tags (top %d):", len(stats.TopTags))
+		OutputText("  %s", strings.Join(tagStrings, ", "))
+	}
+	return nil
+}
+
 func formatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -151,5 +209,6 @@ func min(a, b int) int {
 
 func init() {
 	statsCmd.Flags().BoolVar(&statsTopAccessed, "top-accessed", false, "Show most accessed entries (token economics)")
+	statsCmd.Flags().StringVar(&statsTags, "tag", "", "Count only entries carrying all these tags (comma-separated); prints counts, no titles")
 	rootCmd.AddCommand(statsCmd)
 }
