@@ -1031,23 +1031,40 @@ func (vs *VectorStore) CountAll() (int, error) {
 	return n, err
 }
 
+// pruneTestHook, when set, runs in PruneInactiveBackends between its count and its delete: a test
+// commits another connection's write there.
+var pruneTestHook func()
+
 // PruneInactiveBackends deletes vector rows stored under (backend, model)
 // tuples other than the active embedder's, returning per-"backend:model"
 // deleted counts. Rows under other tuples are normally PRESERVED (see
 // RebuildIndex) so a machine can switch back to a previous backend without
 // a full re-embed; this is the explicit opt-in reclaim path behind
 // `claudemem repair --prune-stale`. Count + delete run in one transaction
-// so the returned counts always match what was actually removed.
+// so the returned counts always match what was actually removed. It takes the
+// database's write lock as it begins (BEGIN IMMEDIATE), waiting out
+// busy_timeout while another writer holds it: a deferred one reads the counts
+// first, and fails busy at its delete when another process (a search logging
+// its access, say) committed in between.
 func (vs *VectorStore) PruneInactiveBackends() (map[string]int, error) {
 	backend, model := vs.embedder.Name(), vs.embedder.Model()
-
-	tx, err := vs.db.Begin()
+	ctx := context.Background()
+	conn, err := vs.db.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
 
-	rows, err := tx.Query(`
+	rows, err := conn.QueryContext(ctx, `
 		SELECT backend, model, COUNT(*) FROM vectors
 		WHERE NOT (backend = ? AND model = ?)
 		GROUP BY backend, model`, backend, model)
@@ -1069,18 +1086,22 @@ func (vs *VectorStore) PruneInactiveBackends() (map[string]int, error) {
 		return nil, err
 	}
 	rows.Close()
+	if pruneTestHook != nil {
+		pruneTestHook()
+	}
 
 	if len(deleted) == 0 {
 		return deleted, nil
 	}
 
-	if _, err := tx.Exec(`DELETE FROM vectors WHERE NOT (backend = ? AND model = ?)`,
+	if _, err := conn.ExecContext(ctx, `DELETE FROM vectors WHERE NOT (backend = ? AND model = ?)`,
 		backend, model); err != nil {
 		return nil, fmt.Errorf("delete stale vectors: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
+	committed = true
 	return deleted, nil
 }
 
