@@ -7,11 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
 // archiveReader returns a tar reader over an export-like archive holding the given files, in order.
 func archiveReader(t *testing.T, files [][2]string) *tar.Reader {
+	t.Helper()
+	r, err := gzip.NewReader(bytes.NewReader(archiveBytes(t, files)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tar.NewReader(r)
+}
+
+// archiveBytes is an export-like archive (tar.gz) holding the given files, in order.
+func archiveBytes(t *testing.T, files [][2]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -30,11 +41,7 @@ func archiveReader(t *testing.T, files [][2]string) *tar.Reader {
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
-	r, err := gzip.NewReader(&buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tar.NewReader(r)
+	return buf.Bytes()
 }
 
 // An import writes only inside the store: not into a sibling directory whose name starts with the
@@ -152,5 +159,37 @@ func TestExtractArchive_LeavesAReadOnlyFile(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); string(data) != "old" {
 		t.Errorf("the read-only file was replaced: %q", data)
+	}
+}
+
+// A member named by an absolute path is skipped with a warning: it names no place in the store, and
+// joined to the store's directory it made a stray path inside it.
+func TestCLI_ImportSkipsAMemberNamedByAnAbsolutePath(t *testing.T) {
+	store := t.TempDir()
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	absolute := []string{"/tmp/elsewhere/notes/ops/absolute.md", "claudemem//notes/ops/rooted.md"}
+	if err := os.WriteFile(archive, archiveBytes(t, [][2]string{
+		{"claudemem/notes/ops/kept.md", "kept"},
+		{absolute[0], "an absolute name"},
+		{absolute[1], "an absolute name once the prefix is gone"},
+	}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runCLIWithStderr(t, store, "import", archive)
+	if err != nil {
+		t.Fatalf("import: %v (%s)", err, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(store, "notes", "ops", "kept.md")); err != nil {
+		t.Errorf("the member with a relative name is missing: %v", err)
+	}
+	for _, rel := range []string{"tmp/elsewhere/notes/ops/absolute.md", "notes/ops/rooted.md"} {
+		if _, err := os.Stat(filepath.Join(store, rel)); err == nil {
+			t.Errorf("the import wrote %s inside the store", rel)
+		}
+	}
+	for _, name := range absolute {
+		if !strings.Contains(stderr, "import skipped "+name+": its name is an absolute path") {
+			t.Errorf("no warning about %s: %q", name, stderr)
+		}
 	}
 }
