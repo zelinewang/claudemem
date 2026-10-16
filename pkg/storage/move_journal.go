@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,9 @@ import (
 // there. So a rerun does not trip over its own leftover (refused as "a different file", after the
 // entry changed here), and a stopped move leaves no copy of an entry, a private note say, in the
 // target. The rows of this store are only removed after the target's rows commit, so a file the
-// journal removes always still has its entry here.
+// journal removes always still has its entry here. What a stopped move put into the target while the
+// store the entry came from no longer holds it stays, and its record is marked kept: a reindex of the
+// target lists that file, so the entry stays there, and settles the record (finishKeptMoves).
 
 // pendingInstall is one record of the journal.
 type pendingInstall struct {
@@ -31,6 +34,17 @@ type pendingInstall struct {
 	// still holds the entry. A record without them is checked against the store a run moves from.
 	From     string `json:"from,omitempty"`
 	FromFile string `json:"from_file,omitempty"`
+	// Kept is set by a move that found the store the entry came from no longer holding it, and kept
+	// what the stopped move put into the target, since it may be the entry's only copy.
+	Kept bool `json:"kept,omitempty"`
+}
+
+// namesMoveFiles reports whether the record names an entry's file and a temp file next to it, as the
+// records a move writes do.
+func (p pendingInstall) namesMoveFiles() bool {
+	tempDir, tempName := filepath.Dir(p.Temp), filepath.Base(p.Temp)
+	return kindOfPath(p.File) != "" && tempDir == filepath.Dir(p.File) &&
+		strings.HasPrefix(tempName, ".") && strings.HasSuffix(tempName, ".tmp")
 }
 
 func (fs *FileStore) pendingDir() string { return filepath.Join(fs.indexDir, "move-pending") }
@@ -49,6 +63,11 @@ func sha256Hex(data []byte) string {
 
 // recordPending writes the record of an install durably, replacing the entry's earlier one.
 func (fs *FileStore) recordPending(p pendingInstall) error {
+	return fs.writePendingRecord(fs.pendingPath(p.ID), p)
+}
+
+// writePendingRecord writes a record of the journal durably at path, replacing the one there.
+func (fs *FileStore) writePendingRecord(path string, p pendingInstall) error {
 	if err := mkdirAllSynced(fs.pendingDir()); err != nil {
 		return err
 	}
@@ -56,7 +75,6 @@ func (fs *FileStore) recordPending(p pendingInstall) error {
 	if err != nil {
 		return err
 	}
-	path := fs.pendingPath(p.ID)
 	tmp, err := writeTemp(path, data)
 	if err != nil {
 		return err
@@ -100,12 +118,19 @@ func (fs *FileStore) pendingInstalls() (records []pendingInstall, paths []string
 	return records, paths, bad
 }
 
-// PendingMoveRecords counts the records in the store's move journal: each is a file that a move into
-// this store put here before it stopped, without its rows (or a record that cannot be read). A reindex
-// lists such files; the next move into the store resolves them first.
+// PendingMoveRecords counts the records in the store's move journal that the next move into the store
+// resolves: each is a file that a move into this store put here before it stopped, without its rows
+// (or a record that cannot be read), and a reindex lists such files. The records a move marked kept
+// are not counted: a reindex settles them (finishKeptMoves).
 func (fs *FileStore) PendingMoveRecords() int {
 	records, _, bad := fs.pendingInstalls()
-	return len(records) + len(bad)
+	n := len(bad)
+	for _, p := range records {
+		if !p.Kept {
+			n++
+		}
+	}
+	return n
 }
 
 // newTempPath is a fresh temp name next to path: hidden, not ending in .md, so a reindex never reads
@@ -140,9 +165,9 @@ func writeNewFile(path string, data []byte) error {
 // record to its commit). It removes the temp and the entry's file the record names while they still
 // hold the bytes the move wrote, unless the target's index lists the entry at that file, which means
 // its rows did commit; then the record goes. While the store the entry came from no longer holds it,
-// what the move put into the target may be its only copy: it stays, and so does the record. In a dry
-// run it only says what it would remove, and only while no writer holds the target's lock: a record
-// found then may be that of a move still running.
+// what the move put into the target may be its only copy: it stays, and the record is marked kept,
+// for a reindex of the target to settle. In a dry run it only says what it would remove, and only
+// while no writer holds the target's lock: a record found then may be that of a move still running.
 func (m *mover) recoverPending() error {
 	records, paths, bad := m.to.pendingInstalls()
 	for _, name := range bad {
@@ -170,8 +195,7 @@ func (m *mover) recoverPending() error {
 
 func (m *mover) resolvePending(p pendingInstall, record string) {
 	kind := kindOfPath(p.File)
-	tempDir, tempName := filepath.Dir(p.Temp), filepath.Base(p.Temp)
-	if kind == "" || tempDir != filepath.Dir(p.File) || !strings.HasPrefix(tempName, ".") || !strings.HasSuffix(tempName, ".tmp") {
+	if !p.namesMoveFiles() {
 		m.warn("the target's move journal holds a record for %s that names %s and %s, not a move's files; left as it is", p.ID, p.File, p.Temp)
 		return
 	}
@@ -192,8 +216,7 @@ func (m *mover) resolvePending(p pendingInstall, record string) {
 				}
 			}
 			if len(left) > 0 {
-				m.warn("%s %s: a stopped move put %s into the target without its rows, and %s no longer holds it: kept, since it may be its only copy; reindex the target to keep the entry there, or remove the file by hand",
-					kind, p.ID, strings.Join(left, " and "), from)
+				m.keep(p, record, kind, from, left)
 				return
 			}
 		}
@@ -231,6 +254,67 @@ func (m *mover) resolvePending(p pendingInstall, record string) {
 	}
 	if !m.dryRun && !keep {
 		os.Remove(record)
+	}
+}
+
+// keep leaves what a stopped move put into the target while the store the entry came from no longer
+// holds it, since it may be its only copy, and marks its record kept: a reindex of the target then
+// lists the file, so the entry stays there, and clears the record (finishKeptMoves). The warning says
+// so, and with only the temp file left, to rename it to the entry's file first. A dry run marks
+// nothing.
+func (m *mover) keep(p pendingInstall, record, kind, from string, left []string) {
+	kept, then := "kept, since it may be its only copy", "to keep the entry there"
+	if m.dryRun {
+		kept, then = "a run keeps it, since it may be its only copy", "after that run, to keep the entry there"
+	}
+	if len(left) == 1 && left[0] == p.Temp {
+		m.warn("%s %s: a stopped move left its temp file %s in the target, not yet renamed to %s, and %s no longer holds the entry: %s; %s, rename it to %s and reindex the target, which also clears this record; otherwise remove it by hand",
+			kind, p.ID, p.Temp, p.File, from, kept, then, p.File)
+	} else {
+		files := strings.Join(left, " and ")
+		m.warn("%s %s: a stopped move put %s into the target without its rows, and %s no longer holds it: %s; %s, reindex the target, which also clears this record; otherwise remove %s by hand",
+			kind, p.ID, files, from, kept, then, files)
+	}
+	if m.dryRun || p.Kept {
+		return
+	}
+	p.Kept = true
+	if err := m.to.writePendingRecord(record, p); err != nil {
+		m.warn("%s %s: its record in the target's move journal could not be marked kept (%v), so a reindex leaves the record; the next move after that reindex clears it", kind, p.ID, err)
+	}
+}
+
+// finishKeptMoves settles, once a reindex has listed this store's files and under its lock, the
+// records of the move journal that a move marked kept. The entry of a file the index now lists there
+// stays in this store: its record goes, and so does the temp file the move left. With only the temp
+// file left, it says to rename that first; with nothing of what the move put here left (removed by
+// hand), the record goes. A record it does not settle is left for the next move.
+func (fs *FileStore) finishKeptMoves() {
+	records, paths, _ := fs.pendingInstalls()
+	for i, p := range records {
+		if !p.Kept || !p.namesMoveFiles() {
+			continue
+		}
+		kind := kindOfPath(p.File)
+		temp, tempErr := movePath(fs, nil, p.Temp)
+		file, fileErr := movePath(fs, nil, p.File)
+		row, rowErr := fs.indexRow(p.ID)
+		switch {
+		case tempErr != nil || fileErr != nil || rowErr != nil:
+		case row != nil && row.filepath == p.File:
+			if holdsBytes(temp, p.SHA256) {
+				if err := os.Remove(temp); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: %s %s: this reindex lists %s, which a stopped move kept here, but could not remove its temp file %s: %v; its record in .index/move-pending stays\n", kind, p.ID, p.File, p.Temp, err)
+					continue
+				}
+			}
+			os.Remove(paths[i])
+			fmt.Fprintf(os.Stderr, "warning: %s %s: this reindex lists %s, which a stopped move kept here because the store the entry came from no longer holds it: the entry stays in this store, and its record in .index/move-pending is cleared\n", kind, p.ID, p.File)
+		case holdsBytes(temp, p.SHA256):
+			fmt.Fprintf(os.Stderr, "warning: %s %s: a stopped move kept its temp file %s here, not yet renamed to %s, because the store the entry came from no longer holds it: to keep the entry, rename it to %s and reindex again, which also clears this record; otherwise remove it by hand\n", kind, p.ID, p.Temp, p.File, p.File)
+		case frontmatterID(file) != p.ID:
+			os.Remove(paths[i]) // nothing of what the move put here is left
+		}
 	}
 }
 

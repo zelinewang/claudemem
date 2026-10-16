@@ -318,7 +318,8 @@ func readFrontmatterID(path string) (string, error) {
 
 // movePath is rel inside store as an absolute path, checked for a move: it stays inside the store,
 // it is not a symlink, and its directory, symlinks resolved, lies inside this store and not in the
-// other one. A file reached through a link between the two stores is never written or removed.
+// other one (when other is not nil). A file reached through a link between the two stores is never
+// written or removed.
 func movePath(store, other *FileStore, rel string) (string, error) {
 	path := filepath.Join(store.baseDir, rel)
 	if err := validateFilepathWithinBase(store.baseDir, path); err != nil {
@@ -328,7 +329,7 @@ func movePath(store, other *FileStore, rel string) (string, error) {
 		return "", fmt.Errorf("%s is a symlink; move it by hand", rel)
 	}
 	dir := resolvedDir(nearestExisting(filepath.Dir(path)))
-	if !isWithin(dir, resolvedDir(store.baseDir)) || isWithin(dir, resolvedDir(other.baseDir)) {
+	if !isWithin(dir, resolvedDir(store.baseDir)) || (other != nil && isWithin(dir, resolvedDir(other.baseDir))) {
 		return "", fmt.Errorf("%s is reached through a symlink that leads out of its store; move it by hand", rel)
 	}
 	return path, nil

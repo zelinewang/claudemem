@@ -171,6 +171,82 @@ func TestMoveEntries_TheJournalKeepsAFileTheSourceNoLongerHolds(t *testing.T) {
 	}
 }
 
+// A file that a stopped move kept in the target, because the store the entry came from no longer
+// holds it, is settled the way the move's warning says: a reindex of the target lists it, so the
+// entry stays there, and clears its record; it does not send the operator back to the move. With only
+// the temp file left, both say to rename it first; a file removed by hand leaves nothing to keep.
+func TestMoveEntries_AReindexSettlesWhatAStoppedMoveKept(t *testing.T) {
+	for _, how := range []string{"the file", "only the temp file", "removed by hand"} {
+		t.Run(how, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "the only text", "team")
+			other := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+			rel := entryFile(t, from, note.ID)
+			step, advice := "after-install", "to keep the entry there, reindex the target, which also clears this record"
+			if how == "only the temp file" {
+				step, advice = "after-temp", "to keep the entry there, rename it to "+rel+" and reindex the target, which also clears this record"
+			}
+			moveStoppedAt(t, step, from, to, note.ID)
+			if err := from.DeleteNote(note.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, dryRun := range []bool{true, false} {
+				report := mustMove(t, from, to, dryRun, other.ID)
+				if warnings := strings.Join(report.Warnings, "\n"); !strings.Contains(warnings, advice) {
+					t.Errorf("dry run %v: the move's warnings %q do not say %q", dryRun, warnings, advice)
+				}
+			}
+			if n := to.PendingMoveRecords(); n != 0 {
+				t.Errorf("a reindex would send the operator back to the move for %d records", n)
+			}
+
+			switch how {
+			case "removed by hand":
+				if err := os.Remove(filepath.Join(to.baseDir, rel)); err != nil {
+					t.Fatal(err)
+				}
+			case "only the temp file":
+				out := reindexStderr(t, to)
+				if !strings.Contains(out, "rename it to "+rel+" and reindex again") || len(journalRecords(t, to)) != 1 {
+					t.Errorf("a reindex with only the temp file says %q; journal %v", out, journalRecords(t, to))
+				}
+				temps := tempsIn(t, to, filepath.Dir(rel))
+				if len(temps) != 1 {
+					t.Fatalf("temps %v", temps)
+				}
+				if err := os.Rename(temps[0], filepath.Join(to.baseDir, rel)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := reindexStderr(t, to)
+			if records := journalRecords(t, to); len(records) != 0 {
+				t.Errorf("the reindex left the record %v; it said %q", records, out)
+			}
+			row, err := to.indexRow(note.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept := how != "removed by hand"; (row != nil && row.filepath == rel) != kept ||
+				strings.Contains(out, "stays in this store") != kept {
+				t.Errorf("after the reindex the target lists %+v; it said %q", row, out)
+			}
+			if temps := tempsIn(t, to, filepath.Dir(rel)); len(temps) != 0 {
+				t.Errorf("temp files left: %v", temps)
+			}
+		})
+	}
+}
+
+// reindexStderr reindexes store and returns what the reindex wrote to stderr.
+func reindexStderr(t *testing.T, store *FileStore) string {
+	t.Helper()
+	return captureStderr(t, func() {
+		if _, err := store.Reindex(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 // The record names the store the entry came from, which may not be the store the next run moves
 // from; a record without that name is checked against the store the run moves from.
 func TestMoveEntries_TheJournalChecksTheStoreTheRecordNames(t *testing.T) {

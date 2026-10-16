@@ -321,7 +321,11 @@ func (fs *FileStore) Reindex() (int, error) {
 		return 0, err
 	}
 	defer unlock()
-	return fs.reindexLocked()
+	count, err := fs.reindexLocked()
+	if err == nil {
+		fs.finishKeptMoves() // the files it listed include those a stopped move kept here
+	}
+	return count, err
 }
 
 func (fs *FileStore) reindexLocked() (int, error) {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,5 +57,37 @@ func TestCLI_ReindexAndPullWarnWhileAMoveIsPending(t *testing.T) {
 	writePendingRecord(t, second)
 	if _, stderr, err := runCLIWithStderr(t, second, "sync", "pull"); err != nil || !strings.Contains(stderr, "move-pending") {
 		t.Errorf("sync pull with a record: %v, stderr %q", err, stderr)
+	}
+}
+
+// A file that a stopped move kept in a store, because the store its entry came from no longer holds
+// it, is settled by a reindex, as the move's warning says: the entry stays, its record is cleared, and
+// the reindex does not send the operator back to the move.
+func TestCLI_ReindexSettlesAFileAStoppedMoveKept(t *testing.T) {
+	store := newStoreDir(t)
+	id := addNoteCLI(t, store, "ops", "Deploy runbook", "steps", "team")
+	files, _ := filepath.Glob(filepath.Join(store, "notes", "ops", "*.md"))
+	if len(files) != 1 {
+		t.Fatalf("note files %v", files)
+	}
+	rel, err := filepath.Rel(store, files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(store, ".index", "move-pending")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	record := fmt.Sprintf(`{"id":%q,"file":%q,"temp":%q,"sha256":"00","from":%q,"from_file":%q,"kept":true}`,
+		id, rel, filepath.Join(filepath.Dir(rel), ".deploy-runbook.0a0b0c.tmp"), t.TempDir(), rel)
+	if err := os.WriteFile(filepath.Join(dir, "0a0b0c0d.json"), []byte(record), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := runCLIWithStderr(t, store, "reindex")
+	if err != nil || strings.Contains(stderr, "run that move again") || !strings.Contains(stderr, "stays in this store") {
+		t.Errorf("reindex: %v, stderr %q", err, stderr)
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Errorf("the record is still there: %v", left)
 	}
 }

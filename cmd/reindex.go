@@ -97,9 +97,10 @@ func init() {
 	rootCmd.AddCommand(reindexCmd)
 }
 
-// warnPendingMove warns before a reindex while the store's move journal holds records: a move into the
-// store stopped before the rows of what it put here were written, and the reindex lists those files.
-// The same move run again first finishes or clears them.
+// warnPendingMove warns before a reindex while the store's move journal holds records that the next
+// move resolves: a move into the store stopped before the rows of what it put here were written, and
+// the reindex lists those files. The same move run again first finishes or clears them. The records a
+// move marked kept are not among them: the reindex settles those itself.
 func warnPendingMove(store *storage.FileStore) {
 	if n := store.PendingMoveRecords(); n > 0 {
 		fmt.Fprintf(os.Stderr, "warning: .index/move-pending holds %d records of a move into this store that stopped before their rows were written; this reindex lists the files that move put here: run that move again (the same ids file) first, which finishes or clears them\n", n)

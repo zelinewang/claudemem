@@ -286,13 +286,15 @@ target's index does not list it there, as long as they still hold what the move 
 the entry came from (named in the journal) still holds a file of it; a rerun is then not refused
 over its own leftover, and a note that turns out to belong elsewhere leaves no copy in the target.
 While that store no longer holds the entry, what the stopped run left in the target may be its only
-copy: it stays, with a warning on each run, until the target is reindexed or the file removed by
-hand. A file the journal cannot remove (its directory refuses it, say) is reported, and its record
-stays for the next move to try again. A dry run only says what it would remove, and only while no
-writer holds the target's lock: a record it finds while one does may be that of a move still
-running, so it says so and leaves the journal alone. `reindex` and `sync pull` warn while the
-journal holds records, since a reindex then lists the files the stopped run put there: run the same
-move again first. A set-aside file that a stopped run left is found and handled by the next run.
+copy: the next move keeps it, says so, and marks its record kept. A reindex of the target then lists
+the file, so the entry stays there, and clears the record (with only the temp file left, rename it
+to the entry's file first); to drop the entry instead, remove what the run left by hand. A file the
+journal cannot remove (its directory refuses it, say) is reported, and its record stays for the
+next move to try again. A dry run only says what it would remove, and only while no writer holds
+the target's lock: a record it finds while one does may be that of a move still running, so it says
+so and leaves the journal alone. `reindex` and `sync pull` warn while the journal holds other
+records, since a reindex then lists the files the stopped run put there: run the same move again
+first. A set-aside file that a stopped run left is found and handled by the next run.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two
