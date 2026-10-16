@@ -25,8 +25,8 @@ Use --all to rebuild both FTS5 and vector indexes.
 Use --vectors --missing to embed ONLY documents that have no vector yet
 (incremental: a daily sync job stays under the embedding quota instead of
 re-embedding every entry — a full rebuild of ~6,000 entries hit Vertex 429).
-Vectors are written only for the entries the index lists: after files changed
-outside claudemem, run reindex first (sync pull does), or use --all.
+Only the entries the index lists are embedded and get vectors: after files
+changed outside claudemem, run reindex first (sync pull does), or use --all.
 
 Examples:
   claudemem reindex                     # Rebuild FTS5 index only

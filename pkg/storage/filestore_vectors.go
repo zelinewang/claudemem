@@ -446,8 +446,16 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	return err == nil
 }
 
-// collectVectorDocuments reads the documents to embed from the store's note and session files.
-func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
+// collectVectorDocuments reads the documents to embed from the store's note and session files, and
+// keeps those whose entries the index lists: a file the index does not list gets no vectors (the vector
+// store writes them only for listed entries), so embedding it would cost a call for nothing. It returns
+// how many documents it left out for that.
+func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document, unlisted int, err error) {
+	listed, err := fs.indexedIDs()
+	if err != nil {
+		return nil, 0, err
+	}
+
 	// Collect notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
 		filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
@@ -460,6 +468,10 @@ func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
 			}
 			note, parseErr := ParseNoteMarkdown(data)
 			if parseErr != nil || note.ID == "" {
+				return nil
+			}
+			if !listed[note.ID] {
+				unlisted++
 				return nil
 			}
 
@@ -486,6 +498,10 @@ func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
 			if parseErr != nil || session.ID == "" {
 				return nil
 			}
+			if !listed[session.ID] {
+				unlisted++
+				return nil
+			}
 
 			text := session.Title + " " + session.GetSearchableContent() + " " + strings.Join(session.Tags, " ")
 			docs = append(docs, vectors.Document{
@@ -496,7 +512,25 @@ func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
 		})
 	}
 
-	return docs
+	return docs, unlisted, nil
+}
+
+// indexedIDs returns the ids of the entries the index lists.
+func (fs *FileStore) indexedIDs() (map[string]bool, error) {
+	rows, err := fs.db.Query(`SELECT id FROM entries`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	indexed := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		indexed[id] = true
+	}
+	return indexed, rows.Err()
 }
 
 // IndexMissingVectors embeds only documents that do not yet have a vector row
@@ -511,14 +545,17 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 		return 0, 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs := fs.collectVectorDocuments()
+	docs, unlisted, err := fs.collectVectorDocuments()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read the entries the index lists: %w", err)
+	}
 	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
 		// TF-IDF needs the whole corpus; a "backfill" is always a full rebuild.
 		left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
 		if err != nil {
 			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
-		warnUnlisted(left)
+		warnUnlisted(unlisted + left)
 		return len(docs) - left, len(docs) - left, nil
 	}
 
@@ -538,7 +575,7 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 	}
 	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate())
 	if err == nil {
-		warnUnlisted(left)
+		warnUnlisted(unlisted + left)
 	}
 	return indexed, len(missingDocs) - left, err
 }
@@ -550,12 +587,15 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 		return 0, fmt.Errorf("semantic search not enabled; run: claudemem config set features.semantic_search true")
 	}
 
-	docs := fs.collectVectorDocuments()
+	docs, unlisted, err := fs.collectVectorDocuments()
+	if err != nil {
+		return 0, fmt.Errorf("read the entries the index lists: %w", err)
+	}
 	left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
 	if err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}
-	warnUnlisted(left)
+	warnUnlisted(unlisted + left)
 
 	return len(docs) - left, nil
 }
@@ -582,21 +622,8 @@ func (fs *FileStore) vectorGate() vectors.Gate {
 			return err
 		}
 		defer unlock()
-		rows, err := fs.db.Query(`SELECT id FROM entries`)
+		indexed, err := fs.indexedIDs()
 		if err != nil {
-			return err
-		}
-		indexed := make(map[string]bool)
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			indexed[id] = true
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return err
 		}
 		return write(func(id string) bool { return indexed[id] })
