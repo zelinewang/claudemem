@@ -554,6 +554,26 @@ func (m *mover) stillAside(aside string) string {
 	return fmt.Sprintf("; it stays set aside at %s, since a new file took its name: compare the two and keep one", asideRel)
 }
 
+// setAsideBeside says, for a refusal, what a stopped run left set aside next to this store's file of
+// the entry (path, holding data): a second name of the file, when the run stopped after putting it
+// back and before removing the set-aside name (or a copy with the same content), which can go; or a
+// different copy, which may be the newer version. "" when there is none.
+func (m *mover) setAsideBeside(path string, data []byte, id string) string {
+	aside := setAsidePath(path)
+	info, err := os.Lstat(aside)
+	if err != nil || !info.Mode().IsRegular() || frontmatterID(aside) != id {
+		return ""
+	}
+	asideRel, err := filepath.Rel(m.from.baseDir, aside)
+	if err != nil {
+		asideRel = aside
+	}
+	if held, err := os.ReadFile(aside); err == nil && bytes.Equal(held, data) {
+		return fmt.Sprintf("; this store's file also sits at %s, a second name that a stopped move left (a hard link, or a copy with the same content): remove that name; this store's file stays at %s", asideRel, filepath.Join(filepath.Dir(asideRel), filepath.Base(path)))
+	}
+	return fmt.Sprintf("; a different copy of this store's file, set aside by a stopped move, sits at %s: this may be the newer version, so compare it as well and keep one", asideRel)
+}
+
 // whereChanged says where a file of this store that changed during the move is now.
 func (m *mover) whereChanged(rel, aside string) string {
 	if aside == "" {

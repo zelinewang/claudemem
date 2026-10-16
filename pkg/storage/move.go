@@ -457,7 +457,7 @@ func (m *mover) moveFromHere(e MoveID, src, dst *indexRow) {
 
 	rel, note, install, err := m.placeInTarget(kind, e.ID, src.filepath, srcPath, dst, data)
 	if err != nil {
-		m.refuse(e, kind, "%v", err)
+		m.refuse(e, kind, "%v%s", err, m.setAsideBeside(srcPath, data, e.ID))
 		return
 	}
 	if m.dryRun {

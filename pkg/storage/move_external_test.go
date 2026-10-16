@@ -377,3 +377,47 @@ func TestMoveEntries_AnEntryThatLeftTheTargetDuringTheRun(t *testing.T) {
 		t.Errorf("y is not reported moved: %s", out)
 	}
 }
+
+// A run that stops after putting a changed file back under its name, before it removes the set-aside
+// name, leaves this store's file under two names (a hard link). The next run refuses the entry, since
+// the target holds the version from before the change, and the refusal names the second name and
+// says to remove it; a different copy at that name is named as possibly the newer version.
+func TestMoveEntries_ARefusalNamesTheFileSetAsideNextToIt(t *testing.T) {
+	for _, how := range []string{"a second name", "a different copy"} {
+		t.Run(how, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			path := filepath.Join(from.baseDir, rel)
+			atStep(t, "after-target-rows", func() { appendParagraph(t, path) })
+			if report := mustMove(t, from, to, false, note.ID); len(report.NeedsCleanup) != 1 {
+				t.Fatalf("report %+v, want the changed file left to clean up", report)
+			}
+			aside := setAsidePath(path)
+			want := "remove that name"
+			if how == "a second name" {
+				if err := os.Link(path, aside); err != nil { // the put-back linked it, then the run stopped
+					t.Skipf("no hard links here: %v", err)
+				}
+			} else {
+				want = "this may be the newer version"
+				if err := os.WriteFile(aside, append(readRelFile(t, from, rel), "\nmore text\n"...), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, dryRun := range []bool{true, false} {
+				report := mustMove(t, from, to, dryRun, note.ID)
+				if len(report.Refused) != 1 {
+					t.Fatalf("dry run %v: report %+v, want it refused", dryRun, report)
+				}
+				if reason := report.Refused[0].Reason; !strings.Contains(reason, "the target holds a different file") ||
+					!strings.Contains(reason, filepath.Base(aside)) || !strings.Contains(reason, want) {
+					t.Errorf("dry run %v: the refusal %q does not name %s and say %q", dryRun, reason, filepath.Base(aside), want)
+				}
+			}
+			if !exists(path) || !exists(aside) {
+				t.Errorf("the refused entry's files changed: %s %v, %s %v", path, exists(path), aside, exists(aside))
+			}
+		})
+	}
+}

@@ -294,7 +294,8 @@ next move to try again. A dry run only says what it would remove, and only while
 the target's lock: a record it finds while one does may be that of a move still running, so it says
 so and leaves the journal alone. `reindex` and `sync pull` warn while the journal holds other
 records, since a reindex then lists the files the stopped run put there: run the same move again
-first. A set-aside file that a stopped run left is found and handled by the next run.
+first. A set-aside file that a stopped run left is found and handled by the next run, or named in
+the refusal when the next run refuses the entry.
 
 Two different files under one id (anywhere in the target), a file reached through a symlink or
 another alias between the two stores (a bind mount: one file in one directory, reached by two
