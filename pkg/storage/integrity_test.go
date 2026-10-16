@@ -200,3 +200,25 @@ func TestStats_EmptyStore(t *testing.T) {
 		t.Errorf("TotalSessions = %d, want 0", stats.TotalSessions)
 	}
 }
+
+// A database error while checking is an error, not a store reported in sync: a table that cannot be
+// read, or a row that cannot be (an id stored as NULL).
+func TestVerifyIntegrity_ReportsDatabaseErrors(t *testing.T) {
+	for name, damage := range map[string]string{
+		"a table it cannot read": `DROP TABLE memory_fts`,
+		"a row it cannot read": `INSERT INTO entries (id, type, title, filepath, created, updated)
+			VALUES (NULL, 'note', 'Broken row', 'notes/ops/broken.md', '0', '0');
+			INSERT INTO memory_fts (id, title, content, tags) VALUES ('x', 'Broken row', '', '')`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := setupTestStore(t)
+			if _, err := store.db.Exec(damage); err != nil {
+				t.Fatal(err)
+			}
+			result, err := store.VerifyIntegrity()
+			if err == nil {
+				t.Errorf("VerifyIntegrity() = %+v, nil; want the database error", result)
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -200,6 +201,12 @@ func extractArchive(tr *tar.Reader, dir string) (int, error) {
 			name = strings.TrimPrefix(name, "claudemem/")
 		}
 		if name == "" || name == "." {
+			continue
+		}
+		// A member named by an absolute path names no place in the store: joined to its directory, it
+		// would make a stray path inside it.
+		if path.IsAbs(name) || filepath.IsAbs(name) {
+			fmt.Fprintf(os.Stderr, "warning: import skipped %s: its name is an absolute path, not a place in the store\n", header.Name)
 			continue
 		}
 

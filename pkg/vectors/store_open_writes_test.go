@@ -96,3 +96,44 @@ func TestRebuildIndexGated_WaitsForAnotherWriter(t *testing.T) {
 		t.Errorf("the rebuilt document has %d rows, want 1", n)
 	}
 }
+
+// A prune of the inactive backends waits for another process's write instead of failing busy: here
+// a second connection commits between the prune's count and its delete.
+func TestPruneInactiveBackends_WaitsForAnotherWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "search.db")
+	db, other := openFileDB(t, path), openFileDB(t, path)
+	emb := &fakeEmbedder{name: "fake", model: "v1", dim: 2}
+	vs, err := NewVectorStore(db, emb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRow(t, db, "stale", "old-backend", "old-model")
+	insertRow(t, db, "kept", emb.Name(), emb.Model())
+
+	var otherErr error
+	done := make(chan struct{})
+	pruneTestHook = func() {
+		pruneTestHook = nil
+		go func() { // another process logs a search
+			defer close(done)
+			_, otherErr = other.Exec(`INSERT OR REPLACE INTO vector_meta (key, value) VALUES ('probe', 'x')`)
+		}()
+		select { // let it commit, if the prune lets it
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	t.Cleanup(func() { pruneTestHook = nil })
+
+	deleted, err := vs.PruneInactiveBackends()
+	if err != nil {
+		t.Fatalf("the prune failed while another connection wrote: %v", err)
+	}
+	<-done
+	if otherErr != nil {
+		t.Errorf("the other writer failed: %v", otherErr)
+	}
+	if deleted["old-backend:old-model"] != 1 || docRows(t, db, "stale") != 0 || docRows(t, db, "kept") != 1 {
+		t.Errorf("deleted %v; rows left: stale %d, kept %d", deleted, docRows(t, db, "stale"), docRows(t, db, "kept"))
+	}
+}

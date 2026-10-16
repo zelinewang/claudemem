@@ -207,6 +207,42 @@ func TestVectorWrites_SayHowManyTheIndexDoesNotList(t *testing.T) {
 	}
 }
 
+// A backfill or a rebuild embeds only the documents whose entries the index lists: a file the index
+// does not list gets no vectors, so it costs no embedding call; the warning still counts it.
+func TestVectorWrites_EmbedOnlyWhatTheIndexLists(t *testing.T) {
+	for _, write := range []string{"backfill", "rebuild"} {
+		t.Run(write, func(t *testing.T) {
+			store := setupTestStore(t)
+			addTaggedNote(t, store, "ops", "Kept runbook", "text of the kept runbook", "team")
+			copied := addTaggedNote(t, store, "misc", "Copied checklist", "text of the copied checklist", "team")
+			rel := entryFile(t, store, copied.ID)
+			data := readRelFile(t, store, rel)
+			if err := store.DeleteNote(copied.ID); err != nil {
+				t.Fatal(err)
+			}
+			writeRel(t, store, rel, data) // a file put here outside claudemem, which no reindex has listed
+			emb := attachHookEmbedder(t, store)
+			var err error
+			out := captureStderr(t, func() {
+				if write == "backfill" {
+					_, _, err = store.IndexMissingVectors()
+				} else {
+					_, err = store.ReindexVectors()
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if emb.embedded != 1 {
+				t.Errorf("%d documents embedded, want 1: the file the index does not list cost an embedding call", emb.embedded)
+			}
+			if !strings.Contains(out, "the index does not list 1 of the entries read from files") {
+				t.Errorf("the warning says %q", out)
+			}
+		})
+	}
+}
+
 // captureStderr runs f and returns what it wrote to os.Stderr.
 func captureStderr(t *testing.T, f func()) string {
 	t.Helper()

@@ -200,7 +200,8 @@ func (fs *FileStore) MigrateClaudeDone(sourceDir string) (*MigrateResult, error)
 	return result, nil
 }
 
-// VerifyIntegrity checks DB-file consistency and reports/repairs issues
+// VerifyIntegrity checks DB-file consistency and reports/repairs issues. A database error while it
+// checks is returned, never counted as a store in sync.
 func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 	result := &VerifyResult{}
 
@@ -213,7 +214,9 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 
 	for rows.Next() {
 		var id, entryType, fpath string
-		rows.Scan(&id, &entryType, &fpath)
+		if err := rows.Scan(&id, &entryType, &fpath); err != nil {
+			return nil, fmt.Errorf("failed to read entries: %w", err)
+		}
 
 		fullPath := filepath.Join(fs.baseDir, fpath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
@@ -221,6 +224,9 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 				ID: id, Type: entryType, Path: fpath,
 			})
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read entries: %w", err)
 	}
 
 	// Two entries claiming one file (review of PR #21, P2-2): the collisions that destroyed a note were
@@ -232,16 +238,25 @@ func (fs *FileStore) VerifyIntegrity() (*VerifyResult, error) {
 	for shared.Next() {
 		var fp string
 		var n int
-		if err := shared.Scan(&fp, &n); err == nil {
-			result.SharedFiles = append(result.SharedFiles, SharedFile{Path: fp, Entries: n})
+		if err := shared.Scan(&fp, &n); err != nil {
+			shared.Close()
+			return nil, fmt.Errorf("failed to read shared filepaths: %w", err)
 		}
+		result.SharedFiles = append(result.SharedFiles, SharedFile{Path: fp, Entries: n})
 	}
 	shared.Close()
+	if err := shared.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read shared filepaths: %w", err)
+	}
 
 	// Check FTS count matches entries count
 	var entryCount, ftsCount int
-	fs.db.QueryRow("SELECT COUNT(*) FROM entries").Scan(&entryCount)
-	fs.db.QueryRow("SELECT COUNT(*) FROM memory_fts").Scan(&ftsCount)
+	if err := fs.db.QueryRow("SELECT COUNT(*) FROM entries").Scan(&entryCount); err != nil {
+		return nil, fmt.Errorf("failed to count entries: %w", err)
+	}
+	if err := fs.db.QueryRow("SELECT COUNT(*) FROM memory_fts").Scan(&ftsCount); err != nil {
+		return nil, fmt.Errorf("failed to count the search index: %w", err)
+	}
 
 	result.EntryCount = entryCount
 	result.FTSCount = ftsCount
