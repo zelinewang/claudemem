@@ -2,10 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/zelinewang/claudemem/pkg/storage"
+	"github.com/zelinewang/claudemem/pkg/models"
 )
 
 var sessionGetCmd = &cobra.Command{
@@ -21,37 +22,71 @@ Examples:
   claudemem session get 12345678
 
   # Get session in JSON format
-  claudemem session get 12345678 --format json`,
+  claudemem session get 12345678 --format json
+
+  # Only if the session carries team; otherwise it says that it does not
+  claudemem session get 12345678 --tag team`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSessionGet,
 }
 
+var sessionGetTags []string
+
 func init() {
 	sessionCmd.AddCommand(sessionGetCmd)
+	sessionGetCmd.Flags().StringArrayVar(&sessionGetTags, "tag", nil, "Only consider sessions carrying all these tags (comma-separated or repeated)")
 }
 
 func runSessionGet(cmd *cobra.Command, args []string) error {
 	id := args[0]
-
-	store, err := getSessionStore()
+	required, err := tagFlag(cmd, "tag")
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
-	// Get session
-	session, err := store.GetSession(id)
+	stores, err := openReadStores()
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return err
+	}
+	defer closeReadStores(stores)
+
+	// Get session: the primary store first, then the stores it reads
+	var session *models.Session
+	where := -1
+	var firstErr, untagged error
+	for i, rs := range stores {
+		s, err := rs.Store.GetSessionWithTags(id, required)
+		if err != nil {
+			if i == 0 {
+				firstErr = err
+			}
+			if untagged == nil {
+				untagged = missingTagsIn(stores, i, err)
+			}
+			continue
+		}
+		if session == nil {
+			session, where = s, i
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "warning: %s also matches a session in %s; showing the one in %s\n", id, rs.Name, stores[where].Name)
+	}
+	if session == nil {
+		if untagged != nil {
+			return fmt.Errorf("failed to get session: %w", untagged)
+		}
+		return fmt.Errorf("failed to get session: %w", firstErr)
 	}
 
 	// Log access (non-blocking, best-effort)
-	if fs, ok := store.(*storage.FileStore); ok {
-		fs.LogAccess(session.ID, "get")
-	}
+	stores[where].Store.LogAccess(session.ID, "get")
+	label := storeLabel(stores, where)
 
 	// Output result
 	if outputFormat == "json" {
+		if label != "" {
+			return OutputJSON(sessionInStore{Session: session, Store: label})
+		}
 		return OutputJSON(session)
 	} else {
 		// Text format - display full session
@@ -64,6 +99,9 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 		OutputText(fmt.Sprintf("Session: %s", session.Title))
 		OutputText(strings.Repeat("-", 80))
 		OutputText(fmt.Sprintf("ID:         %s", idPrefix))
+		if label != "" {
+			OutputText(fmt.Sprintf("Store:      %s", label))
+		}
 		OutputText(fmt.Sprintf("Date:       %s", session.Date))
 		OutputText(fmt.Sprintf("Branch:     %s", session.Branch))
 		OutputText(fmt.Sprintf("Project:    %s", session.Project))
@@ -122,4 +160,11 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// sessionInStore is a session with the store it came from, for JSON output when several stores are
+// read.
+type sessionInStore struct {
+	*models.Session
+	Store string `json:"store,omitempty"`
 }

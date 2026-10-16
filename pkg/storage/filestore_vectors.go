@@ -29,6 +29,10 @@ func (fs *FileStore) InitVectorStore() error {
 	if fs.db == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if fs.readOnly {
+		// its settings must not choose a backend: a reader brings its own (AttachReadVectors)
+		return fmt.Errorf("a store opened read-only uses the embedder of the store that reads it")
+	}
 
 	bc, err := loadBackendConfig(fs.baseDir)
 	if err != nil {
@@ -43,6 +47,10 @@ func (fs *FileStore) InitVectorStore() error {
 	vs, err := vectors.NewVectorStore(fs.db, embedder)
 	if err != nil {
 		return fmt.Errorf("failed to initialize vector store: %w", err)
+	}
+	// vectors only for the entries the index lists, checked as they are written
+	if err := vs.RequireDocumentRows("entries"); err != nil {
+		return err
 	}
 	fs.vectorStore = vs
 	return nil
@@ -73,6 +81,27 @@ func loadBackendConfig(storeDir string) (vectors.BackendConfig, error) {
 	return bc, nil
 }
 
+// activeVectorBackend is the backend and model whose vectors the store's searches and backfills use:
+// those of its vector store, or else the ones its settings name, without contacting the backend. A
+// move reads them from its target also in a dry run, which opens the target read-only: the target's
+// own settings choose its backend. ok is false when the settings cannot be read or name no backend
+// claudemem knows.
+func (fs *FileStore) activeVectorBackend() (backend, model string, ok bool) {
+	if fs.vectorStore != nil {
+		e := fs.vectorStore.Embedder()
+		return e.Name(), e.Model(), true
+	}
+	bc, err := loadBackendConfig(fs.baseDir)
+	if err != nil {
+		return "", "", false
+	}
+	e, err := vectors.BuildEmbedder(bc)
+	if err != nil {
+		return "", "", false
+	}
+	return e.Name(), e.Model(), true
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -80,6 +109,36 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// AttachReadVectors lets a store opened read-only answer vector searches with the embedder of the
+// store that reads it, over its own vectors of that embedder's backend, model and dimensions. This
+// store's embedding settings are never read: it does not choose a backend, an endpoint or a key.
+// Nothing in its index is created, migrated or stamped. A TF-IDF embedder is refused (its
+// vocabulary belongs to the other store's corpus), as is an index without current-layout vectors.
+func (fs *FileStore) AttachReadVectors(e vectors.Embedder) error {
+	vs, err := vectors.OpenForSearch(fs.db, e)
+	if err != nil {
+		return err
+	}
+	fs.vectorStore = vs
+	return nil
+}
+
+// ShareQueryEmbedder returns this store's embedder, made to embed each query once, for the stores
+// this one reads; it also uses that embedder itself from now on. nil when the store has no vector
+// search, or only TF-IDF, which cannot be shared.
+func (fs *FileStore) ShareQueryEmbedder() vectors.Embedder {
+	if fs.vectorStore == nil {
+		return nil
+	}
+	e := fs.vectorStore.Embedder()
+	if e == nil || e.Name() == "tfidf" {
+		return nil
+	}
+	cached := vectors.CacheQueryEmbeddings(e)
+	fs.vectorStore = fs.vectorStore.WithEmbedder(cached)
+	return cached
 }
 
 // HasVectorStore returns true if semantic search is initialized.
@@ -196,6 +255,11 @@ func (fs *FileStore) PruneStaleVectors() (map[string]int, error) {
 	if fs.vectorStore == nil {
 		return nil, fmt.Errorf("no active embedding backend (vector store not initialized)")
 	}
+	unlock, err := fs.lockStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	return fs.vectorStore.PruneInactiveBackends()
 }
 
@@ -245,10 +309,12 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 	}
 
 	// Filter semantic results: only keep those that also pass facet filters.
-	// If no facet filters active (no category/tag/date), keep all semantic results.
-	hasFacets := opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
+	// If no facet filters active (no type/category/tag/date), keep all semantic results. The type
+	// counts as a facet: without it `search --type session` let semantic-only notes through.
+	hasFacets := opts.Type != "" || opts.Category != "" || len(opts.Tags) > 0 || opts.After != "" || opts.Before != ""
 	if hasFacets {
-		filtered := semanticResults[:0]
+		// A new slice: filtering into semanticResults[:0] overwrote hits the second loop still reads.
+		filtered := make([]SearchResult, 0, len(semanticResults))
 		for _, r := range semanticResults {
 			if ftsIDs[r.ID] {
 				filtered = append(filtered, r)
@@ -260,7 +326,7 @@ func (fs *FileStore) HybridSearch(query string, opts SearchOpts) ([]SearchResult
 				filtered = append(filtered, r)
 			}
 		}
-		semanticResults = filtered
+		semanticResults = fs.keepResultsWithTags(filtered, opts.Tags)
 	}
 
 	// If either side is empty, return the other directly
@@ -355,16 +421,17 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	query := `SELECT 1 FROM entries WHERE id = ?`
 	args := []interface{}{id}
 
+	if opts.Type != "" {
+		query += " AND type = ?"
+		args = append(args, opts.Type)
+	}
 	if opts.Category != "" {
 		query += " AND category = ?"
 		args = append(args, opts.Category)
 	}
-	if len(opts.Tags) > 0 {
-		for _, tag := range opts.Tags {
-			query += " AND tags LIKE ?"
-			args = append(args, "%"+tag+"%")
-		}
-	}
+	tagFilter, tagArgs := tagsWhere("tags", opts.Tags)
+	query += tagFilter
+	args = append(args, tagArgs...)
 	if opts.After != "" {
 		query += " AND date_str >= ?"
 		args = append(args, opts.After)
@@ -379,9 +446,8 @@ func (fs *FileStore) matchesFacets(id string, opts SearchOpts) bool {
 	return err == nil
 }
 
-func (fs *FileStore) collectVectorDocuments() []vectors.Document {
-	var docs []vectors.Document
-
+// collectVectorDocuments reads the documents to embed from the store's note and session files.
+func (fs *FileStore) collectVectorDocuments() (docs []vectors.Document) {
 	// Collect notes
 	if _, err := os.Stat(fs.notesDir); err == nil {
 		filepath.Walk(fs.notesDir, func(path string, info os.FileInfo, err error) error {
@@ -448,10 +514,12 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 	docs := fs.collectVectorDocuments()
 	if strings.HasPrefix(fs.VectorBackend(), "tfidf:") {
 		// TF-IDF needs the whole corpus; a "backfill" is always a full rebuild.
-		if err := fs.vectorStore.RebuildIndex(docs); err != nil {
+		left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
+		if err != nil {
 			return 0, len(docs), fmt.Errorf("failed to rebuild vector index: %w", err)
 		}
-		return len(docs), len(docs), nil
+		warnUnlisted(left)
+		return len(docs) - left, len(docs) - left, nil
 	}
 
 	ids := make([]string, 0, len(docs))
@@ -468,8 +536,11 @@ func (fs *FileStore) IndexMissingVectors() (indexed, missing int, err error) {
 			missingDocs = append(missingDocs, doc)
 		}
 	}
-	indexed, err = fs.vectorStore.UpsertDocuments(missingDocs)
-	return indexed, len(missingDocs), err
+	indexed, left, err := fs.vectorStore.UpsertDocumentsGated(missingDocs, fs.vectorGate())
+	if err == nil {
+		warnUnlisted(left)
+	}
+	return indexed, len(missingDocs) - left, err
 }
 
 // ReindexVectors rebuilds the entire vector index from all notes and sessions on disk.
@@ -480,9 +551,54 @@ func (fs *FileStore) ReindexVectors() (int, error) {
 	}
 
 	docs := fs.collectVectorDocuments()
-	if err := fs.vectorStore.RebuildIndex(docs); err != nil {
+	left, err := fs.vectorStore.RebuildIndexGated(docs, fs.vectorGate())
+	if err != nil {
 		return 0, fmt.Errorf("failed to rebuild vector index: %w", err)
 	}
+	warnUnlisted(left)
 
-	return len(docs), nil
+	return len(docs) - left, nil
+}
+
+// warnUnlisted says how many of the entries read from files got no vectors because the index does
+// not list them: files that came in outside claudemem, which a reindex lists, or entries removed
+// while the others were embedded, which need nothing.
+func warnUnlisted(n int) {
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "warning: the index does not list %d of the entries read from files, so they got no vectors: if their files are still there, run `claudemem reindex`, then `claudemem reindex --vectors --missing`\n", n)
+	}
+}
+
+// vectorGate is the gate of a bulk vector write of documents read from files: it runs the write
+// under the store lock, where a document counts as present while the index lists it. The documents
+// were read and embedded without the lock (embedding can take minutes), and a move or a delete may
+// have taken some out since: their vectors are not written back, also when a copy of a file came back
+// meanwhile, since they would belong to no entry. The vector store checks the same again in the
+// transaction that writes them (RequireDocumentRows).
+func (fs *FileStore) vectorGate() vectors.Gate {
+	return func(write func(present func(id string) bool) error) error {
+		unlock, err := fs.lockStore()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		rows, err := fs.db.Query(`SELECT id FROM entries`)
+		if err != nil {
+			return err
+		}
+		indexed := make(map[string]bool)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			indexed[id] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return write(func(id string) bool { return indexed[id] })
+	}
 }

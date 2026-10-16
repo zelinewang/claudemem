@@ -1,0 +1,423 @@
+package storage
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+// ─── move: a writer outside claudemem saves a file while it moves ──────────────
+//
+// An editor or an add-only sync takes no claudemem lock. A file it saves while the move has the entry
+// in flight must not be removed: the target holds the version the move read, the newer one stays here,
+// and the entry is left to clean up.
+
+const savedParagraph = "PARAGRAPH SAVED BY ANOTHER TOOL"
+
+func appendParagraph(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, []byte("\n\n"+savedParagraph+"\n")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// atStep runs fn once, the first time the move reaches step.
+func atStep(t *testing.T, step string, fn func()) {
+	t.Helper()
+	done := false
+	moveTestHook = func(s string) {
+		if s == step && !done {
+			done = true
+			fn()
+		}
+	}
+	t.Cleanup(func() { moveTestHook = nil })
+}
+
+func TestMoveEntries_KeepsAFileSavedByAnotherWriterDuringTheMove(t *testing.T) {
+	for _, step := range []string{"before-install", "after-install", "after-target-rows"} {
+		t.Run(step, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			atStep(t, step, func() { appendParagraph(t, filepath.Join(from.baseDir, rel)) })
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "changed during the move") {
+				t.Fatalf("report %+v, want it left to clean up", report)
+			}
+			if here := string(readRelFile(t, from, rel)); !strings.Contains(here, savedParagraph) {
+				t.Errorf("the saved paragraph is gone from this store:\n%s", here)
+			}
+			if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+				t.Error("this store's rows for it were removed")
+			}
+			if there := string(readRelFile(t, to, entryFile(t, to, note.ID))); strings.Contains(there, savedParagraph) || !strings.Contains(there, "original text") {
+				t.Errorf("the target's file is not the version the move read:\n%s", there)
+			}
+			for _, name := range dirNames(t, filepath.Join(from.baseDir, filepath.Dir(rel))) {
+				if strings.HasSuffix(name, setAsideSuffix) {
+					t.Errorf("a set-aside file is left: %s", name)
+				}
+			}
+		})
+	}
+
+	t.Run("a leftover copy", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+			t.Fatalf("report %+v", report)
+		}
+		writeRel(t, from, rel, data) // a sync brings the file back
+		atStep(t, "before-leftover-remove", func() { appendParagraph(t, filepath.Join(from.baseDir, rel)) })
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "changed during the move") {
+			t.Fatalf("report %+v, want it left to clean up", report)
+		}
+		if here := string(readRelFile(t, from, rel)); !strings.Contains(here, savedParagraph) {
+			t.Errorf("the saved paragraph is gone from this store:\n%s", here)
+		}
+	})
+}
+
+// A run that stops after setting a file aside leaves it under its hidden name: the next run removes it
+// when it is the moved file, and reports it when it differs.
+func TestMoveEntries_HandlesAFileAStoppedRunSetAside(t *testing.T) {
+	for _, same := range []bool{true, false} {
+		name := "the same file"
+		if !same {
+			name = "a different file"
+		}
+		t.Run(name, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			data := readRelFile(t, from, rel)
+			if report := mustMove(t, from, to, false, note.ID); len(report.Moved) != 1 {
+				t.Fatalf("report %+v", report)
+			}
+			aside := setAsidePath(filepath.Join(from.baseDir, rel))
+			if !same {
+				data = []byte(strings.Replace(string(data), "original text", "edited text", 1))
+			}
+			if err := os.WriteFile(aside, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			report := mustMove(t, from, to, false, note.ID)
+			switch {
+			case same && (len(report.AlreadyInTarget) != 1 || exists(aside)):
+				t.Errorf("report %+v; the set-aside file is still there: %v", report, exists(aside))
+			case !same && (len(report.NeedsCleanup) != 1 || !exists(aside)):
+				t.Errorf("report %+v; the different set-aside file is gone: %v", report, !exists(aside))
+			}
+		})
+	}
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// A different copy of an entry's file that arrives after the walk at the start of the run (a sync pull
+// during a long move) is found by a walk at the end: the entry is left to clean up, not moved.
+func TestMoveEntries_ReportsADifferentCopyThatArrivesDuringTheRun(t *testing.T) {
+	for _, where := range []string{"the target", "this store"} {
+		t.Run(where, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "my version", "team")
+			rel := entryFile(t, from, note.ID)
+			theirs := []byte(strings.Replace(string(readRelFile(t, from, rel)), "my version", "their version", 1))
+			store := to
+			if where == "this store" {
+				store = from
+			}
+			atStep(t, "after-walk", func() { writeRel(t, store, filepath.Join("notes", "archive", filepath.Base(rel)), theirs) })
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "arrived in "+where) {
+				t.Fatalf("report %+v, want it left to clean up", report)
+			}
+		})
+	}
+}
+
+// A refusal names what is wrong: the target holding the file elsewhere is not "in neither store", two
+// copies in the target are not "this store's file cannot be read", and a file a failed entry left in
+// the target is reported.
+func TestMoveEntries_RefusalsNameWhatIsWrong(t *testing.T) {
+	t.Run("the target holds the file away from its row", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		writeRel(t, to, rel, data)
+		if _, err := to.Reindex(); err != nil { // the target lists it at rel
+			t.Fatal(err)
+		}
+		os.Remove(filepath.Join(to.baseDir, rel)) // then a pull moved it to another category
+		elsewhere := filepath.Join("notes", "archive", filepath.Base(rel))
+		writeRel(t, to, elsewhere, data)
+		os.Remove(filepath.Join(from.baseDir, rel))
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || strings.Contains(report.Refused[0].Reason, "neither store") ||
+			!strings.Contains(report.Refused[0].Reason, elsewhere) || !strings.Contains(report.Refused[0].Reason, "reindex the target") {
+			t.Errorf("report %+v", report)
+		}
+	})
+
+	t.Run("two copies in the target, none here", func(t *testing.T) {
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		data := readRelFile(t, from, rel)
+		writeRel(t, to, rel, data)
+		writeRel(t, to, filepath.Join("notes", "archive", filepath.Base(rel)), data)
+		os.Remove(filepath.Join(from.baseDir, rel))
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "holds 2 copies") {
+			t.Errorf("report %+v", report)
+		}
+	})
+
+	t.Run("a file the rollback cannot remove", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs a directory whose permissions stop a removal")
+		}
+		from, to := moveStores(t)
+		note := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+		rel := entryFile(t, from, note.ID)
+		dir := filepath.Join(to.baseDir, filepath.Dir(rel))
+		atStep(t, "after-install", func() {
+			if _, err := to.db.Exec(`DROP TABLE memory_fts`); err != nil { // the rows write fails
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0500); err != nil { // and the file cannot be removed
+				t.Fatal(err)
+			}
+		})
+		t.Cleanup(func() { os.Chmod(dir, 0700) })
+		report := mustMove(t, from, to, false, note.ID)
+		if len(report.Refused) != 1 || !strings.Contains(report.Refused[0].Reason, "stays there at "+rel) {
+			t.Errorf("report %+v", report)
+		}
+	})
+}
+
+// A run that stopped after setting aside a file that changed during the move, before putting it back
+// under its name, leaves the newer version only under the hidden name. The next run puts it back and
+// keeps this store's rows, as an unstopped run does, instead of removing them and pointing at the
+// hidden file.
+func TestMoveEntries_PutsBackAChangedFileAStoppedRunSetAside(t *testing.T) {
+	from, to := moveStores(t)
+	note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+	rel := entryFile(t, from, note.ID)
+	moveStoppedAt(t, "after-target-rows", from, to, note.ID)
+	path := filepath.Join(from.baseDir, rel)
+	appendParagraph(t, path) // saved by another writer, then set aside by the stopped run
+	if err := os.Rename(path, setAsidePath(path)); err != nil {
+		t.Fatal(err)
+	}
+
+	dry := mustMove(t, from, to, true, note.ID)
+	if len(dry.Moved) != 0 || len(dry.NeedsCleanup) != 1 || !exists(setAsidePath(path)) || exists(path) {
+		t.Fatalf("dry run %+v; set aside: %v, at its name: %v", dry, exists(setAsidePath(path)), exists(path))
+	}
+	report := mustMove(t, from, to, false, note.ID)
+	if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "changed during an earlier move") {
+		t.Fatalf("report %+v, want it left to clean up", report)
+	}
+	if here, err := os.ReadFile(path); err != nil || !strings.Contains(string(here), savedParagraph) {
+		t.Errorf("the newer version is not back under its name: %v\n%s", err, here)
+	}
+	if exists(setAsidePath(path)) {
+		t.Error("the set-aside file is still there")
+	}
+	if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+		t.Error("this store's rows for it were removed")
+	}
+	if there := string(readRelFile(t, to, entryFile(t, to, note.ID))); strings.Contains(there, savedParagraph) {
+		t.Errorf("the target's file is not the version the move read:\n%s", there)
+	}
+}
+
+// A file of this store that the move set aside and then cannot remove goes back under its name, but
+// never over a new file an editor saved at that name meanwhile: it then stays set aside, and the entry
+// is left to clean up, with this store's rows.
+func TestMoveEntries_NeverPutsAFileBackOverANewOne(t *testing.T) {
+	for _, newFile := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a new file at the name: %v", newFile), func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			path := filepath.Join(from.baseDir, rel)
+			saved, failed := removeFile, false
+			removeFile = func(p string) error {
+				if p == setAsidePath(path) && !failed {
+					failed = true
+					if newFile {
+						if err := os.WriteFile(path, []byte("a new version saved by name\n"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return &os.PathError{Op: "remove", Path: p, Err: os.ErrPermission}
+				}
+				return saved(p)
+			}
+			t.Cleanup(func() { removeFile = saved })
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.Moved) != 0 || len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, "could not be removed") {
+				t.Fatalf("report %+v, want it left to clean up", report)
+			}
+			if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+				t.Error("this store's rows for it were removed")
+			}
+			here, _ := os.ReadFile(path)
+			if newFile {
+				if string(here) != "a new version saved by name\n" {
+					t.Errorf("the new file at the name was replaced: %q", here)
+				}
+				if !exists(setAsidePath(path)) || !strings.Contains(report.NeedsCleanup[0].Reason, "stays set aside") {
+					t.Errorf("the file is not reported set aside: %v, %q", exists(setAsidePath(path)), report.NeedsCleanup[0].Reason)
+				}
+				return
+			}
+			if !strings.Contains(string(here), "original text") || exists(setAsidePath(path)) {
+				t.Errorf("the file is not back under its name: %q; set aside: %v", here, exists(setAsidePath(path)))
+			}
+		})
+	}
+}
+
+// A file already at the name under which the move sets a file aside is never removed or replaced. One
+// that this move did not leave is reported as such, and a different copy of the same entry, which a
+// stopped move set aside, as possibly the newer version; neither is cleared by running the move again.
+func TestMoveEntries_AFileAtTheSetAsideName(t *testing.T) {
+	for _, variant := range []string{"another note's file", "a user's own file", "a different copy of this note"} {
+		t.Run(variant, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			other := addTaggedNote(t, from, "ops", "Other note", "other text", "team")
+			rel := entryFile(t, from, note.ID)
+			aside := setAsidePath(filepath.Join(from.baseDir, rel))
+			var content []byte
+			want := "not left by this move; check it by hand"
+			switch variant {
+			case "another note's file":
+				content = readRelFile(t, from, entryFile(t, from, other.ID))
+			case "a user's own file":
+				content = []byte("my own scratch text\n")
+			default:
+				content = []byte(strings.Replace(string(readRelFile(t, from, rel)), "original text", "edited text", 1))
+				want = "this may be the newer version"
+			}
+			if err := os.WriteFile(aside, content, 0600); err != nil {
+				t.Fatal(err)
+			}
+			report := mustMove(t, from, to, false, note.ID)
+			if len(report.NeedsCleanup) != 1 || !strings.Contains(report.NeedsCleanup[0].Reason, want) || strings.HasSuffix(report.NeedsCleanup[0].Reason, "; run the move again") {
+				t.Errorf("report %+v, want it left to clean up: %s", report, want)
+			}
+			if after, err := os.ReadFile(aside); err != nil || string(after) != string(content) {
+				t.Errorf("the file at the set-aside name changed: %v %q", err, after)
+			}
+			if rows := rowsOf(t, from, note.ID); rows["entries"] == "" {
+				t.Error("this store's rows for it were removed")
+			}
+		})
+	}
+}
+
+// An entry that this run put into the target and that another move, in the other direction, takes
+// back out before the run ends is not reported as left to clean up, since nothing of it is left: it
+// gets its own category, which says where it went.
+func TestMoveEntries_AnEntryThatLeftTheTargetDuringTheRun(t *testing.T) {
+	from, to := moveStores(t)
+	x := addTaggedNote(t, from, "ops", "Deploy runbook", "body", "team")
+	y := addTaggedNote(t, from, "infra", "Network map", "routes", "team")
+	took := false
+	report, err := MoveEntries(from, to, moveIDs(x.ID, y.ID), false, func(done, total int) {
+		if !took { // between two entries, without the locks: a move in the other direction takes x back
+			took = true
+			if back := mustMove(t, to, from, false, x.ID); len(back.Moved) != 1 {
+				t.Fatalf("the move back: %+v", back)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.NeedsCleanup) != 0 {
+		t.Errorf("left to clean up: %+v", report.NeedsCleanup)
+	}
+	out, _ := json.Marshal(report)
+	var categories map[string]json.RawMessage
+	json.Unmarshal(out, &categories)
+	if !strings.Contains(string(categories["left_target"]), x.ID) || strings.Contains(string(categories["moved"]), x.ID) {
+		t.Errorf("x is not reported as having left the target: %s", out)
+	}
+	if !strings.Contains(string(categories["moved"]), y.ID) {
+		t.Errorf("y is not reported moved: %s", out)
+	}
+}
+
+// A run that stops after putting a changed file back under its name, before it removes the set-aside
+// name, leaves this store's file under two names (a hard link). The next run refuses the entry, since
+// the target holds the version from before the change, and the refusal names the second name and
+// says to remove it; a different copy at that name is named as possibly the newer version.
+func TestMoveEntries_ARefusalNamesTheFileSetAsideNextToIt(t *testing.T) {
+	for _, how := range []string{"a second name", "a different copy"} {
+		t.Run(how, func(t *testing.T) {
+			from, to := moveStores(t)
+			note := addTaggedNote(t, from, "ops", "Deploy runbook", "original text", "team")
+			rel := entryFile(t, from, note.ID)
+			path := filepath.Join(from.baseDir, rel)
+			atStep(t, "after-target-rows", func() { appendParagraph(t, path) })
+			if report := mustMove(t, from, to, false, note.ID); len(report.NeedsCleanup) != 1 {
+				t.Fatalf("report %+v, want the changed file left to clean up", report)
+			}
+			aside := setAsidePath(path)
+			want := "remove that name"
+			if how == "a second name" {
+				if err := os.Link(path, aside); err != nil { // the put-back linked it, then the run stopped
+					t.Skipf("no hard links here: %v", err)
+				}
+			} else {
+				want = "this may be the newer version"
+				if err := os.WriteFile(aside, append(readRelFile(t, from, rel), "\nmore text\n"...), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, dryRun := range []bool{true, false} {
+				report := mustMove(t, from, to, dryRun, note.ID)
+				if len(report.Refused) != 1 {
+					t.Fatalf("dry run %v: report %+v, want it refused", dryRun, report)
+				}
+				if reason := report.Refused[0].Reason; !strings.Contains(reason, "the target holds a different file") ||
+					!strings.Contains(reason, filepath.Base(aside)) || !strings.Contains(reason, want) {
+					t.Errorf("dry run %v: the refusal %q does not name %s and say %q", dryRun, reason, filepath.Base(aside), want)
+				}
+			}
+			if !exists(path) || !exists(aside) {
+				t.Errorf("the refused entry's files changed: %s %v, %s %v", path, exists(path), aside, exists(aside))
+			}
+		})
+	}
+}

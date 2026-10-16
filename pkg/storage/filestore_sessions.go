@@ -27,6 +27,10 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 	if err := validateTitle(session.Title); err != nil {
 		return nil, fmt.Errorf("invalid session title: %w", err)
 	}
+	// the given tags only: tags an existing session already carries are merged in below as they are
+	if err := validateNewTags(session.Tags, nil); err != nil {
+		return nil, err
+	}
 
 	// ── Dedup check ──
 	// Sessions are fundamentally CONVERSATION-based, not topic-based.
@@ -203,16 +207,29 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 
 // GetSession retrieves a session by ID or ID prefix
 func (fs *FileStore) GetSession(id string) (*models.Session, error) {
-	// Try exact match first, then prefix match
+	return fs.GetSessionWithTags(id, nil)
+}
+
+// GetSessionWithTags is GetSession restricted to the sessions carrying every required tag: a prefix
+// is matched only among the tagged sessions, and the file's own tags are checked too. A session that
+// exists without the tags is reported as such (*MissingTagsError), not as an absent id: tags filter,
+// they do not hide entries.
+func (fs *FileStore) GetSessionWithTags(id string, required []string) (*models.Session, error) {
+	// Exact id or prefix; the smallest id wins an ambiguous prefix, as in GetNote
+	tagFilter, tagArgs := tagsWhere("tags", required)
 	var fpath string
 	err := fs.db.QueryRow(`
 		SELECT filepath FROM entries
-		WHERE (id = ? OR id LIKE ? || '%') AND type = 'session'
+		WHERE (id = ? OR id LIKE ? || '%') AND type = 'session'`+tagFilter+`
+		ORDER BY id
 		LIMIT 1`,
-		id, id,
+		append([]interface{}{id, id}, tagArgs...)...,
 	).Scan(&fpath)
 
 	if err == sql.ErrNoRows {
+		if exists, existsErr := fs.entryExists("session", id); existsErr == nil && exists && len(required) > 0 {
+			return nil, &MissingTagsError{Kind: "session", ID: id, Tags: required}
+		}
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
 	if err != nil {
@@ -230,6 +247,9 @@ func (fs *FileStore) GetSession(id string) (*models.Session, error) {
 	session, err := ParseSessionMarkdown(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse session markdown: %w", err)
+	}
+	if !HasAllTags(session.Tags, required) {
+		return nil, &MissingTagsError{Kind: "session", ID: id, Tags: required}
 	}
 
 	return session, nil
@@ -260,6 +280,9 @@ func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, erro
 		query += " AND date_str <= ?"
 		args = append(args, opts.EndDate)
 	}
+	tagFilter, tagArgs := tagsWhere("tags", opts.Tags)
+	query += tagFilter
+	args = append(args, tagArgs...)
 
 	// Order and limit
 	query += " ORDER BY date_str DESC, created DESC"
@@ -295,6 +318,9 @@ func (fs *FileStore) ListSessions(opts SessionListOpts) ([]*models.Session, erro
 		if err != nil {
 			continue
 		}
+		if !HasAllTags(session.Tags, opts.Tags) {
+			continue // a stale index row listed a tag the file no longer has: the file wins
+		}
 
 		sessions = append(sessions, session)
 	}
@@ -328,6 +354,9 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 		ftsQuery += " AND e.date_str <= ?"
 		args = append(args, opts.EndDate)
 	}
+	tagFilter, tagArgs := tagsWhere("e.tags", opts.Tags)
+	ftsQuery += tagFilter
+	args = append(args, tagArgs...)
 
 	// Order by relevance and limit
 	ftsQuery += " ORDER BY f.rank LIMIT 50"
@@ -359,6 +388,9 @@ func (fs *FileStore) SearchSessions(query string, opts SessionListOpts) ([]*mode
 
 		session, err := ParseSessionMarkdown(data)
 		if err != nil {
+			continue
+		}
+		if !HasAllTags(session.Tags, opts.Tags) {
 			continue
 		}
 

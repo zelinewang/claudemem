@@ -102,21 +102,27 @@ func CheckHealth(in HealthInputs) (*HealthReport, error) {
 	// Rows whose doc_id no longer exists in entries (orphans, I4) are excluded:
 	// counted here they would mask a missing document one-for-one, and a fully
 	// covered store would report a negative delta (seen on the Mac, 2026-09-08).
-	rows, err := in.DB.Query(`
-		SELECT backend, model, COUNT(DISTINCT doc_id) FROM vectors
-		WHERE doc_id IN (SELECT id FROM entries)
-		GROUP BY backend, model`)
-	if err != nil {
-		return nil, fmt.Errorf("group vectors: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var backend, model string
-		var n int
-		if err := rows.Scan(&backend, &model, &n); err != nil {
-			return nil, err
+	// A store that never ran semantic search has no vectors table, and covers no entry.
+	if hasDocVectors(in.DB) {
+		rows, err := in.DB.Query(`
+			SELECT backend, model, COUNT(DISTINCT doc_id) FROM vectors
+			WHERE doc_id IN (SELECT id FROM entries)
+			GROUP BY backend, model`)
+		if err != nil {
+			return nil, fmt.Errorf("group vectors: %w", err)
 		}
-		r.VectorTotals[backend+":"+model] = n
+		defer rows.Close()
+		for rows.Next() {
+			var backend, model string
+			var n int
+			if err := rows.Scan(&backend, &model, &n); err != nil {
+				return nil, err
+			}
+			r.VectorTotals[backend+":"+model] = n
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("group vectors: %w", err)
+		}
 	}
 	if in.Embedder != nil {
 		r.ActiveBackend = in.Embedder.Name()
@@ -155,11 +161,13 @@ func CheckHealthDeep(in HealthInputs) (*HealthReport, error) {
 		return nil, err
 	}
 	var orphanVec int
-	if err := in.DB.QueryRow(`
-		SELECT COUNT(*) FROM vectors
-		WHERE doc_id NOT IN (SELECT id FROM entries)
-	`).Scan(&orphanVec); err != nil {
-		return nil, err
+	if hasDocVectors(in.DB) {
+		if err := in.DB.QueryRow(`
+			SELECT COUNT(*) FROM vectors
+			WHERE doc_id NOT IN (SELECT id FROM entries)
+		`).Scan(&orphanVec); err != nil {
+			return nil, err
+		}
 	}
 	r.I4NoOrphanRows = orphanFTS == 0 && orphanVec == 0
 	if !r.I4NoOrphanRows {
@@ -183,6 +191,14 @@ func CheckHealthDeep(in HealthInputs) (*HealthReport, error) {
 	}
 
 	return r, nil
+}
+
+// hasDocVectors reports whether the index has a vectors table keyed by doc_id (every layout since
+// v22). A store that never ran semantic search has none, and a v21 table gets one on its next open
+// with semantic search; until then there are no vectors to count.
+func hasDocVectors(db *sql.DB) bool {
+	var n int
+	return db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('vectors') WHERE name = 'doc_id'`).Scan(&n) == nil && n == 1
 }
 
 // countMarkdownFiles walks notesDir + sessionsDir and counts .md files.

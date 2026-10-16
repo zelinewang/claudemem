@@ -10,12 +10,6 @@ import (
 	"time"
 )
 
-// lockTimeout bounds how long a writer waits for the store lock. A bare LOCK_EX would block forever
-// with no output while another process holds the lock (review of PR #22, round 1, P2-3); it also
-// turned an accidental re-entry — the lock is a flock and is NOT reentrant — into a silent hang
-// (P2-2). With a bound, both become a loud error naming the lock file. Overridable for tests.
-var lockTimeout = 60 * time.Second
-
 // lockStore takes the store-wide exclusive write lock and returns the function that releases it.
 //
 // Every mutating path (AddNote, UpdateNote, DeleteNote, SaveSession) is a read-modify-write on
@@ -36,7 +30,18 @@ var lockTimeout = 60 * time.Second
 // already hold it use the *Locked variants of the mutating methods; a re-entry fails after
 // lockTimeout with the error below instead of hanging.
 func (fs *FileStore) lockStore() (func(), error) {
-	path := filepath.Join(fs.baseDir, ".write.lock")
+	if fs.readOnly {
+		return nil, fmt.Errorf("this store is open only for reading; writes go to --store")
+	}
+	return LockStoreDir(fs.baseDir)
+}
+
+// LockStoreDir takes the write lock of the store in dir, the same lock the store's own writes and a
+// move take. It is for a writer that changes the store's files without going through the store, such
+// as git sync and import. While holding it, the caller must not call a store method that writes: the
+// lock is not reentrant, and that call would wait out lockTimeout and fail.
+func LockStoreDir(dir string) (func(), error) {
+	path := filepath.Join(dir, ".write.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open store lock %s: %w", path, err)
@@ -67,4 +72,20 @@ func (fs *FileStore) lockStore() (func(), error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, nil
+}
+
+// storeLockHeld reports whether a writer holds the write lock of the store in dir, without waiting
+// and without creating anything: a shared lock on its lock file is tried once and let go. A store
+// whose lock file does not exist has no holder.
+func storeLockHeld(dir string) bool {
+	f, err := os.Open(filepath.Join(dir, ".write.lock"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return err == syscall.EWOULDBLOCK || err == syscall.EAGAIN
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
 }

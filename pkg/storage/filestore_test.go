@@ -54,6 +54,15 @@ func countedVector(text string, dim int) []float32 {
 	return vec
 }
 
+// reindexAfterPull indexes the files written into the store, as a sync pull does before it embeds
+// the missing vectors: vectors are written only for the entries the index lists.
+func reindexAfterPull(t *testing.T, store *FileStore) {
+	t.Helper()
+	if _, err := store.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeNoteMarkdown(t *testing.T, store *FileStore, filename, category, title, content string) {
 	t.Helper()
 	note := models.NewNote(category, title, content)
@@ -74,6 +83,7 @@ func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
 
 	writeNoteMarkdown(t, store, "one.md", "sync", "First", "first remote note")
 	writeNoteMarkdown(t, store, "two.md", "sync", "Second", "second remote note")
+	reindexAfterPull(t, store)
 
 	indexed, _, err := store.IndexMissingVectors()
 	if err != nil {
@@ -98,6 +108,7 @@ func TestFileStore_IndexMissingVectorsSkipsExistingDocs(t *testing.T) {
 	}
 
 	writeNoteMarkdown(t, store, "three.md", "sync", "Third", "third remote note")
+	reindexAfterPull(t, store)
 	indexed, _, err = store.IndexMissingVectors()
 	if err != nil {
 		t.Fatalf("third IndexMissingVectors failed: %v", err)
@@ -605,6 +616,7 @@ func TestFileStore_IndexMissingVectorsReportsSkippedDocs(t *testing.T) {
 
 	writeNoteMarkdown(t, store, "ok.md", "sync", "Fine", "an ordinary note")
 	writeNoteMarkdown(t, store, "bad.md", "sync", "Poisoned", "this note is poison for the backend")
+	reindexAfterPull(t, store)
 
 	indexed, missing, err := store.IndexMissingVectors()
 	if err != nil {

@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -36,15 +35,9 @@ func Execute() {
 }
 
 func init() {
-	// Set default store directory
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "."
-	}
-	defaultStore := filepath.Join(homeDir, ".claudemem")
-
-	// Register flags
-	rootCmd.PersistentFlags().StringVar(&storeDir, "store", defaultStore, "memory store directory")
+	// Register flags. --store defaults to "" and getStoreDir resolves that to ~/.claudemem, so help and
+	// the usage block printed after an error never show the absolute home path.
+	rootCmd.PersistentFlags().StringVar(&storeDir, "store", "", "memory store directory (default ~/.claudemem)")
 	rootCmd.PersistentFlags().StringVar(&outputFormat, "format", "text", "output format (text|json)")
 	rootCmd.Flags().BoolP("version", "v", false, "show version information")
 }

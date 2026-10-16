@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -125,4 +127,31 @@ func TestIndexNewerIssue(t *testing.T) {
 	if _, ok := indexNewerIssue(nil); ok {
 		t.Fatal("nil is not an issue")
 	}
+}
+
+// A store that never ran semantic search has no vectors table: health passes, and repair rebuilds the
+// index without one.
+func TestCLI_HealthAndRepairWithoutAVectorsTable(t *testing.T) {
+	store := t.TempDir()
+	addNoteCLI(t, store, "ops", "Deploy runbook", "novecskw deploy", "team")
+	addNoteCLI(t, store, "ops", "Rollback steps", "novecskw rollback", "team")
+	for _, table := range indexTables(t, store) {
+		if table == "vectors" {
+			t.Fatal("the store has a vectors table")
+		}
+	}
+	mustRunCLI(t, store, "health")
+	mustRunCLI(t, store, "health", "--deep")
+
+	files, _ := filepath.Glob(filepath.Join(store, "notes", "ops", "*.md"))
+	if len(files) != 2 {
+		t.Fatalf("note files: %v", files)
+	}
+	if err := os.Remove(files[0]); err != nil { // the index now lists a note that has no file
+		t.Fatal(err)
+	}
+	if out := mustRunCLI(t, store, "repair", "--yes"); !strings.Contains(out, "FTS index rebuilt (1 entries)") {
+		t.Errorf("repair printed:\n%s", out)
+	}
+	mustRunCLI(t, store, "health", "--deep")
 }

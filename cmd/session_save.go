@@ -94,12 +94,9 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 	// Create new session
 	session := models.NewSession(sessionTitle, sessionBranch, sessionProject, sessionSessionID)
 
-	// Parse tags
-	if sessionTags != "" {
-		session.Tags = strings.Split(sessionTags, ",")
-		for i := range session.Tags {
-			session.Tags[i] = strings.TrimSpace(session.Tags[i])
-		}
+	// Parse tags (an empty item, as in "a,,b" or a trailing comma, is dropped)
+	if tags := splitTagList(sessionTags); len(tags) > 0 {
+		session.Tags = tags
 	}
 
 	// Determine content source

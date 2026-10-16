@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
 )
@@ -12,14 +13,32 @@ var noteTagsCmd = &cobra.Command{
 	Long:  `List all unique tags used in notes.`,
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := getStore()
+		stores, err := openReadStores()
 		if err != nil {
 			return err
 		}
+		defer closeReadStores(stores)
 
-		tags, err := store.GetTags()
-		if err != nil {
-			return fmt.Errorf("failed to get tags: %w", err)
+		// Every tag of the stores read, once
+		var tags []string
+		seen := make(map[string]bool)
+		for i, rs := range stores {
+			found, err := rs.Store.GetTags()
+			if err != nil {
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to get tags: %w", err)); err != nil {
+					return err
+				}
+				continue
+			}
+			for _, tag := range found {
+				if !seen[tag] {
+					seen[tag] = true
+					tags = append(tags, tag)
+				}
+			}
+		}
+		if len(stores) > 1 {
+			sort.Strings(tags)
 		}
 
 		if outputFormat == "json" {

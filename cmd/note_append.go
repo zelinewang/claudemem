@@ -33,7 +33,7 @@ Examples:
 		// Get existing note
 		note, err := store.GetNote(id)
 		if err != nil {
-			return fmt.Errorf("failed to get note: %w", err)
+			return readStoreHint(fmt.Errorf("failed to get note: %w", err), "note", id)
 		}
 
 		// Append content

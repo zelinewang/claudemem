@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 // noteCategoriesCmd represents the note categories command
@@ -16,16 +18,35 @@ Examples:
   claudemem note categories`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Get store
-		store, err := getStore()
+		stores, err := openReadStores()
 		if err != nil {
 			return err
 		}
+		defer closeReadStores(stores)
 
-		// Get categories
-		categories, err := store.GetCategories()
-		if err != nil {
-			return fmt.Errorf("failed to get categories: %w", err)
+		// Get categories, added up by name across the stores read
+		var categories []storage.CategoryInfo
+		counts := make(map[string]int)
+		for i, rs := range stores {
+			found, err := rs.Store.GetCategories()
+			if err != nil {
+				if err := readStoreFailed(stores, i, fmt.Errorf("failed to get categories: %w", err)); err != nil {
+					return err
+				}
+				continue
+			}
+			for _, cat := range found {
+				if _, seen := counts[cat.Name]; !seen {
+					categories = append(categories, storage.CategoryInfo{Name: cat.Name})
+				}
+				counts[cat.Name] += cat.Count
+			}
+		}
+		for i := range categories {
+			categories[i].Count = counts[categories[i].Name]
+		}
+		if len(stores) > 1 {
+			sort.Slice(categories, func(i, j int) bool { return categories[i].Name < categories[j].Name })
 		}
 
 		// Output results

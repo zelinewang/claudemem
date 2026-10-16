@@ -2,11 +2,14 @@ package storage
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/zelinewang/claudemem/pkg/vectors"
 )
@@ -19,6 +22,8 @@ type FileStore struct {
 	indexDir    string
 	db          *sql.DB
 	vectorStore *vectors.VectorStore // nil when semantic search is disabled
+	noAccessLog bool                 // set by DisableAccessLog
+	readOnly    bool                 // opened by OpenReadOnly: no write path may run
 }
 
 // NewFileStore creates a new file-based store
@@ -133,6 +138,84 @@ func (fs *FileStore) initSchema() error {
 	return nil
 }
 
+// OpenReadOnly opens an existing store only to read it, for a store that another store reads. The
+// index is opened read-only, so any write fails; nothing is created, no schema is set up, migrated or
+// stamped, the journal mode is left as it is, no access is logged, and the store's write lock is
+// refused, so no write path can start. (SQLite may still create its -wal and -shm side files next to
+// a WAL database, as any reader does.)
+func OpenReadOnly(baseDir string) (*FileStore, error) {
+	if !IsStoreDir(baseDir) {
+		return nil, fmt.Errorf("not a claudemem store (no .index/search.db)")
+	}
+	fs := &FileStore{
+		baseDir:     baseDir,
+		notesDir:    filepath.Join(baseDir, "notes"),
+		sessionsDir: filepath.Join(baseDir, "sessions"),
+		indexDir:    filepath.Join(baseDir, ".index"),
+		noAccessLog: true,
+		readOnly:    true,
+	}
+	dbPath, err := filepath.Abs(filepath.Join(fs.indexDir, "search.db"))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", readOnlyDSN(dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open the index: %w", err)
+	}
+	for _, table := range []string{"entries", "memory_fts"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE name = ?`, table).Scan(&name); err != nil {
+			db.Close()
+			if reason := readOnlyIndexReason(err, fs.indexDir); reason != "" {
+				return nil, fmt.Errorf("%s", reason)
+			}
+			return nil, fmt.Errorf("the index has no %s table (%v)", table, err)
+		}
+	}
+	fs.db = db
+	return fs, nil
+}
+
+// readOnlyIndexReason says why an index cannot be read when SQLite refused a read for want of writing
+// next to it: an index in WAL mode needs its -wal and -shm files, which a reader creates when they are
+// missing. It returns "" for any other error.
+func readOnlyIndexReason(err error, indexDir string) string {
+	var se *sqlite.Error
+	if !errors.As(err, &se) || se.Code()&0xff != 8 { // SQLITE_READONLY and its extended codes
+		return ""
+	}
+	if se.Code() == 1544 { // SQLITE_READONLY_DIRECTORY
+		return fmt.Sprintf("the index directory %s is read-only: SQLite writes the -wal and -shm files of an index in WAL mode next to it, also to read it; make the directory writable", indexDir)
+	}
+	return fmt.Sprintf("SQLite cannot write the -wal or -shm file of the index in %s, which it needs also to read an index in WAL mode (%v)", indexDir, err)
+}
+
+// readOnlyDSN is the SQLite URI that opens path read-only.
+func readOnlyDSN(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // a Windows drive path: file:///C:/...
+	}
+	return (&url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro"}).String()
+}
+
+// IsReadOnly reports whether the store was opened by OpenReadOnly.
+func (fs *FileStore) IsReadOnly() bool { return fs.readOnly }
+
+// IsStoreDir reports whether dir is a claudemem store: it has an index, which every command creates
+// on its first run there. Commands that open a store named by a setting check this first, so that a
+// mistyped path is reported instead of turned into a new store.
+func IsStoreDir(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, ".index", "search.db"))
+	return err == nil && info.Mode().IsRegular()
+}
+
 // Close closes the database connection
 func (fs *FileStore) Close() error {
 	if fs.db != nil {
@@ -143,8 +226,7 @@ func (fs *FileStore) Close() error {
 
 // DB returns the underlying *sql.DB for use by health / repair tools that
 // need to run custom queries without threading them through FileStore.
-// Kept intentionally read-write so the repair command can DELETE orphan
-// rows directly — but callers SHOULD prefer FileStore methods when one exists.
+// Writes go through FileStore methods, which take the store lock.
 func (fs *FileStore) DB() *sql.DB { return fs.db }
 
 // NotesDir returns the filesystem path where markdown notes live.

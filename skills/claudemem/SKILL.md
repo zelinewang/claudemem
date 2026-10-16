@@ -38,29 +38,42 @@ All commands support `--format json` for structured output.
 claudemem note add <category> --title "..." --content "..." --tags "..." [--session-id "..."]
 claudemem note search "query" [--in category] [--tag tags]
 claudemem note list [category]
-claudemem note get <id>                        # Supports 8-char prefix
+claudemem note get <id> [--tag X]              # Supports 8-char prefix; --tag: only if tagged X
 claudemem note append <id> "additional content"
-claudemem note update <id> --content "..." [--title "..."] [--tags "..."]
+claudemem note update <id> --content "..." [--title "..."] [--tags "..."]   # --tags replaces all tags
+claudemem note update <id> --add-tag X,Y --remove-tag Z                     # tags only, keeps the rest
 claudemem note delete <id>
 claudemem note categories
 claudemem note tags
 
 # Sessions
-claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--related-notes "id:title:cat,..."]
-claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X]
-claudemem session search "query" [--branch X]
-claudemem session get <id>
+claudemem session save --title "..." --branch "..." --project "..." --session-id "..." [--tags "..."] [--related-notes "id:title:cat,..."]
+claudemem session list [--last N] [--date today] [--date-range 7d] [--branch X] [--tag X]
+claudemem session search "query" [--branch X] [--tag X]
+claudemem session get <id> [--tag X]
+claudemem session update <id> --add-tag X --remove-tag Y
 
 # Search
 claudemem search "query" [--type note|session] [--limit N]
 claudemem search "query" --compact              # IDs + titles only
-claudemem search "query" --category X --tag Y   # Faceted filters
+claudemem search "query" --category X --tag Y   # Faceted filters (whole tags, all required; --tag repeatable)
 claudemem search "query" --after 2025-01-01     # Date range
 claudemem search "query" --sort date            # Chronological (default: relevance + recency boost)
 claudemem search "query" --semantic             # Force semantic even if feature flag off
 
+# Tags
+claudemem context inject --tag project-x  # inject only entries carrying the tag
+claudemem stats --tag project-x           # the statistics of the tagged entries
+claudemem tag apply --file tags.jsonl [--dry-run]   # bulk: {"id","kind":"note|session","add":[],"remove":[]} per line
+
+# Several stores
+claudemem config set stores.read "~/team-memory"  # reads also return ~/team-memory's entries, each naming its store
+claudemem search "query" --read-stores ""         # this store alone, for one call
+claudemem --store ~/team-memory note append <id> "..."   # writes go to --store only: write where the entry lives
+claudemem move --to ~/team-memory --file ids.txt --dry-run   # then without --dry-run: moves the listed ids there, keeping them
+
 # Context
-claudemem context inject [--limit N] [--project path]  # Recent notes + sessions overview
+claudemem context inject [--limit N] [--project path] [--tag X]  # Recent notes + sessions overview
 
 # Code
 claudemem code outline <file>                   # Structural symbols (Go/Python/TS/Rust)

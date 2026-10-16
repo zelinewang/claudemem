@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zelinewang/claudemem/pkg/models"
 	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
@@ -15,6 +17,7 @@ var (
 	listDateRange string
 	listBranch    string
 	listProject   string
+	listTags      []string
 )
 
 var sessionListCmd = &cobra.Command{
@@ -41,6 +44,9 @@ Examples:
   # List sessions from a specific branch
   claudemem session list --branch feature/auth
 
+  # Only sessions carrying all these tags
+  claudemem session list --tag team
+
   # Combine filters
   claudemem session list --branch main --date-range 7d --last 5`,
 	RunE: runSessionList,
@@ -54,19 +60,25 @@ func init() {
 	sessionListCmd.Flags().StringVar(&listDateRange, "date-range", "", "Filter by date range (START..END or 7d)")
 	sessionListCmd.Flags().StringVar(&listBranch, "branch", "", "Filter by branch")
 	sessionListCmd.Flags().StringVar(&listProject, "project", "", "Filter by project path")
+	sessionListCmd.Flags().StringArrayVar(&listTags, "tag", nil, "Only sessions carrying all these tags (comma-separated or repeated)")
 }
 
 func runSessionList(cmd *cobra.Command, args []string) error {
-	store, err := getSessionStore()
+	tags, err := tagFlag(cmd, "tag")
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	stores, err := openReadStores()
+	if err != nil {
+		return err
+	}
+	defer closeReadStores(stores)
 
 	// Build options
 	opts := storage.SessionListOpts{
 		Branch:  listBranch,
 		Project: listProject,
+		Tags:    tags,
 		Limit:   listLast,
 	}
 
@@ -100,10 +112,39 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Get sessions
-	sessions, err := store.ListSessions(opts)
-	if err != nil {
-		return fmt.Errorf("failed to list sessions: %w", err)
+	// Get sessions from every store, newest first across them
+	var listed []listedSession
+	for i, rs := range stores {
+		found, err := rs.Store.ListSessions(opts)
+		if err != nil {
+			if err := readStoreFailed(stores, i, fmt.Errorf("failed to list sessions: %w", err)); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, s := range found {
+			listed = append(listed, listedSession{session: s, store: storeLabel(stores, i)})
+		}
+	}
+	if len(stores) > 1 {
+		sort.SliceStable(listed, func(i, j int) bool {
+			a, b := listed[i].session, listed[j].session
+			if a.Date != b.Date {
+				return a.Date > b.Date
+			}
+			return a.Created.After(b.Created)
+		})
+		limit := opts.Limit
+		if limit <= 0 {
+			limit = 10 // ListSessions' default
+		}
+		if len(listed) > limit {
+			listed = listed[:limit]
+		}
+	}
+	sessions := make([]*models.Session, len(listed))
+	for i, l := range listed {
+		sessions[i] = l.session
 	}
 
 	if len(sessions) == 0 {
@@ -113,13 +154,20 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 
 	// Output results
 	if outputFormat == "json" {
-		return OutputJSON(sessions)
+		if len(stores) < 2 {
+			return OutputJSON(sessions)
+		}
+		labelled := make([]sessionInStore, len(listed))
+		for i, l := range listed {
+			labelled[i] = sessionInStore{Session: l.session, Store: l.store}
+		}
+		return OutputJSON(labelled)
 	} else {
 		// Text format - table
 		OutputText(fmt.Sprintf("%-10s %-20s %-50s %-10s", "Date", "Branch", "Title", "ID"))
 		OutputText(strings.Repeat("-", 90))
 
-		for _, session := range sessions {
+		for i, session := range sessions {
 			branch := session.Branch
 			if len(branch) > 18 {
 				branch = branch[:15] + "..."
@@ -135,6 +183,11 @@ func runSessionList(cmd *cobra.Command, args []string) error {
 				idPrefix = idPrefix[:8]
 			}
 
+			if listed[i].store != "" {
+				OutputText(fmt.Sprintf("%-10s %-20s %-50s %-10s %s",
+					session.Date, branch, title, idPrefix, listed[i].store))
+				continue
+			}
 			OutputText(fmt.Sprintf("%-10s %-20s %-50s %-10s",
 				session.Date, branch, title, idPrefix))
 		}
@@ -173,4 +226,10 @@ func parseDateRange(s string) (string, string, error) {
 		}
 		return "", "", fmt.Errorf("unsupported format: %s", s)
 	}
+}
+
+// listedSession is a listed session with the store it came from (empty when one store is read).
+type listedSession struct {
+	session *models.Session
+	store   string
 }

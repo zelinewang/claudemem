@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/zelinewang/claudemem/pkg/config"
+	"github.com/zelinewang/claudemem/pkg/storage"
 )
 
 var (
@@ -23,6 +25,8 @@ Use --all to rebuild both FTS5 and vector indexes.
 Use --vectors --missing to embed ONLY documents that have no vector yet
 (incremental: a daily sync job stays under the embedding quota instead of
 re-embedding every entry — a full rebuild of ~6,000 entries hit Vertex 429).
+Vectors are written only for the entries the index lists: after files changed
+outside claudemem, run reindex first (sync pull does), or use --all.
 
 Examples:
   claudemem reindex                     # Rebuild FTS5 index only
@@ -43,6 +47,7 @@ Examples:
 		doVectors := reindexVectors || reindexAll
 
 		if doFTS {
+			warnPendingMove(store)
 			count, err := store.Reindex()
 			if err != nil {
 				return fmt.Errorf("FTS reindex failed: %w", err)
@@ -90,6 +95,16 @@ func init() {
 	reindexCmd.Flags().BoolVar(&reindexAll, "all", false, "Rebuild both FTS5 and vector indexes")
 	reindexCmd.Flags().BoolVar(&reindexMissing, "missing", false, "With --vectors: embed only documents that have no vector yet (incremental backfill)")
 	rootCmd.AddCommand(reindexCmd)
+}
+
+// warnPendingMove warns before a reindex while the store's move journal holds records that the next
+// move resolves: a move into the store stopped before the rows of what it put here were written, and
+// the reindex lists those files. The same move run again first finishes or clears them. The records a
+// move marked kept are not among them: the reindex settles those itself.
+func warnPendingMove(store *storage.FileStore) {
+	if n := store.PendingMoveRecords(); n > 0 {
+		fmt.Fprintf(os.Stderr, "warning: .index/move-pending holds %d records of a move into this store that stopped before their rows were written; this reindex lists the files that move put here: run that move again (the same ids file) first, which finishes or clears them\n", n)
+	}
 }
 
 // validateReindexFlags rejects --missing without a vector mode: --missing is a

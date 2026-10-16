@@ -23,6 +23,41 @@ import (
 // error messages when things go wrong.
 type GitSync struct {
 	Dir string // ~/.claudemem
+
+	// LockWrites, when set, takes the store's write lock. GitSync holds it around every git step that
+	// writes the working tree (the merge or rebase of a pull, the reset that adopts a remote's history,
+	// the rebase after a refused push), so that no claudemem writer, a move above all, works on files
+	// that git is changing, and around the add and the commit of a push, so that none changes the
+	// files git reads for the commit. The steps that talk to the remote (fetch, push) run without it:
+	// a slow remote must not hold up every writer of the store.
+	LockWrites func() (unlock func(), err error)
+}
+
+// fetchedRef is where a pull, or the rebase after a refused push, fetches the remote's HEAD to
+// before it merges or rebases onto it under the lock.
+const fetchedRef = "refs/claudemem/fetched"
+
+// setAsideSuffix ends the name of a file that a claudemem move set aside while it checked it
+// (.<name>.md.moving, see the storage package): never committed.
+const setAsideSuffix = ".moving"
+
+// fetch fetches the remote's HEAD into fetchedRef. It talks to the network and writes only .git, so
+// it runs without the store lock.
+func (g *GitSync) fetch(args ...string) error {
+	return g.git(append(append([]string{"fetch"}, args...), "origin", "+HEAD:"+fetchedRef)...)
+}
+
+// underLock runs step while holding LockWrites, when one is set.
+func (g *GitSync) underLock(step func() error) error {
+	if g.LockWrites == nil {
+		return step()
+	}
+	unlock, err := g.LockWrites()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return step()
 }
 
 // NewGitSync returns a GitSync rooted at dir.
@@ -82,16 +117,16 @@ func (g *GitSync) Init(remoteURL string) error {
 	// Remote has history — adopt it. reset --hard overwrites files that
 	// exist in both local and remote (takes remote version). To prevent
 	// silent data loss, back up notes/ and sessions/ first.
-	backupDir := g.Dir + ".pre-sync-backup"
-	if err := g.backupContentDirs(backupDir); err != nil {
-		return fmt.Errorf("backup before sync: %w — aborting init to protect data", err)
-	}
-
-	if err := g.git("reset", "--hard", "origin/main"); err != nil {
-		return fmt.Errorf("reset --hard: %w", err)
-	}
-
-	return nil
+	return g.underLock(func() error {
+		backupDir := g.Dir + ".pre-sync-backup"
+		if err := g.backupContentDirs(backupDir); err != nil {
+			return fmt.Errorf("backup before sync: %w — aborting init to protect data", err)
+		}
+		if err := g.git("reset", "--hard", "origin/main"); err != nil {
+			return fmt.Errorf("reset --hard: %w", err)
+		}
+		return nil
+	})
 }
 
 // backupContentDirs copies notes/ and sessions/ to a backup directory.
@@ -144,6 +179,7 @@ func copyDir(src, dst string) error {
 //	config.json          — per-machine embedding backend choice
 //	.sync_auto_pull      — per-machine auto-sync toggle
 //	.sync_auto_push      — per-machine auto-sync toggle
+//	.*.moving            — a file a move set aside (a stopped move can leave one)
 //	.bak, .tmp, .swp     — editor temp files
 func (g *GitSync) writeGitignore() error {
 	content := `# claudemem memory sync — per-machine files excluded
@@ -157,6 +193,10 @@ config.json
 # (e.g. legacy .claudemem -> /home/*/.claudemem left by older installs)
 .claudemem
 .git.*-residue-*
+
+# a file a claudemem move set aside while it checked it; one a stopped move left belongs to this
+# machine until it is renamed back or removed
+.*.moving
 
 # backup archives — per-machine snapshots, never sync
 *.tar
@@ -216,31 +256,41 @@ func (g *GitSync) Push(message string) error {
 	if !g.IsInitialized() {
 		return fmt.Errorf("not a git repo; run `claudemem sync init <remote>` first")
 	}
-	// Stage ONLY the content paths that actually exist. git add with
-	// multiple pathspecs treats a missing one as a hard error which
-	// prevents the OTHER paths from being staged — so iterate per-path.
-	for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore", ".gitattributes"} {
-		if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
-			continue // not present — skip
+	// The add and the commit run under the store lock: no claudemem writer changes the files in
+	// between, so a move never leaves half an entry in a commit.
+	hasChanges := false
+	if err := g.underLock(func() error {
+		// Stage ONLY the content paths that actually exist. git add with
+		// multiple pathspecs treats a missing one as a hard error which
+		// prevents the OTHER paths from being staged — so iterate per-path.
+		// A file a move set aside stays out also where the .gitignore
+		// predates the rule for it.
+		for _, p := range []string{"notes/", "sessions/", "MEMORY.md", ".gitignore", ".gitattributes"} {
+			if _, err := os.Stat(filepath.Join(g.Dir, p)); err != nil {
+				continue // not present — skip
+			}
+			if err := g.git("add", "--", p, ":(exclude)*"+setAsideSuffix); err != nil {
+				return fmt.Errorf("git add %s: %w", p, err)
+			}
 		}
-		if err := g.git("add", p); err != nil {
-			return fmt.Errorf("git add %s: %w", p, err)
-		}
-	}
 
-	// Check if anything is actually staged. `git diff --cached --quiet`
-	// exits 0 when nothing is staged, 1 when there are staged changes.
-	// We use that exit code rather than trying to parse the generic
-	// "exit status 1" we get back from the commit command.
-	hasChanges := g.hasStagedChanges()
-	if hasChanges {
-		msg := message
-		if msg == "" {
-			msg = "memory: sync from " + hostname()
+		// Check if anything is actually staged. `git diff --cached --quiet`
+		// exits 0 when nothing is staged, 1 when there are staged changes.
+		// We use that exit code rather than trying to parse the generic
+		// "exit status 1" we get back from the commit command.
+		hasChanges = g.hasStagedChanges()
+		if hasChanges {
+			msg := message
+			if msg == "" {
+				msg = "memory: sync from " + hostname()
+			}
+			if err := g.git("commit", "-m", msg); err != nil {
+				return fmt.Errorf("git commit: %w", err)
+			}
 		}
-		if err := g.git("commit", "-m", msg); err != nil {
-			return fmt.Errorf("git commit: %w", err)
-		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	if g.RemoteURL() == "" {
@@ -273,7 +323,10 @@ func (g *GitSync) Push(message string) error {
 		// machine. Try pull --rebase to replay our local commits on top,
 		// then push again. This auto-resolves the most common conflict:
 		// two machines each adding different files.
-		if rebaseErr := g.git("pull", "--rebase", "--quiet", "origin", "HEAD"); rebaseErr != nil {
+		if fetchErr := g.fetch("--quiet"); fetchErr != nil {
+			return fmt.Errorf("git push failed and fetching the remote failed: push=%w, fetch=%v", err, fetchErr)
+		}
+		if rebaseErr := g.underLock(func() error { return g.git("rebase", "--quiet", fetchedRef) }); rebaseErr != nil {
 			return fmt.Errorf("git push failed and auto-rebase failed: push=%w, rebase=%v — resolve manually in %s", err, rebaseErr, g.Dir)
 		}
 		if err2 := g.git("push", "-u", "origin", "HEAD"); err2 != nil {
@@ -320,23 +373,29 @@ func (g *GitSync) localAheadOfRemote() bool {
 	return strings.TrimSpace(string(out)) != "0"
 }
 
-// Pull runs `git pull --ff-only` to avoid accidental merge commits
-// inside the memory repo. If fast-forward fails, returns an error
-// suggesting manual resolution — we don't automate merge of markdown
-// because timestamps + session_id make auto-merges unsafe.
+// Pull fetches the remote's HEAD, without the store lock, then fast-forwards to it under the lock, to
+// avoid accidental merge commits inside the memory repo. When local has commits the remote lacks, it
+// rebases them onto the remote instead; if that fails too, it returns an error suggesting manual
+// resolution — we don't automate merge of markdown because timestamps + session_id make auto-merges
+// unsafe.
 func (g *GitSync) Pull() error {
 	if !g.IsInitialized() {
 		return fmt.Errorf("not a git repo; run `claudemem sync init <remote>` first")
 	}
-	if err := g.git("pull", "--ff-only", "origin", "HEAD"); err != nil {
-		// ff-only failed — local has commits that remote doesn't (diverged).
-		// Try rebase to replay local commits on top of remote. This safely
-		// handles the common case of two machines adding different files.
-		if rebaseErr := g.git("pull", "--rebase", "origin", "HEAD"); rebaseErr != nil {
-			return fmt.Errorf("git pull --ff-only and --rebase both failed: %w — resolve manually in %s", rebaseErr, g.Dir)
-		}
+	if err := g.fetch(); err != nil {
+		return fmt.Errorf("git fetch: %w", err)
 	}
-	return nil
+	return g.underLock(func() error {
+		if err := g.git("merge", "--ff-only", fetchedRef); err != nil {
+			// ff-only failed — local has commits that remote doesn't (diverged).
+			// Try rebase to replay local commits on top of remote. This safely
+			// handles the common case of two machines adding different files.
+			if rebaseErr := g.git("rebase", fetchedRef); rebaseErr != nil {
+				return fmt.Errorf("git merge --ff-only and rebase onto the remote both failed: %w — resolve manually in %s", rebaseErr, g.Dir)
+			}
+		}
+		return nil
+	})
 }
 
 // --- internal helpers ---

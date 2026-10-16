@@ -1,6 +1,17 @@
 package storage
 
-import "github.com/zelinewang/claudemem/pkg/models"
+import (
+	"time"
+
+	"github.com/zelinewang/claudemem/pkg/models"
+)
+
+// lockTimeout bounds how long a writer waits for the store lock (storelock_unix.go). A bare LOCK_EX
+// would block forever with no output while another process holds the lock (review of PR #22, round
+// 1, P2-3); it also turned an accidental re-entry — the lock is a flock and is NOT reentrant — into a
+// silent hang (P2-2). With a bound, both become a loud error naming the lock file. Overridable for
+// tests. Declared here, outside the Unix file, so the tests that set it build on every platform.
+var lockTimeout = 60 * time.Second
 
 // The public mutating methods take the store-wide write lock (see storelock_unix.go) and delegate
 // to the *Locked implementations, which assume the lock is held. Internal callers that already hold
