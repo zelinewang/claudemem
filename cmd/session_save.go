@@ -121,8 +121,8 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 			parts := strings.SplitN(change, ":", 2)
 			if len(parts) == 2 {
 				session.Changes = append(session.Changes, models.FileChange{
-					Path:        parts[0],
-					Description: parts[1],
+					Path:        strings.Trim(strings.TrimSpace(parts[0]), "`"),
+					Description: strings.TrimSpace(parts[1]),
 				})
 			} else {
 				session.Changes = append(session.Changes, storage.ParseChangeItems(change)...)

@@ -194,3 +194,63 @@ func TestSaveSession_MergeKeepsItemsWithoutAPath(t *testing.T) {
 		}
 	}
 }
+
+// Saving the same report again under one session id leaves What Changed as it was: a description that
+// itself holds "; ", an item with only a path, and items that read back in another form (trailing
+// space, a backticked path) are not added a second time.
+func TestSaveSession_ResavingTheSameReportChangesNothing(t *testing.T) {
+	store := setupTestStore(t)
+	save := func(changes ...models.FileChange) []models.FileChange {
+		t.Helper()
+		s := models.NewSession("Resave", "main", "proj", "sess-resave")
+		s.Summary = "summary"
+		s.Changes = changes
+		result, err := store.SaveSession(s)
+		if err != nil {
+			t.Fatalf("SaveSession failed: %v", err)
+		}
+		saved, err := store.GetSession(result.SessionID)
+		if err != nil {
+			t.Fatalf("GetSession failed: %v", err)
+		}
+		return saved.Changes
+	}
+	report := []models.FileChange{
+		{Path: "a.go", Description: "added tests; renamed helper"},
+		{Path: "a.go"},
+		{Path: "b.go", Description: "also Y "},
+		{Path: "`c.go`", Description: "backticked path"},
+	}
+
+	save(models.FileChange{Path: "a.go", Description: "fixed bug"})
+	want := save(report...)
+	for i := 2; i <= 4; i++ {
+		if got := save(report...); !reflect.DeepEqual(got, want) {
+			t.Fatalf("save %d of the same report changed What Changed:\ngot  %#v\nwant %#v", i, got, want)
+		}
+	}
+	if want[0].Description != "fixed bug; added tests; renamed helper" {
+		t.Errorf("first item = %q, want the two descriptions joined once", want[0].Description)
+	}
+}
+
+// A hand-written Related Notes line keeps a one-word category at its end, as the old stdin parser
+// did; a remark in parentheses, or parentheses inside the title, are not a category.
+func TestParseRelatedNoteLine_CategoryAfterTextWithoutQuotes(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want models.RelatedNote
+	}{
+		{"`8f52c841` — appended: the 30 MiB limit (api)", models.RelatedNote{ID: "8f52c841", Category: "api"}},
+		{"`a38c66e4` — merge-queue discipline (appended: classifier denial)", models.RelatedNote{ID: "a38c66e4"}},
+		{"read: `4b6a90f4`, `dd24ad13` (11-hop chain)", models.RelatedNote{ID: "4b6a90f4"}},
+		{"`abcd1234` — \"Fix (urgent) bug\"", models.RelatedNote{ID: "abcd1234", Title: "Fix (urgent) bug"}},
+		{"`abcd1234` — \"Title\" (workflow)", models.RelatedNote{ID: "abcd1234", Title: "Title", Category: "workflow"}},
+		{"`abcd1234` — \"Title\" — saved earlier (research)", models.RelatedNote{ID: "abcd1234", Title: "Title", Category: "research"}},
+		{"`abcd1234` — \"\" ()", models.RelatedNote{ID: "abcd1234"}},
+	} {
+		if got := parseRelatedNoteLine(tc.line); got != tc.want {
+			t.Errorf("parseRelatedNoteLine(%q) = %#v, want %#v", tc.line, got, tc.want)
+		}
+	}
+}

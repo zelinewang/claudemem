@@ -431,7 +431,8 @@ func mergeStringSlice(existing, new []string) []string {
 // mergeFileChanges combines file change lists without dropping an item. The existing items all stay,
 // two of the same path included. A new item that repeats an existing one is skipped; a new item for a
 // path already listed adds its description to the first item of that path; any other item is
-// appended. An item without a path only matches an identical item.
+// appended. An item without a path only matches an identical item. New items are compared in the form
+// they read back from the session file, the form the existing items were read in.
 func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
 	result := append([]models.FileChange(nil), existing...)
 	seen := make(map[models.FileChange]bool)
@@ -442,7 +443,7 @@ func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
 			firstOfPath[c.Path] = i
 		}
 	}
-	for _, c := range new {
+	for _, c := range storedForms(new) {
 		if seen[c] {
 			continue
 		}
@@ -461,15 +462,32 @@ func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
 	return result
 }
 
-// hasDescriptionPart reports whether a merged description ("a; b") already holds part, so that saving
-// the same report again does not repeat it.
-func hasDescriptionPart(description, part string) bool {
-	for _, p := range strings.Split(description, "; ") {
-		if p == part {
-			return true
+// storedForms returns changes as a session file reads them back: a trailing space is gone, and a
+// description with a line break becomes two items. An empty change is dropped, as the file drops it.
+func storedForms(changes []models.FileChange) []models.FileChange {
+	var out []models.FileChange
+	for _, c := range changes {
+		if c != (models.FileChange{}) {
+			out = append(out, ParseChangeItems("- "+formatChangeItem(c))...)
 		}
 	}
-	return false
+	return out
+}
+
+// hasDescriptionPart reports whether a merged description ("a; b") already holds part, so that saving
+// the same report again does not repeat it. A part may itself hold "; ", so it is matched as a run of
+// whole pieces, each compared without the spaces around it. An empty part adds nothing: it is held.
+func hasDescriptionPart(description, part string) bool {
+	part = trimDescriptionPieces(part)
+	return part == "" || strings.Contains("; "+trimDescriptionPieces(description)+"; ", "; "+part+"; ")
+}
+
+func trimDescriptionPieces(s string) string {
+	pieces := strings.Split(s, "; ")
+	for i := range pieces {
+		pieces[i] = strings.TrimSpace(pieces[i])
+	}
+	return strings.Join(pieces, "; ")
 }
 
 // mergeProblems combines problem/solution lists, deduplicating by problem text
