@@ -254,3 +254,12 @@ func TestParseRelatedNoteLine_CategoryAfterTextWithoutQuotes(t *testing.T) {
 		}
 	}
 }
+
+// A description for an item that had only a path becomes its description, not "; description".
+func TestMergeFileChanges_DescriptionForAnItemWithOnlyAPath(t *testing.T) {
+	got := mergeFileChanges([]models.FileChange{{Path: "a.go"}}, []models.FileChange{{Path: "a.go", Description: "added X"}})
+	want := []models.FileChange{{Path: "a.go", Description: "added X"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mergeFileChanges = %#v, want %#v", got, want)
+	}
+}
