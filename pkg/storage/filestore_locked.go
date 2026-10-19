@@ -7,7 +7,8 @@ import "github.com/zelinewang/claudemem/pkg/models"
 // it (AddNote's dedup-merge path calling updateNoteLocked) must never re-enter the public method:
 // the lock is a flock and is not reentrant.
 
-// AddNote creates a note, or merges it into an existing note of the same category and title.
+// AddNote creates a note, or merges it into an existing note of the same category with the same or a
+// similar title, unless the two notes carry different session ids (findDedupCandidate).
 func (fs *FileStore) AddNote(note *models.Note) (*AddNoteResult, error) {
 	unlock, err := fs.lockStore()
 	if err != nil {
