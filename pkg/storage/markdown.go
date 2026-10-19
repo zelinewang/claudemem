@@ -164,6 +164,9 @@ func FormatSessionMarkdown(session *models.Session) string {
 	if len(session.Changes) > 0 {
 		buf.WriteString("## What Changed\n")
 		for _, change := range session.Changes {
+			if change == (models.FileChange{}) {
+				continue // nothing to keep, and "- " would read back as the text "-"
+			}
 			buf.WriteString("- " + formatChangeItem(change) + "\n")
 		}
 		buf.WriteString("\n")
@@ -499,9 +502,9 @@ func ParseProblemsSolutions(content string) []models.ProblemSolution {
 }
 
 // ParseChangeItems parses the items of a "## What Changed" section. An item in the template form
-// "`path` — description", or "`path`: description", becomes a path and a description. Any other
-// item, and any other non-empty line of the section, is kept whole as a description without a path:
-// no line of the section is dropped.
+// "`path` — description", or "`path`: description", becomes a path and a description, and so does
+// "path — description" without backticks. Any other item, and any other non-empty line of the
+// section, is kept whole as a description without a path: no line of the section is dropped.
 func ParseChangeItems(content string) []models.FileChange {
 	var changes []models.FileChange
 	for _, item := range changeItemLines(content) {
@@ -547,29 +550,41 @@ func cutListMarker(line string) (string, bool) {
 
 // parseChangeItem splits one What Changed item into path and description where it can, and keeps
 // the whole item as the description otherwise.
+// A leading backticked path is read first, so an em dash inside the description cannot move the
+// split; an item without one is split at its first " — ", as that form always was, unless the text
+// before the dash holds a backtick and so is not a path.
 func parseChangeItem(item string) models.FileChange {
-	if parts := strings.SplitN(item, " — ", 2); len(parts) == 2 {
-		return models.FileChange{Path: strings.Trim(parts[0], "`"), Description: parts[1]}
-	}
 	if strings.HasPrefix(item, "`") {
-		if end := strings.Index(item[1:], "`"); end > 0 {
+		if end := strings.Index(item[1:], "`"); end >= 0 {
 			path, rest := item[1:1+end], strings.TrimSpace(item[2+end:])
 			switch {
 			case rest == "" || rest == "—": // "`path`" alone, as formatChangeItem writes a change without a description
 				return models.FileChange{Path: path}
+			case strings.HasPrefix(rest, "— "):
+				return models.FileChange{Path: path, Description: strings.TrimSpace(strings.TrimPrefix(rest, "—"))}
 			case strings.HasPrefix(rest, ":"):
 				return models.FileChange{Path: path, Description: strings.TrimSpace(rest[1:])}
 			}
+			return models.FileChange{Description: item} // other text after the path: kept whole
+		}
+	}
+	if parts := strings.SplitN(item, " — ", 2); len(parts) == 2 {
+		if path := strings.Trim(parts[0], "`"); !strings.Contains(path, "`") {
+			return models.FileChange{Path: path, Description: parts[1]}
 		}
 	}
 	return models.FileChange{Description: item}
 }
 
-// formatChangeItem writes a change the way parseChangeItem reads it back.
+// formatChangeItem writes a change the way parseChangeItem reads it back. Text without a path that
+// parseChangeItem would split at a " — " is written after an empty path (two backticks), which every
+// version reads as no path.
 func formatChangeItem(change models.FileChange) string {
 	switch {
-	case change.Path == "":
+	case change.Path == "" && parseChangeItem(change.Description) == change:
 		return change.Description
+	case change.Path == "":
+		return "`` — " + change.Description
 	case change.Description == "":
 		return "`" + change.Path + "`"
 	default:

@@ -128,7 +128,14 @@ func runSessionGet(cmd *cobra.Command, args []string) error {
 		if len(session.Changes) > 0 {
 			OutputText("\n## What Changed")
 			for _, change := range session.Changes {
-				OutputText(fmt.Sprintf("- %s — %s", change.Path, change.Description))
+				switch {
+				case change.Path == "":
+					OutputText("- " + change.Description)
+				case change.Description == "":
+					OutputText("- " + change.Path)
+				default:
+					OutputText(fmt.Sprintf("- %s — %s", change.Path, change.Description))
+				}
 			}
 		}
 
