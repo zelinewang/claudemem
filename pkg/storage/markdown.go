@@ -595,6 +595,7 @@ func formatChangeItem(change models.FileChange) string {
 // parseRelatedNoteLine parses a line like: `id-prefix` — "Title" (category)
 func parseRelatedNoteLine(line string) models.RelatedNote {
 	rn := models.RelatedNote{}
+	whole := line
 
 	// Try to extract ID from backticks: `id-prefix`
 	if idx := strings.Index(line, "`"); idx >= 0 {
@@ -628,12 +629,20 @@ func parseRelatedNoteLine(line string) models.RelatedNote {
 		}
 	}
 
-	// A hand-written line may end in a one-word category after other text, as in "`id` — free text
-	// (api)". A longer remark in parentheses is not taken for a category.
-	if rn.Category == "" && strings.HasSuffix(line, ")") {
+	// A hand-written line ("`id` — free text (api)", "\"Title\" `id`") is read as the old stdin
+	// parser read it: the last text in parentheses after the id and title is the category, and the
+	// first quoted text anywhere is the title. A line in the stored form reads the same either way.
+	if rn.Category == "" {
 		if open := strings.LastIndex(line, "("); open >= 0 {
-			if word := line[open+1 : len(line)-1]; word != "" && !strings.ContainsAny(word, " \t:;,()") {
-				rn.Category = word
+			if end := strings.Index(line[open:], ")"); end > 0 {
+				rn.Category = line[open+1 : open+end]
+			}
+		}
+	}
+	if rn.Title == "" {
+		if open := strings.Index(whole, "\""); open >= 0 {
+			if end := strings.Index(whole[open+1:], "\""); end >= 0 {
+				rn.Title = whole[open+1 : open+1+end]
 			}
 		}
 	}
