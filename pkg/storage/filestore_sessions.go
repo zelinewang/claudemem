@@ -449,7 +449,9 @@ func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
 		}
 		seen[c] = true
 		if idx, ok := firstOfPath[c.Path]; ok && c.Path != "" {
-			if !hasDescriptionPart(result[idx].Description, c.Description) {
+			if result[idx].Description == "" {
+				result[idx].Description = c.Description // the item had only a path
+			} else if !hasDescriptionPart(result[idx].Description, c.Description) {
 				result[idx].Description += "; " + c.Description
 			}
 			continue
