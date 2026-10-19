@@ -48,6 +48,67 @@ func TestParseSessionBody_WhatChangedKeepsEveryItem(t *testing.T) {
 	}
 }
 
+// An em dash inside the description must not move the split: the backticked path is read first.
+func TestParseChangeItems_EmDashInsideTheDescription(t *testing.T) {
+	got := ParseChangeItems("- `cmd/root.go`: added the --store flag — defaults to the home store\n" +
+		"- `pkg/x.go` — first part — second part\n" +
+		"- `a.go` and `b.go` — both changed\n" +
+		"- pkg/c.go — bare path in the template form\n" +
+		"- see `pkg/d.go` — text before the dash is not a path\n" +
+		"- `pkg/e.go — the closing backtick is missing\n")
+	want := []models.FileChange{
+		{Path: "cmd/root.go", Description: "added the --store flag — defaults to the home store"},
+		{Path: "pkg/x.go", Description: "first part — second part"},
+		{Path: "", Description: "`a.go` and `b.go` — both changed"},
+		{Path: "pkg/c.go", Description: "bare path in the template form"},
+		{Path: "", Description: "see `pkg/d.go` — text before the dash is not a path"},
+		{Path: "pkg/e.go", Description: "the closing backtick is missing"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseChangeItems =\n%#v\nwant\n%#v", got, want)
+	}
+	for _, c := range got {
+		if strings.Contains(c.Path, "`") {
+			t.Errorf("a backtick leaked into the path %q", c.Path)
+		}
+		if again := ParseChangeItems("- " + formatChangeItem(c)); len(again) != 1 || again[0] != c {
+			t.Errorf("round trip of %#v gave %#v", c, again)
+		}
+	}
+}
+
+// Text without a path reads back as the same text: a " — " in it does not turn its first words into
+// a path on the next read.
+func TestFormatChangeItem_TextWithoutAPathReadsBackTheSame(t *testing.T) {
+	for _, c := range []models.FileChange{
+		{Description: "renamed the flag — the old name still works"},
+		{Description: "see `a.go` — fixed"},
+		{Description: "`a.go` and `b.go` — both changed"},
+		{Description: "plain text"},
+	} {
+		written := formatChangeItem(c)
+		if again := ParseChangeItems("- " + written); len(again) != 1 || again[0] != c {
+			t.Errorf("%#v was written as %q and read back as %#v", c, written, again)
+		}
+	}
+}
+
+// A change with neither a path nor a description is not written, so it cannot come back as "-".
+func TestFormatSessionMarkdown_SkipsAnEmptyChange(t *testing.T) {
+	session := models.NewSession("Empty change", "b", "p", "s")
+	session.Summary = "summary"
+	session.Changes = []models.FileChange{{}, {Path: "pkg/a.go", Description: "kept"}}
+
+	parsed, err := ParseSessionMarkdown([]byte(FormatSessionMarkdown(session)))
+	if err != nil {
+		t.Fatalf("ParseSessionMarkdown failed: %v", err)
+	}
+	want := []models.FileChange{{Path: "pkg/a.go", Description: "kept"}}
+	if !reflect.DeepEqual(parsed.Changes, want) {
+		t.Fatalf("Changes = %#v, want %#v", parsed.Changes, want)
+	}
+}
+
 func TestFormatSessionMarkdown_ChangesRoundTrip(t *testing.T) {
 	session := models.NewSession("Round trip", "b", "p", "s")
 	session.Summary = "summary"

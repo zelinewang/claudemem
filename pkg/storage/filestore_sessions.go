@@ -91,7 +91,7 @@ func (fs *FileStore) saveSessionLocked(session *models.Session) (*SaveSessionRes
 			session.Questions = mergeStringSlice(existing.Questions, session.Questions)
 			session.NextSteps = mergeStringSlice(existing.NextSteps, session.NextSteps)
 
-			// Merge Changes: deduplicate by path
+			// Merge Changes: keep every item; a repeated item is skipped, a known path gains the new description
 			session.Changes = mergeFileChanges(existing.Changes, session.Changes)
 
 			// Merge Problems: deduplicate by problem text
