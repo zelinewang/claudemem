@@ -628,6 +628,16 @@ func parseRelatedNoteLine(line string) models.RelatedNote {
 		}
 	}
 
+	// A hand-written line may end in a one-word category after other text, as in "`id` — free text
+	// (api)". A longer remark in parentheses is not taken for a category.
+	if rn.Category == "" && strings.HasSuffix(line, ")") {
+		if open := strings.LastIndex(line, "("); open >= 0 {
+			if word := line[open+1 : len(line)-1]; word != "" && !strings.ContainsAny(word, " \t:;,()") {
+				rn.Category = word
+			}
+		}
+	}
+
 	return rn
 }
 

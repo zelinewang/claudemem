@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -102,5 +103,25 @@ func TestSessionGet_TextShowsItemsWithoutAPathOrDescription(t *testing.T) {
 	}
 	if strings.Contains(out, "-  — ") || strings.Contains(out, " — \n") {
 		t.Errorf("session get printed an empty path or description:\n%s", out)
+	}
+}
+
+// --changes "path:description" stores the path without surrounding spaces or backticks, so the
+// stored item reads back as the same path and description.
+func TestSessionSave_ChangesFlagStoresATidyPath(t *testing.T) {
+	storePath := setupSessionSaveTest(t, "")
+	sessionSummary = "structured flags"
+	sessionChanges = []string{"`pkg/b.go`: ORACLE-F3 backticked path ", " pkg/c.go :ORACLE-F4 spaced path"}
+
+	if err := runSessionSave(sessionSaveCmd, nil); err != nil {
+		t.Fatalf("runSessionSave() failed: %v", err)
+	}
+
+	stored := readOnlyStoredSession(t, storePath)
+	lines := strings.Split(stored, "\n")
+	for _, line := range []string{"- `pkg/b.go` — ORACLE-F3 backticked path", "- `pkg/c.go` — ORACLE-F4 spaced path"} {
+		if !slices.Contains(lines, line) {
+			t.Errorf("stored session lacks the line %q:\n%s", line, stored)
+		}
 	}
 }
