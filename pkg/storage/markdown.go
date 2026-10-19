@@ -164,7 +164,10 @@ func FormatSessionMarkdown(session *models.Session) string {
 	if len(session.Changes) > 0 {
 		buf.WriteString("## What Changed\n")
 		for _, change := range session.Changes {
-			buf.WriteString(fmt.Sprintf("- `%s` — %s\n", change.Path, change.Description))
+			if change == (models.FileChange{}) {
+				continue // nothing to keep, and "- " would read back as the text "-"
+			}
+			buf.WriteString("- " + formatChangeItem(change) + "\n")
 		}
 		buf.WriteString("\n")
 	}
@@ -299,14 +302,16 @@ func ParseSessionMarkdown(data []byte) (*models.Session, error) {
 	// Parse body sections
 	if contentStart := endIdx + 5; contentStart < len(content) {
 		body := content[contentStart:]
-		parseSessionBody(session, body)
+		ParseSessionBody(session, body)
 	}
 
 	return session, nil
 }
 
-// parseSessionBody extracts structured sections from the markdown body
-func parseSessionBody(session *models.Session, body string) {
+// ParseSessionBody extracts structured sections from the markdown body. It is the one parser of a
+// session's sections: `session save` runs it on the report it is given, and loading a stored session
+// runs it on the file, so what a save keeps is what a later load reads back.
+func ParseSessionBody(session *models.Session, body string) {
 	sections := splitIntoSections(body)
 
 	for sectionName, sectionContent := range sections {
@@ -320,17 +325,7 @@ func parseSessionBody(session *models.Session, body string) {
 			}
 
 		case "what changed", "changes":
-			for _, line := range parseListItems(sectionContent) {
-				// Parse format: `path` — description
-				parts := strings.SplitN(line, " — ", 2)
-				if len(parts) == 2 {
-					path := strings.Trim(parts[0], "`")
-					session.Changes = append(session.Changes, models.FileChange{
-						Path:        path,
-						Description: parts[1],
-					})
-				}
-			}
+			session.Changes = append(session.Changes, ParseChangeItems(sectionContent)...)
 
 		case "problems & solutions", "problems and solutions":
 			session.Problems = append(session.Problems, ParseProblemsSolutions(sectionContent)...)
@@ -506,9 +501,101 @@ func ParseProblemsSolutions(content string) []models.ProblemSolution {
 	return result
 }
 
+// ParseChangeItems parses the items of a "## What Changed" section. An item in the template form
+// "`path` — description", or "`path`: description", becomes a path and a description, and so does
+// "path — description" without backticks. Any other item, and any other non-empty line of the
+// section, is kept whole as a description without a path: no line of the section is dropped.
+func ParseChangeItems(content string) []models.FileChange {
+	var changes []models.FileChange
+	for _, item := range changeItemLines(content) {
+		changes = append(changes, parseChangeItem(item))
+	}
+	return changes
+}
+
+// changeItemLines splits a What Changed section into items: "- ", "* " and "1. " / "1) " start an
+// item, an indented line continues the previous item, and any other non-empty line is an item.
+func changeItemLines(content string) []string {
+	var items []string
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if text, ok := cutListMarker(trimmed); ok {
+			items = append(items, text)
+		} else if (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) && len(items) > 0 {
+			items[len(items)-1] += " " + trimmed
+		} else {
+			items = append(items, trimmed)
+		}
+	}
+	return items
+}
+
+// cutListMarker strips a leading bullet ("- ", "* ") or number ("1. ", "1) ") from a trimmed line.
+func cutListMarker(line string) (string, bool) {
+	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+		return strings.TrimSpace(line[2:]), true
+	}
+	digits := 0
+	for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+		digits++
+	}
+	if digits > 0 && digits+1 < len(line) && (line[digits] == '.' || line[digits] == ')') && line[digits+1] == ' ' {
+		return strings.TrimSpace(line[digits+2:]), true
+	}
+	return "", false
+}
+
+// parseChangeItem splits one What Changed item into path and description where it can, and keeps
+// the whole item as the description otherwise.
+// A leading backticked path is read first, so an em dash inside the description cannot move the
+// split; an item without one is split at its first " — ", as that form always was, unless the text
+// before the dash holds a backtick and so is not a path.
+func parseChangeItem(item string) models.FileChange {
+	if strings.HasPrefix(item, "`") {
+		if end := strings.Index(item[1:], "`"); end >= 0 {
+			path, rest := item[1:1+end], strings.TrimSpace(item[2+end:])
+			switch {
+			case rest == "" || rest == "—": // "`path`" alone, as formatChangeItem writes a change without a description
+				return models.FileChange{Path: path}
+			case strings.HasPrefix(rest, "— "):
+				return models.FileChange{Path: path, Description: strings.TrimSpace(strings.TrimPrefix(rest, "—"))}
+			case strings.HasPrefix(rest, ":"):
+				return models.FileChange{Path: path, Description: strings.TrimSpace(rest[1:])}
+			}
+			return models.FileChange{Description: item} // other text after the path: kept whole
+		}
+	}
+	if parts := strings.SplitN(item, " — ", 2); len(parts) == 2 {
+		if path := strings.Trim(parts[0], "`"); !strings.Contains(path, "`") {
+			return models.FileChange{Path: path, Description: parts[1]}
+		}
+	}
+	return models.FileChange{Description: item}
+}
+
+// formatChangeItem writes a change the way parseChangeItem reads it back. Text without a path that
+// parseChangeItem would split at a " — " is written after an empty path (two backticks), which every
+// version reads as no path.
+func formatChangeItem(change models.FileChange) string {
+	switch {
+	case change.Path == "" && parseChangeItem(change.Description) == change:
+		return change.Description
+	case change.Path == "":
+		return "`` — " + change.Description
+	case change.Description == "":
+		return "`" + change.Path + "`"
+	default:
+		return "`" + change.Path + "` — " + change.Description
+	}
+}
+
 // parseRelatedNoteLine parses a line like: `id-prefix` — "Title" (category)
 func parseRelatedNoteLine(line string) models.RelatedNote {
 	rn := models.RelatedNote{}
+	whole := line
 
 	// Try to extract ID from backticks: `id-prefix`
 	if idx := strings.Index(line, "`"); idx >= 0 {
@@ -539,6 +626,24 @@ func parseRelatedNoteLine(line string) models.RelatedNote {
 		endIdx := strings.Index(line, ")")
 		if endIdx > 0 {
 			rn.Category = line[1:endIdx]
+		}
+	}
+
+	// A hand-written line ("`id` — free text (api)", "\"Title\" `id`") is read as the old stdin
+	// parser read it: the last text in parentheses after the id and title is the category, and the
+	// first quoted text anywhere is the title. A line in the stored form reads the same either way.
+	if rn.Category == "" {
+		if open := strings.LastIndex(line, "("); open >= 0 {
+			if end := strings.Index(line[open:], ")"); end > 0 {
+				rn.Category = line[open+1 : open+end]
+			}
+		}
+	}
+	if rn.Title == "" {
+		if open := strings.Index(whole, "\""); open >= 0 {
+			if end := strings.Index(whole[open+1:], "\""); end >= 0 {
+				rn.Title = whole[open+1 : open+1+end]
+			}
 		}
 	}
 
