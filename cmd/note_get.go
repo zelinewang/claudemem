@@ -144,7 +144,14 @@ Examples:
 			}
 			OutputText("  [%s] %s", idShort, n.Title)
 		}
-		OutputText("\nUse the full title or note ID to get a specific note")
+		hint := "Use the full title or note ID to get a specific note"
+		for _, n := range matches {
+			if n.Title == titlePattern { // notes of different sessions keep their own note under one title
+				hint = "These notes share the title: use the note ID to get one of them"
+				break
+			}
+		}
+		OutputText("\n%s", hint)
 
 		return nil
 	},
