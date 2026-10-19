@@ -267,10 +267,11 @@ TAGS=$(BJ note get "$N1_ID" 2>&1 | json_field "['tags']")
 echo "$TAGS" | grep -q "tiktok" && echo "$TAGS" | grep -q "burst" \
   && pass "4.6 merge preserves tags (union)" || fail "4.6 tags" "$TAGS"
 
-# 4.7 note merge preserves metadata (session_id updated)
-B note add architecture --title "Microservice Patterns" --content "Also consider CQRS" --session-id "sess-ref-002" > /dev/null 2>&1
+# 4.7 a note of another session stays separate; the first keeps its session_id
+OUT=$(BJ note add architecture --title "Microservice Patterns" --content "Also consider CQRS" --session-id "sess-ref-002" 2>&1)
+ACTION=$(echo "$OUT" | json_field "['action']")
 SID=$(BJ note get "$N4_ID" 2>&1 | json_field "['metadata']['session_id']")
-[ "$SID" = "sess-ref-002" ] && pass "4.7 merge updates session_id" || fail "4.7 metadata" "session_id=$SID"
+[ "$ACTION" = "created" ] && [ "$SID" = "sess-ref-001" ] && pass "4.7 another session's note stays separate" || fail "4.7 ownership" "action=$ACTION session_id=$SID"
 
 # 4.8 session: SAME session_id → merged (same conversation re-wrap)
 printf '## Summary\nRe-run of morning wrap-up with more detail.\n' | \

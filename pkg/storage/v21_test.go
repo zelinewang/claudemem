@@ -172,15 +172,15 @@ func TestUpdateNote_PreservesSessionID(t *testing.T) {
 	}
 }
 
-func TestNoteDedup_UpdatesSessionIDToNewer(t *testing.T) {
+func TestNoteDedup_IndexKeepsTheMergedSessionID(t *testing.T) {
 	store := setupTestStore(t)
 
-	// First note with session_id "old"
+	// First note without a session; a note of another session never merges into a linked one
+	// (dedup_session_test.go), so the merge that sets a session_id is the one that fills an empty one.
 	n1 := models.NewNote("cat", "Dedup Target", "content v1")
-	n1.Metadata["session_id"] = "old-ref"
 	r1, _ := store.AddNote(n1)
 
-	// Second note with same category+title → merge, newer session_id wins
+	// Second note with same category+title → merge, and the index row follows the file
 	n2 := models.NewNote("cat", "Dedup Target", "content v2")
 	n2.Metadata["session_id"] = "new-ref"
 	r2, _ := store.AddNote(n2)

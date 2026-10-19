@@ -26,6 +26,11 @@ var noteAddCmd = &cobra.Command{
 You can provide the title and content via flags or as positional arguments.
 If content is not provided, it will be read from stdin if available.
 
+A note whose title matches or closely resembles a note in the same category is
+appended to that note instead ("Merged into existing note"), unless the two
+carry different --session-id values: notes of different sessions stay apart, and
+a merge never replaces the session id an existing note carries.
+
 Examples:
   claudemem note add work --title "Meeting Notes" --content "Discussed Q1 goals" --tags "meeting,goals"
   claudemem note add personal "Shopping List" "Milk, Eggs, Bread"
