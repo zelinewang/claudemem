@@ -235,6 +235,14 @@ func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error
 	if _, err := sanitizePath(category); err != nil {
 		return nil, fmt.Errorf("invalid category: %w", err)
 	}
+	// Notes of different sessions may share a title (findDedupCandidate keeps them apart). The title
+	// then names no single note, so the caller lists the matches instead of getting one of them.
+	var count int
+	if err := fs.db.QueryRow(`
+		SELECT COUNT(*) FROM entries WHERE category = ? AND title = ? AND type = 'note'
+	`, category, title).Scan(&count); err == nil && count > 1 {
+		return nil, fmt.Errorf("%d notes in %s have the title %q", count, category, title)
+	}
 	// Try the direct path first — but a filename is a stable id, not a slug of the CURRENT title, so the
 	// file there may belong to a note that has since been renamed: it counts only if its title matches
 	// (review P2-1: an exact lookup for a dead title used to return the renamed note).

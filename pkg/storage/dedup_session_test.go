@@ -181,3 +181,20 @@ func TestNoteDedup_FileSessionWinsOverStaleIndex(t *testing.T) {
 		t.Errorf("first note's file lost its owner:\n%s", data)
 	}
 }
+
+// Notes of two sessions may now share a category and a title. An exact title then names no single
+// note: the lookup must not hand back one of them as if it were the only one.
+func TestGetNoteByTitle_TitleSharedBySessionsIsNotOneNote(t *testing.T) {
+	store := setupTestStore(t)
+	addNoteWithSession(t, store, "docs", "API Limits", "100 requests per minute", "sess-a")
+	addNoteWithSession(t, store, "docs", "API Limits", "200 requests per minute", "sess-b")
+
+	if note, err := store.GetNoteByTitle("docs", "API Limits"); err == nil {
+		t.Fatalf("GetNoteByTitle returned the note of session %q although two notes have this title", note.Metadata["session_id"])
+	}
+
+	addNoteWithSession(t, store, "docs", "Deploy Checklist", "only one", "sess-a")
+	if note, err := store.GetNoteByTitle("docs", "Deploy Checklist"); err != nil || note.Content != "only one" {
+		t.Fatalf("GetNoteByTitle(unique title) = %v, %v", note, err)
+	}
+}
