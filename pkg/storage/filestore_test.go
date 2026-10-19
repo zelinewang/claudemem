@@ -162,9 +162,10 @@ func TestFileStore_NoteDedupPreservesMetadata(t *testing.T) {
 		t.Fatalf("AddNote() first failed: %v", err)
 	}
 
-	// Add second note with same category+title but different session_id
+	// Add second note with same category+title from the same session (a note of another session
+	// stays separate: dedup_session_test.go)
 	note2 := models.NewNote("workflows", "Auth Flow", "JWT process v2")
-	note2.Metadata["session_id"] = "ref-2"
+	note2.Metadata["session_id"] = "ref-1"
 	note2.Metadata["version"] = "2"
 	note2.Metadata["extra"] = "new-field"
 
@@ -187,9 +188,9 @@ func TestFileStore_NoteDedupPreservesMetadata(t *testing.T) {
 		t.Fatalf("GetNote() failed: %v", err)
 	}
 
-	// Newer metadata should overwrite
-	if retrieved.Metadata["session_id"] != "ref-2" {
-		t.Errorf("Metadata['session_id'] = %q, want 'ref-2' (newer)", retrieved.Metadata["session_id"])
+	// Newer metadata should overwrite; the session_id stays the note's own
+	if retrieved.Metadata["session_id"] != "ref-1" {
+		t.Errorf("Metadata['session_id'] = %q, want 'ref-1'", retrieved.Metadata["session_id"])
 	}
 	if retrieved.Metadata["version"] != "2" {
 		t.Errorf("Metadata['version'] = %q, want '2'", retrieved.Metadata["version"])

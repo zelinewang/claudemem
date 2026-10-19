@@ -110,12 +110,14 @@ different things:
 | | Notes | Sessions |
 |---|---|---|
 | **Purpose** | Knowledge fragments | Work reports |
-| **Dedup key** | Same title + category | Same `session_id` |
+| **Dedup key** | Same or similar title + category, unless the notes carry different `session_id`s | Same `session_id` |
 | **Merge behavior** | Append content | Append all sections |
 | **Cross-link** | `metadata.session_id` | `## Related Notes` |
 
 Knowledge accumulates by topic (same note grows), while distinct conversations
-stay separate (each session is its own record). Schema migrations preserve
+stay separate (each session is its own record). A note linked to one conversation
+(`--session-id`) never merges into a note of another, and a merge never replaces
+the `session_id` an existing note carries. Schema migrations preserve
 existing data across upgrades.
 
 ## CLI Reference

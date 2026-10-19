@@ -31,11 +31,14 @@ func (fs *FileStore) addNoteLocked(note *models.Note) (*AddNoteResult, error) {
 	}
 
 	// ── Dedup check: same category + exact or similar title → merge ──
-	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID)
+	// Only into a note of the same session, or one without a session: a note's session_id names the
+	// conversation that wrote it, and a merge must not hand that note to another conversation.
+	existingID, existingFpath := fs.findDedupCandidate(note.Category, note.Title, note.ID, noteSessionID(note))
 
 	if existingID != "" {
 		existingNote, readErr := fs.readNoteFile(filepath.Join(fs.baseDir, existingFpath))
-		if readErr == nil {
+		// the file is the source of truth: its session_id counts even when the index row lags behind it
+		if readErr == nil && sessionsCompatible(noteSessionID(existingNote), noteSessionID(note)) {
 			// Append new content with timestamp separator (only if content differs)
 			if existingNote.Content != note.Content && note.Content != "" {
 				separator := fmt.Sprintf("\n\n--- Updated %s ---\n", time.Now().Format("2006-01-02 15:04"))
@@ -231,6 +234,14 @@ func (fs *FileStore) GetNoteWithTags(id string, required []string) (*models.Note
 func (fs *FileStore) GetNoteByTitle(category, title string) (*models.Note, error) {
 	if _, err := sanitizePath(category); err != nil {
 		return nil, fmt.Errorf("invalid category: %w", err)
+	}
+	// Notes of different sessions may share a title (findDedupCandidate keeps them apart). The title
+	// then names no single note, so the caller lists the matches instead of getting one of them.
+	var count int
+	if err := fs.db.QueryRow(`
+		SELECT COUNT(*) FROM entries WHERE category = ? AND title = ? AND type = 'note'
+	`, category, title).Scan(&count); err == nil && count > 1 {
+		return nil, fmt.Errorf("%d notes in %s have the title %q", count, category, title)
 	}
 	// Try the direct path first — but a filename is a stable id, not a slug of the CURRENT title, so the
 	// file there may belong to a note that has since been renamed: it counts only if its title matches
@@ -658,15 +669,19 @@ func (fs *FileStore) readNoteFile(fullPath string) (*models.Note, error) {
 
 // findDedupCandidate finds an existing note to merge with.
 // First tries exact title match, then fuzzy match (>50% word overlap in same category).
-func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (string, string) {
+// A note with a sessionID is only matched to notes of that session or without one; an exact match
+// prefers the same session, then a note without one.
+func (fs *FileStore) findDedupCandidate(category, title, excludeID, sessionID string) (string, string) {
 	// Layer 1: Exact title match
 	var id, fpath string
 	err := fs.db.QueryRow(`
 		SELECT id, filepath FROM entries
-		WHERE category = ? AND title = ? AND type = 'note'
+		WHERE category = ? AND title = ? AND type = 'note' AND id != ?
+		  AND (? = '' OR session_id = '' OR session_id = ?)
+		ORDER BY CASE WHEN session_id = ? THEN 0 WHEN session_id = '' THEN 1 ELSE 2 END, rowid
 		LIMIT 1
-	`, category, title).Scan(&id, &fpath)
-	if err == nil && id != excludeID {
+	`, category, title, excludeID, sessionID, sessionID, sessionID).Scan(&id, &fpath)
+	if err == nil {
 		return id, fpath
 	}
 
@@ -677,7 +692,7 @@ func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (stri
 	}
 
 	rows, err := fs.db.Query(`
-		SELECT id, title, filepath FROM entries
+		SELECT id, title, filepath, session_id FROM entries
 		WHERE category = ? AND type = 'note'
 	`, category)
 	if err != nil {
@@ -689,9 +704,9 @@ func (fs *FileStore) findDedupCandidate(category, title, excludeID string) (stri
 	bestOverlap := 0.0
 
 	for rows.Next() {
-		var eid, etitle, efpath string
-		rows.Scan(&eid, &etitle, &efpath)
-		if eid == excludeID {
+		var eid, etitle, efpath, esession string
+		rows.Scan(&eid, &etitle, &efpath, &esession)
+		if eid == excludeID || !sessionsCompatible(esession, sessionID) {
 			continue
 		}
 
@@ -761,6 +776,12 @@ func wordOverlap(a, b map[string]bool) float64 {
 		return 0
 	}
 	return float64(shared) / float64(smaller)
+}
+
+// sessionsCompatible reports whether notes of these two sessions may merge: unless both are linked to
+// different sessions. Two conversations' notes stay apart even when their titles match.
+func sessionsCompatible(a, b string) bool {
+	return a == "" || b == "" || a == b
 }
 
 // noteSessionID safely extracts session_id from note metadata

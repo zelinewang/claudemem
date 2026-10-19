@@ -62,12 +62,12 @@ $BINARY --store "$STORE" note add debugging --title "Search Filter Test" --conte
 SEARCH_NOTE=$($BINARY --store "$STORE" search "uniquefilterword123" --type note 2>&1)
 if echo "$SEARCH_NOTE" | grep -q "Search Filter Test"; then pass "search --type note"; else fail "search --type" "not found"; fi
 
-# --- Test 7: note dedup preserves session_id ---
+# --- Test 7: a note of another session stays separate; the first keeps its session_id ---
 echo ""
-echo "Test 7: note dedup preserves session_id"
-$BINARY --store "$STORE" note add api-docs --title "Rate Limits" --content "Updated to 200 req/min" --session-id "ref-002" > /dev/null 2>&1
-DEDUP_NOTE=$($BINARY --store "$STORE" note get "$NOTE_ID" --format json 2>&1)
-if echo "$DEDUP_NOTE" | grep -q "ref-002"; then pass "dedup preserves latest session_id"; else fail "dedup metadata" "session_id not updated in JSON"; fi
+echo "Test 7: note dedup keeps each session's note"
+OTHER_ACTION=$($BINARY --store "$STORE" note add api-docs --title "Rate Limits" --content "Updated to 200 req/min" --session-id "ref-002" --format json 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin)['action'])" 2>/dev/null || echo "")
+FIRST_SID=$($BINARY --store "$STORE" note get "$NOTE_ID" --format json 2>&1 | python3 -c "import sys,json; print(json.load(sys.stdin)['metadata']['session_id'])" 2>/dev/null || echo "")
+if [ "$OTHER_ACTION" = "created" ] && [ "$FIRST_SID" = "ref-001" ]; then pass "another session's note stays separate, the first keeps ref-001"; else fail "dedup ownership" "action=$OTHER_ACTION first session_id=$FIRST_SID"; fi
 
 # --- Test 8: stats ---
 echo ""
