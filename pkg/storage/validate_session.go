@@ -40,7 +40,45 @@ func ValidateSessionMarkdown(content string) *SessionValidationResult {
 		result.addCheck(validateSectionExists(sections, sec))
 	}
 
+	// 5. What Changed: how its items will be stored (informational, never fails)
+	result.addCheck(validateWhatChanged(sections))
+
 	return result
+}
+
+// validateWhatChanged reports how `session save` will store the "What Changed" items, using the same
+// parser. It never fails: an item outside the "- `path` — description" form is kept as text without
+// a path, not dropped. Only the headings the save parser reads as What Changed count here.
+func validateWhatChanged(sections map[string]string) SessionValidationCheck {
+	content := ""
+	for name, body := range sections {
+		if lower := strings.ToLower(name); lower == "what changed" || lower == "changes" {
+			content += body + "\n"
+		}
+	}
+	if strings.TrimSpace(content) == "" {
+		return SessionValidationCheck{Section: "What Changed", Passed: true, Message: "section not present"}
+	}
+
+	items := ParseChangeItems(content)
+	textOnly := 0
+	for _, c := range items {
+		if c.Path == "" {
+			textOnly++
+		}
+	}
+	message := fmt.Sprintf("%d item%s", len(items), plural(len(items)))
+	if textOnly > 0 {
+		message += fmt.Sprintf(", %d stored as text without a path (template form: - `path` — description)", textOnly)
+	}
+	return SessionValidationCheck{Section: "What Changed", Passed: true, Message: message}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (r *SessionValidationResult) addCheck(c SessionValidationCheck) {
