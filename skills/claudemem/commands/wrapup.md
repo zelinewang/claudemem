@@ -30,18 +30,52 @@ If your inventory has fewer than 3 items, you likely missed work — scroll back
 
 ## Phase 1: Resolve Session Reference ID
 
-Resolve a deterministic session ID. If a recent session exists for this project today,
-it will be reused (enabling merge across multiple wrapups). Otherwise, a new one is generated.
+Use this conversation's own ID: a prefix for the agent you are running as, followed by the session ID
+that agent sets in its shell (it also names that agent's transcript of this conversation):
+
+| Agent you are running as | Variable | Reference |
+|---|---|---|
+| Claude Code | `$CLAUDE_CODE_SESSION_ID` | `cc-<id>` |
+| Codex | `$CODEX_THREAD_ID` | `codex-<id>` |
+| Grok | `$GROK_SESSION_ID` | `grok-<id>` |
+
+Every /wrapup of one conversation then uses the same reference, so all of them land in one claudemem
+session and in no other.
+
+Take only your own agent's variable. A process inherits the variables of whatever started it: Codex or
+Grok started from a Claude Code conversation also sees its `$CLAUDE_CODE_SESSION_ID`, Claude Code
+started from Codex sees `$CODEX_THREAD_ID`, and a subagent sees its parent's ID. An inherited ID would
+save into the other conversation's record, so set `AGENT` in the command below to the agent you are
+running as, and run /wrapup in the main conversation, not in a subagent.
+
+Do not take the reference from `claudemem session resolve`: it returns the newest session saved
+today under the same folder name, so conversations started in one folder, the home directory above
+all, get each other's sessions, and the save then merges two unrelated reports. For an agent not in
+the table, or when your agent's variable is empty, reuse the reference an earlier /wrapup of this
+conversation printed; otherwise the command below makes a fresh one.
 
 ```bash
-SESSION_REF=$(claudemem session resolve --project "$(basename "$(pwd)")" 2>/dev/null)
-if [ -z "$SESSION_REF" ]; then
+AGENT=other   # set to claude, codex or grok: the agent you are running as, not the one that started you
+case "$AGENT" in
+  claude) ID="$CLAUDE_CODE_SESSION_ID" PREFIX=cc ;;
+  codex)  ID="$CODEX_THREAD_ID" PREFIX=codex ;;
+  grok)   ID="$GROK_SESSION_ID" PREFIX=grok ;;
+  *)      ID="" ;;
+esac
+if [ -n "$ID" ]; then
+  SESSION_REF="$PREFIX-$ID"
+else
   SESSION_REF="$(date +%Y%m%d-%H%M%S)-$(head -c 4 /dev/urandom | xxd -p)"
 fi
 echo "Session ref: $SESSION_REF"
 ```
 
 You will use this `$SESSION_REF` to link notes to this session (Phase 2) and tag the session itself (Phase 3).
+Each Bash call starts a new shell, so write the printed reference itself wherever a later command says
+`${SESSION_REF:?}`. Left in, that expansion stops the command rather than pass an empty ID, which
+claudemem accepts and merges with other empty-ID sessions of the same day, folder and branch. If a report
+is already saved under the reference (an earlier /wrapup of this conversation),
+Phase 3's save appends to that report and replaces its title: title it for the whole conversation.
 
 ## Phase 2: Extract & Save Knowledge Notes
 
@@ -60,7 +94,7 @@ persist beyond this session — things you or a future agent would want to know.
    ```
 3. **If genuinely new** — create with session link:
    ```bash
-   claudemem note add <category> --title "..." --content "..." --tags "..." --session-id "$SESSION_REF"
+   claudemem note add <category> --title "..." --content "..." --tags "..." --session-id "${SESSION_REF:?}"
    ```
 
 **Keep a running list** of every note ID you save — you need these for Phase 3.
@@ -84,22 +118,24 @@ persist beyond this session — things you or a future agent would want to know.
 
 ## Phase 2.5: Note Freshness Check
 
-**Skip this phase if this is the first wrapup in this conversation** — there are no previous notes to check.
+Notes saved EARLIER under this conversation's reference (by a previous /wrapup or auto-save) may be
+out of date by now. Review them before saving the session report:
 
-If you saved notes EARLIER in this conversation (during a previous wrapup or via auto-save),
-review them now for accuracy before saving the session report:
-
-1. Search for notes linked to this session:
+1. List the notes linked to this session. `claudemem search` matches text, not the session ID (for one
+   conversation it returned 20 other entries and none of its 4 linked notes), so filter the full list:
    ```bash
-   claudemem search "$SESSION_REF" --type note --format json
+   claudemem note list --format json | jq -r --arg ref "${SESSION_REF:?}" \
+     '.[] | select(.metadata.session_id? == $ref) | "\(.id[0:8])  \(.title)"'
    ```
+   If it prints nothing, skip the rest of this phase.
 
 2. For each note found, check if the facts are still accurate:
    - Specific numbers (line counts, file counts, test counts)
    - Implementation status (partial vs complete, expanded vs merged)
    - File paths that may have been renamed or deleted
 
-3. If a note contains outdated information, update it:
+3. If a note contains outdated information, update it. Update only notes from that list: any other
+   note belongs to another conversation.
    ```bash
    claudemem note update <id> --content "<corrected full content>"
    ```
@@ -200,8 +236,11 @@ but only YOU can ensure content quality):
 **Step 1.** Generate the full session report as markdown (all sections from above).
 
 **Step 2.** Save it to a temporary file using the **Write tool** (NOT Bash).
-Write the content to `${TMPDIR:-/tmp}/claudemem-session-report.md`.
-Use `$TMPDIR` (set by OS on both macOS and Linux) — falls back to `/tmp` if unset.
+Write the content to `claudemem-session-report.md` in this session's scratchpad directory, the one
+your system prompt names; only this conversation writes there. Without a scratchpad, make a directory
+with `mktemp -d` and write the file in it. Never use the old shared path
+`${TMPDIR:-/tmp}/claudemem-session-report.md`: every session on the machine writes that one file, so it
+can hold another conversation's report.
 The Write tool handles any characters safely — backticks, quotes, $, newlines.
 No shell escaping needed. Do NOT put markdown content inside Bash commands.
 
@@ -213,7 +252,7 @@ Always use stdin redirection (`< file`) instead of command substitution (`$(cat 
 
 **Step 3.** Run the script-based validator BEFORE saving:
 ```bash
-_REPORT="${TMPDIR:-/tmp}/claudemem-session-report.md"
+_REPORT="<scratchpad>/claudemem-session-report.md"   # the file Step 2 wrote
 claudemem session validate "$_REPORT"
 ```
 If validation **FAILS** (exit code 1): read the failure reasons, fix the content
@@ -221,16 +260,16 @@ using the Write tool, and validate again. Repeat until **PASSED**.
 
 **Step 4.** Only after PASSED, import into claudemem:
 ```bash
-_REPORT="${TMPDIR:-/tmp}/claudemem-session-report.md"
+_REPORT="<scratchpad>/claudemem-session-report.md"   # the file Step 2 wrote
 claudemem session save \
   --title "<descriptive title summarizing the session>" \
   --branch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')" \
   --project "$(basename "$(pwd)")" \
-  --session-id "$SESSION_REF" \
+  --session-id "${SESSION_REF:?}" \
   --tags "<comma,separated,relevant,tags>" \
   < "$_REPORT"
 ```
-Note: Do NOT clean up the temp file with `rm` — let the OS handle it via TMPDIR auto-cleanup.
+Note: Do NOT clean up the report file with `rm` — it is small and stays in this session's own directory.
 Using `rm` in a Bash command may trigger deny rules on machines with strict `rm` deny patterns.
 
 Note: `--related-notes` is no longer needed — claudemem auto-discovers notes linked via session_id.
