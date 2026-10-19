@@ -234,19 +234,20 @@ func TestSaveSession_ResavingTheSameReportChangesNothing(t *testing.T) {
 	}
 }
 
-// A hand-written Related Notes line keeps a one-word category at its end, as the old stdin parser
-// did; a remark in parentheses, or parentheses inside the title, are not a category.
-func TestParseRelatedNoteLine_CategoryAfterTextWithoutQuotes(t *testing.T) {
+// A hand-written Related Notes line is read as the old stdin parser read it: the last text in
+// parentheses after the id and title is its category, and a title written before the id is found.
+// Parentheses inside the title are not a category, and a line in the stored form reads the same.
+func TestParseRelatedNoteLine_HandWrittenLines(t *testing.T) {
 	for _, tc := range []struct {
 		line string
 		want models.RelatedNote
 	}{
 		{"`8f52c841` — appended: the 30 MiB limit (api)", models.RelatedNote{ID: "8f52c841", Category: "api"}},
-		{"`a38c66e4` — merge-queue discipline (appended: classifier denial)", models.RelatedNote{ID: "a38c66e4"}},
-		{"read: `4b6a90f4`, `dd24ad13` (11-hop chain)", models.RelatedNote{ID: "4b6a90f4"}},
+		{"`a38c66e4` — merge-queue discipline (appended: classifier denial)", models.RelatedNote{ID: "a38c66e4", Category: "appended: classifier denial"}},
+		{"`abcd1234` — \"Title\" — saved earlier (research)", models.RelatedNote{ID: "abcd1234", Title: "Title", Category: "research"}},
+		{"\"Title first\" `abcd1234` (workflow)", models.RelatedNote{ID: "abcd1234", Title: "Title first", Category: "workflow"}},
 		{"`abcd1234` — \"Fix (urgent) bug\"", models.RelatedNote{ID: "abcd1234", Title: "Fix (urgent) bug"}},
 		{"`abcd1234` — \"Title\" (workflow)", models.RelatedNote{ID: "abcd1234", Title: "Title", Category: "workflow"}},
-		{"`abcd1234` — \"Title\" — saved earlier (research)", models.RelatedNote{ID: "abcd1234", Title: "Title", Category: "research"}},
 		{"`abcd1234` — \"\" ()", models.RelatedNote{ID: "abcd1234"}},
 	} {
 		if got := parseRelatedNoteLine(tc.line); got != tc.want {
