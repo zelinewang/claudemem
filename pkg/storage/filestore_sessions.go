@@ -396,28 +396,48 @@ func mergeStringSlice(existing, new []string) []string {
 	return result
 }
 
-// mergeFileChanges combines file change lists, merging descriptions for same paths
+// mergeFileChanges combines file change lists without dropping an item. The existing items all stay,
+// two of the same path included. A new item that repeats an existing one is skipped; a new item for a
+// path already listed adds its description to the first item of that path; any other item is
+// appended. An item without a path only matches an identical item.
 func mergeFileChanges(existing, new []models.FileChange) []models.FileChange {
-	seen := make(map[string]int) // path → index in result
-	var result []models.FileChange
-	for _, c := range existing {
-		if _, exists := seen[c.Path]; !exists {
-			seen[c.Path] = len(result)
-			result = append(result, c)
+	result := append([]models.FileChange(nil), existing...)
+	seen := make(map[models.FileChange]bool)
+	firstOfPath := make(map[string]int) // path → index in result
+	for i, c := range result {
+		seen[c] = true
+		if _, ok := firstOfPath[c.Path]; c.Path != "" && !ok {
+			firstOfPath[c.Path] = i
 		}
 	}
 	for _, c := range new {
-		if idx, exists := seen[c.Path]; exists {
-			// Same path — append description if different
-			if result[idx].Description != c.Description {
-				result[idx].Description = result[idx].Description + "; " + c.Description
-			}
-		} else {
-			seen[c.Path] = len(result)
-			result = append(result, c)
+		if seen[c] {
+			continue
 		}
+		seen[c] = true
+		if idx, ok := firstOfPath[c.Path]; ok && c.Path != "" {
+			if !hasDescriptionPart(result[idx].Description, c.Description) {
+				result[idx].Description += "; " + c.Description
+			}
+			continue
+		}
+		if c.Path != "" {
+			firstOfPath[c.Path] = len(result)
+		}
+		result = append(result, c)
 	}
 	return result
+}
+
+// hasDescriptionPart reports whether a merged description ("a; b") already holds part, so that saving
+// the same report again does not repeat it.
+func hasDescriptionPart(description, part string) bool {
+	for _, p := range strings.Split(description, "; ") {
+		if p == part {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeProblems combines problem/solution lists, deduplicating by problem text

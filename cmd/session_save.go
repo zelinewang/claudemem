@@ -70,7 +70,7 @@ func init() {
 	sessionSaveCmd.Flags().StringVar(&sessionContent, "content", "", "Full markdown body")
 	sessionSaveCmd.Flags().StringVar(&sessionSummary, "summary", "", "Session summary")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionDecisions, "decisions", []string{}, "Key decisions (can be used multiple times)")
-	sessionSaveCmd.Flags().StringSliceVar(&sessionChanges, "changes", []string{}, "File changes in format 'path:description'")
+	sessionSaveCmd.Flags().StringSliceVar(&sessionChanges, "changes", []string{}, "File changes in format 'path:description' (an item without a colon is kept as text)")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionProblems, "problems", []string{}, "Problems in format 'problem:solution'")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionInsights, "insights", []string{}, "Learning insights")
 	sessionSaveCmd.Flags().StringSliceVar(&sessionQuestions, "questions", []string{}, "Questions raised")
@@ -118,7 +118,8 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 		session.Questions = sessionQuestions
 		session.NextSteps = sessionNextSteps
 
-		// Parse changes (format: path:description)
+		// Parse changes (format: path:description); an item without a colon is read like a
+		// What Changed line ("`path` — description", or kept whole as text), never dropped
 		for _, change := range sessionChanges {
 			parts := strings.SplitN(change, ":", 2)
 			if len(parts) == 2 {
@@ -126,6 +127,8 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 					Path:        parts[0],
 					Description: parts[1],
 				})
+			} else {
+				session.Changes = append(session.Changes, storage.ParseChangeItems(change)...)
 			}
 		}
 
@@ -156,126 +159,10 @@ func runSessionSave(cmd *cobra.Command, args []string) error {
 
 	// If body content was provided, parse sections from it directly
 	if bodyContent != "" {
-		// Check if content has ## section headers — parse as structured markdown
+		// Check if content has ## section headers — parse as structured markdown, with the same parser
+		// that reads stored sessions (an earlier copy here dropped list items it did not recognise)
 		if strings.Contains(bodyContent, "## ") {
-			// Parse section headers directly without wrapping in frontmatter
-			sections := make(map[string]string)
-			lines := strings.Split(bodyContent, "\n")
-			currentSection := ""
-			var currentContent []string
-
-			for _, line := range lines {
-				if strings.HasPrefix(line, "## ") {
-					if currentSection != "" {
-						sections[currentSection] = strings.Join(currentContent, "\n")
-					}
-					currentSection = strings.TrimPrefix(line, "## ")
-					currentContent = nil
-				} else {
-					currentContent = append(currentContent, line)
-				}
-			}
-			if currentSection != "" {
-				sections[currentSection] = strings.Join(currentContent, "\n")
-			}
-
-			// Map sections to session fields
-			for name, content := range sections {
-				trimmed := strings.TrimSpace(content)
-				switch strings.ToLower(name) {
-				case "summary":
-					session.Summary = trimmed
-				case "what happened":
-					session.WhatHappened = trimmed
-				case "key decisions", "decisions":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							session.Decisions = append(session.Decisions, strings.TrimPrefix(line, "- "))
-						}
-					}
-				case "what changed", "changes":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							item := strings.TrimPrefix(line, "- ")
-							parts := strings.SplitN(item, " — ", 2)
-							if len(parts) == 2 {
-								session.Changes = append(session.Changes, models.FileChange{
-									Path:        strings.Trim(parts[0], "`"),
-									Description: parts[1],
-								})
-							}
-						}
-					}
-				case "problems & solutions", "problems and solutions":
-					// Single shared parser (pkg/storage) — the earlier inline
-					// parser here dropped canonical "**Solution**:" bodies.
-					session.Problems = append(session.Problems, storage.ParseProblemsSolutions(trimmed)...)
-				case "learning insights", "insights":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							session.Insights = append(session.Insights, strings.TrimPrefix(line, "- "))
-						}
-					}
-				case "next steps":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							step := strings.TrimPrefix(line, "- ")
-							step = strings.TrimPrefix(step, "[ ] ")
-							step = strings.TrimPrefix(step, "[x] ")
-							session.NextSteps = append(session.NextSteps, step)
-						}
-					}
-				case "questions raised", "questions":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							session.Questions = append(session.Questions, strings.TrimPrefix(line, "- "))
-						}
-					}
-				case "related notes":
-					for _, line := range strings.Split(trimmed, "\n") {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "- ") {
-							item := strings.TrimPrefix(line, "- ")
-							// Parse format: `id` — "title" (category)
-							rn := models.RelatedNote{}
-							if idx := strings.Index(item, "`"); idx >= 0 {
-								endIdx := strings.Index(item[idx+1:], "`")
-								if endIdx >= 0 {
-									rn.ID = item[idx+1 : idx+1+endIdx]
-								}
-							}
-							if idx := strings.Index(item, "\""); idx >= 0 {
-								endIdx := strings.Index(item[idx+1:], "\"")
-								if endIdx >= 0 {
-									rn.Title = item[idx+1 : idx+1+endIdx]
-								}
-							}
-							if idx := strings.LastIndex(item, "("); idx >= 0 {
-								endIdx := strings.Index(item[idx:], ")")
-								if endIdx > 0 {
-									rn.Category = item[idx+1 : idx+endIdx]
-								}
-							}
-							if rn.ID != "" {
-								session.RelatedNotes = append(session.RelatedNotes, rn)
-							}
-						}
-					}
-				default:
-					// Preserve custom sections not in the predefined set
-					if trimmed != "" {
-						session.ExtraSections = append(session.ExtraSections, models.ExtraSection{
-							Name:    name, // preserve original casing
-							Content: trimmed,
-						})
-					}
-				}
-			}
+			storage.ParseSessionBody(session, bodyContent)
 		} else {
 			// No section headers — treat entire content as summary
 			session.Summary = strings.TrimSpace(bodyContent)
